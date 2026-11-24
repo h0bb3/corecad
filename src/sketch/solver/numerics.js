@@ -151,6 +151,9 @@ export function buildSystem(sk, opt = {}) {
   const add = (cid, vars, fn, kind = 'len') => {
     const k = Int32Array.from(vars, i => i <= -2 ? n0 - i - 2 : kOf[i]), c = Float64Array.from(vars, i => i <= -2 ? 0 : cOf[i]);   // -2 - j is slack j
     const cols = [...new Set([...k].filter(x => x >= 0))];
+    // A fully fixed arc already satisfies its intrinsic equal-radius equation.
+    // It is geometry, not an extra user constraint to report as redundant.
+    if (!cols.length && cid.startsWith('arc:') && Math.abs(fn(c, new Float64Array(vars.length))) <= tolS) return;
     const pos = Int32Array.from(k, x => cols.indexOf(x));
     eqs.push({ cid, k, c, fn, kind, cols: Int32Array.from(cols), pos, vals: new Float64Array(cols.length), v: new Float64Array(vars.length), g: new Float64Array(vars.length) });
   };

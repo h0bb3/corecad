@@ -1,0 +1,51 @@
+<!doctype html><meta charset="utf-8"><title>Kernel tests</title><script type="module">
+import {test,eq,ok,near,throws,run} from './harness.js';
+import {createKernel} from '../src/kernel/client.js';
+import {createDocument} from '../src/doc/model.js';
+import {findRegions,profileRefFrom} from '../src/sketch/profiles.js';
+import {faceRefFrom,edgeRefFrom} from '../src/doc/refs.js';
+import {plateSketch,sk,circle} from './fixtures/sketches.js';
+const k=createKernel();let d=createDocument('Test plate'),plate,cut,rounded;
+const sketch=(id,s,plane={kind:'base',base:'XY'})=>({id,type:'sketch',name:id,plane,...s});
+const extrude=(id,s,operation='new',distance=10,flip=false)=>({id,type:'extrude',name:id,sketch:s.id,profiles:findRegions(s).map(profileRefFrom),operation,extent:{type:'oneSide',distance},flip,targets:null});
+const good=r=>{eq(r.status,'done');ok(!r.features.some(f=>f.status==='error'),()=>JSON.stringify(r.features));return r;};
+test('Actual OpenCascade worker: plate and stable face topology',async()=>{
+ await k.ready;const s=sketch('f1',plateSketch());d.features=[s,extrude('f2',s)];d.seq=2;
+ plate=good(await k.rebuild(d,{purpose:'commit'}));eq(plate.bodies.length,1);near(plate.bodies[0].volume,24000,.001);eq(plate.bodies[0].mesh.faces.length,6);
+ ok(plate.bodies[0].mesh.faces.every(f=>f.labels.length));ok(plate.bodies[0].mesh.indices.length>0);
+});
+test('Face circle through-cut and four vertical edge fillets',async()=>{
+ const body=plate.bodies[0],top=body.mesh.faces.findIndex(f=>f.labels.includes('f2/end'));
+ const s=sk();circle(s,45,20,4);const f=sketch('f3',s,{kind:'face',ref:faceRefFrom(body,top)});
+ d.features.push(f,extrude('f4',f,'cut','all',true));d.seq=4;cut=good(await k.rebuild(d));near(cut.bodies[0].volume,24000-160*Math.PI,.001);
+ const b=cut.bodies[0],picks=b.mesh.edges.flatMap((e,i)=>e.kind==='line'&&Math.abs(e.a[2]-e.b[2])>9.9&&!e.seam?[i]:[]);eq(picks.length,4);
+ d.features.push({id:'f5',type:'fillet',name:'Corners',edges:picks.map((i,j)=>edgeRefFrom(b,i,'k'+(j+1))),radius:4,kseq:4});d.seq=5;
+ rounded=good(await k.rebuild(d,{before:true,tool:true}));near(rounded.bodies[0].volume,23360,.003);eq(rounded.bodies[0].mesh.faces.length,11);
+});
+test('Changing upstream height preserves hole plane and blend references',async()=>{
+ const tall=structuredClone(d);tall.features[1].extent.distance=20;const r=good(await k.rebuild(tall));near(r.bodies[0].volume,46720,.005);
+ near(r.features[2].frame.o[2],20,1e-6);ok(r.features.every(f=>f.status==='ok'));
+ const renamed=structuredClone(tall);renamed.features[0].name='Outline';const cached=good(await k.rebuild(renamed));eq(cached.stats.recomputed,0);
+});
+test('Blends fail atomically; suppress restores earlier shape',async()=>{
+ const bad=structuredClone(d);bad.features[4].radius=80;const r=await k.rebuild(bad);eq(r.features[4].status,'error');near(r.bodies[0].volume,cut.bodies[0].volume,.001);
+ bad.features[4].suppressed=true;const s=good(await k.rebuild(bad));eq(s.features[4].status,'suppressed');near(s.bodies[0].volume,cut.bodies[0].volume,.001);
+});
+test('Quick blind and through holes; symmetric extrusion',async()=>{
+ const q=structuredClone(d);q.features=q.features.slice(0,2);const body=plate.bodies[0],top=body.mesh.faces.findIndex(f=>f.labels.includes('f2/end'));
+ q.features.push({id:'f6',type:'hole',name:'Hole',face:faceRefFrom(body,top),at:[45,20],diameter:5,depth:6});q.seq=6;
+ near(good(await k.rebuild(q)).bodies[0].volume,24000-37.5*Math.PI,.002);
+ q.features[2].depth='all';near(good(await k.rebuild(q)).bodies[0].volume,24000-62.5*Math.PI,.002);
+ q.features=q.features.slice(0,2);q.features[1].extent.type='symmetric';near(good(await k.rebuild(q)).bodies[0].bbox,[[-.0000001,-.0000001,-5.0000001],[60.0000001,40.0000001,5.0000001]],1e-5);
+});
+test('STL and STEP exports contain real solids',async()=>{
+ const stl=await k.export(d,{format:'stl'}),v=new DataView(await stl.arrayBuffer());ok(v.getUint32(80,true)>20);eq(v.byteLength,84+50*v.getUint32(80,true));
+ const step=await k.export(d,{format:'step'});ok((await step.text()).startsWith('ISO-10303-21;'));ok(step.size>10000);
+});
+test('Latest request wins without stale preview',async()=>{
+ k.debugDelay(100);const q=structuredClone(d);q.features[1].extent.distance=11;
+ const first=k.rebuild(q);await new Promise(r=>setTimeout(r,30));q.features[1].extent.distance=12;const second=k.rebuild(q);
+ eq((await first).status,'superseded');near(good(await second).bodies[0].volume,28032,.005);k.debugDelay(0);k.dispose();
+});
+run();
+</script>

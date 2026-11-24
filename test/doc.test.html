@@ -1,0 +1,28 @@
+<!doctype html><meta charset="utf-8"><title>Document tests</title><script type="module">
+import {test,eq,ok,near,throws,run} from './harness.js';
+import {createDocument,makeFeature,addFeature,updateFeature,removeFeature,dependents} from '../src/doc/model.js';
+import {createHistory} from '../src/doc/history.js';
+import {parse as parseDocument,serialize as serializeDocument} from '../src/doc/schema.js';
+import {extentInterval} from '../src/doc/features.js';
+import {geometryKey} from '../src/core/hash.js';
+test('Document round trip, validation and forward fields',async()=>{
+ const d=createDocument('Bracket'), f=makeFeature(d,'sketch').feature; d.features.push(f);d.seq=1;d.future={a:3};
+ eq(parseDocument(serializeDocument(d)),d);
+ await throws(()=>parseDocument('{'),/JSON/); await throws(()=>parseDocument(JSON.stringify({...d,version:999})),/format|version|newer/i);
+ await throws(()=>serializeDocument({...d,seq:0}),/id|seq|counter/i);
+ eq(geometryKey(f),geometryKey({...f,name:'Renamed',ui:{visible:false}}));
+});
+test('Undo branches retain feature and sketch id watermarks',()=>{
+ const d=createDocument(),h=createHistory(d),s=makeFeature(d,'sketch').feature;s.seq=12;
+ h.commit(addFeature(d,s),'Sketch');h.commit(addFeature(h.doc,{id:'f2',type:'future',name:'F'}),'Feature');
+ h.undo();h.undo();eq(h.doc.seq,2);eq(makeFeature(h.doc,'sketch').feature.id,'f3');
+ h.redo();eq(h.doc.features[0].seq,12);h.commit({...h.doc,features:[]},'Delete');ok(!h.canRedo);
+});
+test('Extents are signed in modelling direction',()=>{
+ eq(extentInterval({type:'oneSide',distance:10},[0,20]),[0,10]);
+ eq(extentInterval({type:'symmetric',distance:10},[0,20]),[-5,5]);
+ eq(extentInterval({type:'twoSides',distance:8,distance2:3},[0,20]),[-3,8]);
+ eq(extentInterval({type:'oneSide',distance:'all'},[0,20]),[0,21]);
+});
+run();
+</script>
