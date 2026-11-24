@@ -1,0 +1,146 @@
+# CoreCAD v0.1
+
+This is the implementation specification for the first version in [BRIEF.md](BRIEF.md).
+It consolidates the three scratch designs and the unfinished lead specification.
+The takeover brief authorizes this implementation, staged commits and pushes to the
+existing repository. The existing Claude session is not part of this work.
+
+## Architecture
+
+One static page, plain ES modules, no build, npm or server backend. Dependencies are
+loaded from jsDelivr at the versions in the brief: three 0.187.0, replicad 1.2.1,
+replicad-opencascadejs 1.2.1. All dimensions are millimetres; Z is up.
+
+* `core/`: vectors, canonical plane frames, tolerances, numbers and errors.
+* `sketch/`: pure data operations, constraint solver, snapping and profile detection.
+* `doc/`: pure immutable documents, validation, history and topology references.
+* `kernel/`: OpenCascade ownership, labelled operations, feature evaluation, worker
+  scheduling, meshing and export. No DOM and no sketch solving in the worker.
+* `app/`: document store, autosave and file handling.
+* `view/`: camera mathematics, picking and three.js rendering.
+* `ui/`: controls, feature dialogs and the SVG sketch editor; `main.js` connects them.
+
+The tested L0 files are installed from `.scratch/lead/wave0`. Prototypes are a source
+of tested algorithms, not an obligation to reproduce their proposed file count.
+Related functions may share a module. Numerical solver internals may use a private
+adapter; the saved sketch format is always the L0 `points/entities/constraints` format.
+
+## Document and history
+
+A `.corecad` project is JSON `{format:'corecad', version:1, meta, seq, features, bodies}`.
+Features have stable `fN` ids, a name, type, optional suppression and UI visibility.
+Only user decisions and solved sketch coordinates are stored. Bodies, meshes,
+profiles, sketch frames and build statuses are derived. Unknown fields survive edits;
+unsupported feature types report an error. Malformed or newer files are refused
+without replacing the open document.
+
+Each edit replaces the document. Undo/redo retains up to 200 document states. A drag,
+dimension entry or confirmed feature dialog is one step. Preview documents are
+separate from committed documents. Editing an earlier feature shows the model at
+that point; accepting rebuilds the remainder. History supports edit, rename,
+suppress, delete and roll back. Deleting dependencies requires an explicit choice.
+Feature and entity counters never reuse ids within a live document, including
+after undo followed by a new edit.
+
+Autosave uses browser storage independently of explicit file saves. Save/open and
+STL/STEP downloads work on ordinary static hosting. Export uses the committed
+document and visible bodies, never an unconfirmed preview.
+
+## Sketches and constraints
+
+A sketch contains `points`, `entities`, `constraints`, `seq` and a plane reference.
+Each curve owns its points; coincidence relates endpoints. The implicit `origin`
+is fixed at (0,0). Shared points in imported JSON are supported. Entity types:
+point, line (`a,b`), circle (`c,r`), counter-clockwise arc (`c,a,b`). Construction
+geometry participates in solving but contributes no profile.
+
+Constraints use `{id,type,refs,...}`: coincident, pointOnLine, pointOnCircle,
+horizontal, vertical, parallel, perpendicular, tangent, equal, concentric, midpoint,
+fix. Dimensions: aligned/horizontal/vertical point distance, line length,
+point-line distance, radius, diameter and directed angle. Dimensions drive the
+geometry; reference dimensions only measure it. Angles are degrees in the file.
+
+The solver retains the prototype's weighted union-find reduction, exact derivatives,
+minimum-movement Levenberg-Marquardt, continuation and QR rank analysis. It reports
+degrees of freedom, determined entities and redundant/conflicting constraints.
+An unsuccessful edit leaves the prior sketch intact and identifies the reason.
+Degenerate lines, circles and arcs are refused. Dragging uses a temporary handle,
+small motion steps and the same equations, committing only on release.
+
+Drawing supports chained lines, two-corner rectangles, centre/rim circles,
+three-point arcs and points. Nearby points/origin, horizontal/vertical directions,
+midpoints and curves snap with constraints; Ctrl disables inference. Typed rectangle
+width/height, line length and circle diameter create dimensions in the same action.
+Selection, construction toggle, deleting geometry/constraints and editing dimension
+labels are available. Free geometry is blue; fully determined geometry is dark
+(light in the dark theme). The sketch status shows remaining degrees of freedom.
+
+## Profiles
+
+Analytic line/circle intersections split curves into a planar half-edge arrangement.
+Endpoints weld at the shared tolerance. Half-edges sort by tangent and curvature;
+clockwise successor walks find bounded faces. Bridges and dangling edges bound no
+region. Disconnected nested loops form holes. Curves remain exact lines/arcs/circles
+in the result; tessellation is only for display and containment.
+
+Every region has a counter-clockwise outer loop, clockwise holes, exact signed area,
+an interior point, entity-id key and orientation signature. Profile selection stores
+these identifiers, with the pick position as a fallback that produces a warning if
+the outline was replaced. The kernel checks face validity and area independently;
+it never trusts the wire builder to catch an open or incorrectly oriented hole.
+
+## Solids and references
+
+Extrude supports selected regions, one side, two sides and symmetric total length;
+new body, join, cut, intersect; reversed direction; through-all cuts/intersections.
+Through-all is recomputed from current body bounds. Quick Hole is a planar face,
+position, diameter and blind/through depth. Fillet/chamfer use picked edges and
+positive radius/distance. Every feature has a live worker preview; failed previews
+show the preceding valid geometry and a useful error, with confirmation disabled.
+
+Raw OpenCascade builders carry face labels through prism, boolean and blend history:
+`feature/start`, `feature/end`, `feature/side/entity`, and `feature/edge-key`.
+Edges are referenced by the labels of their adjacent faces. References never silently
+fall back to unrelated geometry. Splits/merges resolve by shared labels; ambiguous
+faces and partially lost edge sets produce visible warnings. A face sketch uses a
+canonical frame of the plane alone, so changing a plate height moves the sketch
+with the top face without moving its in-plane coordinates.
+
+A body retains the id of its creating feature and may contain several solid lumps.
+Joins retain the oldest participating body; a disconnected join creates a body with
+a warning. Cuts that remove an entire target and empty intersections are rejected.
+Features are atomic: failure preserves preceding state, and later features still
+attempt to build. Kernel allocations have explicit owners and are deleted when
+cache entries expire. A bounded prefix cache avoids repeating unchanged operations.
+Worker requests have sequence numbers; superseded results never replace the view.
+Stop/retry can restart a stuck worker without losing the document.
+
+## Interaction
+
+One screen with Model and Sketch modes, a feature browser, contextual toolbar,
+viewport, floating forms and status line. Every control has hover help, including
+disabled controls and form fields. The model stays usable while the worker builds.
+Faces and edges highlight on hover/selection. Origin planes, standard views, fit,
+orbit, pan and zoom are provided. Sketch mode is orthographic with a registered SVG
+overlay. Middle drag pans; right drag or Shift+middle orbits; wheel zooms.
+
+Shortcuts: S sketch, L line, R rectangle, C circle, A arc, D dimension, X construction,
+E extrude, H hole (H/V in sketch), F fillet, Shift+F chamfer, F6 fit, Home home view,
+Ctrl+Enter finish sketch, Ctrl+Z/Y undo/redo, Ctrl+S/O save/open. Escape cancels the
+innermost action and never exits a sketch. Forms also work with mouse and keyboard.
+
+## Verification and scope
+
+Browser tests use the existing Python/Chrome harness. Pure tests cover document
+validation/history, solver invariants and profiles (including nested and intersecting
+curves). Real-worker tests verify measured volumes, label survival, failures and
+STL/STEP. End-to-end tests use actual mouse/key events to sketch/dimension a plate,
+extrude, cut on its top face, blend edges, edit history and export. Additional flows
+exercise dragging, quick holes, planes, undo and persistence. Screenshots go in
+`.scratch/`; no required source or test may depend on that ignored directory.
+
+Deferred: the brief's “should” tools (2D corner operations, trim, offset, mirror,
+named expressions, projected geometry, measure and section tools), plus imports,
+revolve, sweep, loft, shell, patterns and assemblies. Arithmetic in number fields
+is evaluated once, not retained as a parametric expression. Desktop mouse/keyboard
+is the primary target. Any remaining limitations belong in `docs/STATUS.md`.

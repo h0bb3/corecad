@@ -1,0 +1,127 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lead: the wave-0 files</title>
+<script type="module">
+import { test, eq, ok, near, throws, run } from './harness.js';
+import * as V from '../src/core/vec.js';
+import { idNumber, compareIds, sortIds } from '../src/core/ids.js';
+import { canonicalFrame, basePlane, toWorld, toLocal } from '../src/core/plane.js';
+import * as T from '../src/core/tol.js';
+import { PROTOCOL, ROOT_KEY } from '../src/kernel/protocol.js';
+import { FeatureError } from '../src/core/errors.js';
+import { loadKernel, kernel, errorText, isFatal, scope, heapBytes, hashOf, listToArray } from '../src/kernel/occ.js';
+import { sk, line, circle, arc, point, rect, con, at, byId, plateSketch } from './fixtures/sketches.js';
+
+test('vec: 3D and 2D', () => {
+  near(V.cross([1, 0, 0], [0, 1, 0]), [0, 0, 1]);
+  near(V.unit([0, 0, 0]), [0, 0, 0]);
+  near(V.unit([3, 0, 4]), [0.6, 0, 0.8]);
+  eq(V.cross2([1, 0], [0, 1]), 1);
+  near(V.perp2([1, 0]), [0, 1]);
+  near(V.dist2([0, 0], [3, 4]), 5);
+});
+
+test('vec: quaternions', () => {
+  const q = V.qaxis([0, 0, 1], Math.PI / 2);
+  near(V.qrot(q, [1, 0, 0]), [0, 1, 0], 1e-12);
+  const home = [0.424708, 0.175920, 0.339851, 0.820473];
+  near(V.qrot(home, [0, 0, 1]), [0.57735, -0.57735, 0.57735], 1e-5);          // back
+  near(V.qrot(home, [1, 0, 0]), [0.7071, 0.7071, 0], 1e-4);                   // right
+  near(V.qrot(home, [0, 1, 0]), [-0.4082, 0.4082, 0.8165], 1e-4);             // up
+  const a = V.qaxis([1, 0, 0], 0.3), b = V.qaxis([0, 1, 0], -0.7);
+  near(V.qrot(V.qmul(a, b), [1, 2, 3]), V.qrot(a, V.qrot(b, [1, 2, 3])), 1e-12);
+  near(Math.hypot(...V.qnorm([1, 2, 3, 4])), 1, 1e-12);
+});
+
+test('vec: Mat23', () => {
+  const M = [3.1715949, 0, 0, -3.1715949, 450, 300];
+  near(V.applyM(M, [60, 40]), [640.2957, 173.1362], 1e-3);
+  near(V.applyM(V.invertM(M), V.applyM(M, [12.5, -7])), [12.5, -7], 1e-9);
+  const R = [0.3, 1.1, -0.9, 0.2, 5, -3];
+  near(V.applyM(V.invertM(R), V.applyM(R, [4, 9])), [4, 9], 1e-9);
+});
+
+test('ids', () => {
+  eq(idNumber('e12'), 12);
+  eq(sortIds(['e12', 'e3', 'e9', 'e6', 'e3']), ['e3', 'e6', 'e9', 'e12']);
+  ok(compareIds('p2', 'e10') < 0);
+  eq(['c3', 'a3', 'b3'].sort(compareIds), ['a3', 'b3', 'c3']);
+  eq(['origin', 'p2'].sort(compareIds), ['p2', 'origin']);
+});
+
+test('plane: the table of SPEC 5.3', () => {
+  const rows = [
+    ['XY', basePlane('XY'), [0, 0, 0], [1, 0, 0], [0, 1, 0]],
+    ['XZ', basePlane('XZ'), [0, 0, 0], [1, 0, 0], [0, 0, 1]],
+    ['YZ', basePlane('YZ'), [0, 0, 0], [0, 1, 0], [0, 0, 1]],
+    ['top', { n: [0, 0, 1], d: 10 }, [0, 0, 10], [1, 0, 0], [0, 1, 0]],
+    ['side', { n: [1, 0, 0], d: 60 }, [60, 0, 0], [0, 1, 0], [0, 0, 1]],
+    ['bottom', { n: [0, 0, -1], d: 0 }, [0, 0, 0], [1, 0, 0], [0, -1, 0]],
+    ['tilted', { n: [0.70710678, 0.70710678, 0], d: 10 }, [7.0710678, 7.0710678, 0], [-0.70710678, 0.70710678, 0], [0, 0, 1]],
+  ];
+  for (const [name, p, o, x, y] of rows) {
+    const f = canonicalFrame(p.n, p.d);
+    near(f.o, o, 1e-6, name + ' o'); near(f.x, x, 1e-6, name + ' x'); near(f.y, y, 1e-6, name + ' y');
+  }
+  const f = canonicalFrame([1, 2, 3], 4);
+  near(toLocal(f, toWorld(f, [3, 4], 5)), [3, 4, 5], 1e-12);
+  near(V.dot(f.x, f.n), 0, 1e-12); near(V.cross(f.n, f.x), f.y, 1e-12); near(V.len(f.n), 1, 1e-12);
+  near(V.dot(toWorld(f, [0, 0]), f.n), 4, 1e-12);
+  ok(throws(() => basePlane('AB')));
+});
+
+test('tol and protocol', () => {
+  eq(T.WELD, 1e-6); eq(T.weldFor(1), 1e-6); near(T.weldFor(5000), 5e-6, 1e-12);
+  eq(PROTOCOL, 1); eq(ROOT_KEY, '0');
+  const e = new FeatureError('blend-failed', 'no', { culprits: ['k1'] });
+  ok(e instanceof Error); eq(e.code, 'blend-failed'); eq(e.data.culprits, ['k1']);
+});
+
+test('fixtures: the plate sketch', () => {
+  const s = plateSketch();
+  eq(s.points.map(p => p.id), ['p1', 'p2', 'p4', 'p5', 'p7', 'p8', 'p10', 'p11']);
+  eq(s.entities.map(e => e.id), ['e3', 'e6', 'e9', 'e12']);
+  eq(s.constraints.map(c => c.id), ['c13', 'c14', 'c15', 'c16', 'c17', 'c18', 'c19', 'c20', 'c21', 'c22', 'c23']);
+  eq(s.seq, 23);
+  eq(s.constraints[0], { id: 'c13', type: 'coincident', refs: ['p2', 'p4'] });
+  eq(s.constraints[3], { id: 'c16', type: 'coincident', refs: ['p11', 'p1'] });
+  eq(s.constraints[8], { id: 'c21', type: 'coincident', refs: ['p1', 'origin'] });
+  eq(at(s, 'p5'), [60, 40]); eq(at(s, 'origin'), [0, 0]);
+  const t = sk(); const c = circle(t, 45, 20, 4); const a = arc(t, 0, 0, 10, 0, 0, 10); const p = point(t, 1, 2); line(t, 0, 0, 1, 1, { construction: true });
+  eq(c, { id: 'e2', c: 'p1' }); eq(a, { id: 'e6', c: 'p3', a: 'p4', b: 'p5' }); eq(p, { id: 'e8', p: 'p7' });
+  eq(byId(t, 'e11').construction, true);
+  eq(rect(sk(), 60, 40, 0, 0).map(l => l.id), ['e3', 'e6', 'e9', 'e12']);
+});
+
+test('occ: loads, scope, hash, list, error text', async () => {
+  const { OC, r } = await loadKernel();
+  ok(kernel().OC === OC);
+  ok(heapBytes() > 1e6);
+  const s = scope();
+  try {
+    const box = s(r.makeBaseBox(60, 40, 10));
+    const faces = box.faces; faces.forEach(f => s(f));
+    eq(faces.length, 6);
+    eq(hashOf(faces[0].wrapped), faces[0].hashCode);
+    const cyl = s(r.makeCylinder(4, 30, [0, 0, -10], [0, 0, 1]));
+    const B = s(new OC.BRepAlgoAPI_Cut(box.wrapped, cyl.wrapped));
+    B.Build();
+    ok(!B.HasErrors());
+    let modified = 0, untouched = 0;
+    for (const f of faces) {
+      const m = listToArray(B.Modified(f.wrapped));
+      if (m.length) modified++; else if (!B.IsDeleted(f.wrapped)) untouched++;
+      m.forEach(x => x.delete());
+    }
+    eq([modified, untouched], [2, 4]);          // top and bottom are cut through; the four sides are not touched
+    let err = null;
+    try { box.fillet(() => 25); } catch (e) { err = e; }
+    ok(err, 'a fillet of 25 on a 10 mm plate must fail');
+    ok(/OCCT|not done|NotDone/i.test(errorText(err)), errorText(err));
+    ok(!isFatal(err)); ok(isFatal(new RangeError('x'))); ok(isFatal(new WebAssembly.RuntimeError('x')));
+    window.__notes = { errorText: errorText(err) };
+  } finally { s.end(); s.end(); }
+});
+
+run();
+</script>
