@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CoreCAD kernel spike</title>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.187.0/examples/jsm/"
+} }
+</script>
+<canvas id="c" width="600" height="400"></canvas>
+<script type="module">
+import { test, ok, run } from './harness.js';
+
+let result;
+test('the kernel answers from a worker', async () => {
+  result = await new Promise((done, fail) => {
+    const w = new Worker('./spike-worker.js', { type: 'module' });
+    w.onmessage = e => done(e.data);
+    w.onerror = e => fail(new Error('worker: ' + (e.message || 'failed to load')));
+  });
+  window.__spike = result;
+  ok(!result.fatal, result.fatal);
+  const bad = result.steps.filter(s => !s.ok);
+  ok(!bad.length, () => bad.map(s => `${s.name}: ${s.error}`).join(' || '));
+});
+
+test('three.js loads through an import map and draws', async () => {
+  const THREE = await import('three');
+  const { OrbitControls } = await import('three/addons/controls/OrbitControls.js');
+  const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true, preserveDrawingBuffer: true });
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x202428);
+  const camera = new THREE.PerspectiveCamera(40, 600 / 400, 0.1, 1000);
+  camera.position.set(60, -80, 70); camera.up.set(0, 0, 1); camera.lookAt(30, 20, 5);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 2.5));
+  const d = new THREE.DirectionalLight(0xffffff, 1.5); d.position.set(50, -60, 100); scene.add(d);
+  ok(OrbitControls, 'no OrbitControls');
+  window.__three = { revision: THREE.REVISION };
+  ok(Number(THREE.REVISION) >= 160, 'three revision ' + THREE.REVISION);
+  renderer.render(scene, camera);
+  window.__render = { THREE, renderer, scene, camera };
+});
+run();
+</script>
