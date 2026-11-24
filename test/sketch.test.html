@@ -1,0 +1,42 @@
+<!doctype html><meta charset="utf-8"><title>Sketch model and public solver</title>
+<script type="module">
+import { test, eq, ok, near, run } from './harness.js';
+import { sk, rect, con, circle, line, arc, point, at, plateSketch } from './fixtures/sketches.js';
+import { analyseSketch, solveSketch, tryAddConstraint, setDimensions, beginDrag } from '../src/sketch/solver.js';
+import { validateSketch } from '../src/sketch/catalogue.js';
+import { parseNumber } from '../src/core/num.js';
+const must = r => { ok(r.ok, r.message); return r.sketch; };
+test('public plate format solves, colours, and edits dimensions', () => {
+  let s = plateSketch(); eq(validateSketch(s), []); eq(analyseSketch(s).dof, 0);
+  ok(s.entities.every(e => analyseSketch(s).states[e.id] === 'full'));
+  const width = s.constraints.find(c => c.value === 60);
+  s = must(setDimensions(s, [{ id: width.id, value: 80 }])); near(at(s, s.entities[1].a), [80,0]);
+  const r = tryAddConstraint(s, { type: 'distance', refs: [s.entities[2].b, s.entities[2].a], mode: 'h', dir: 1, value: 80 });
+  eq(r.reason, 'redundant'); ok(r.sketch === s); ok(r.blame.length > 0);
+  eq(tryAddConstraint(s, { type: 'distance', refs: [s.entities[2].b, s.entities[2].a], mode: 'h', dir: 1, value: 90 }).reason, 'conflict');
+});
+test('point ownership, bare entity DOF, invalid references', () => {
+  const s = sk(); point(s, 1, 2); line(s, 0,0,10,5); circle(s, 20,10,5); arc(s, 40,0,50,0,40,10);
+  eq(analyseSketch(s).dof, 14);
+  eq(tryAddConstraint(s, { type: 'tangent', refs: ['e3', 'missing'] }).reason, 'invalid');
+});
+test('horizontal point drag and undo-safe input, fixed geometry stays', () => {
+  let s = sk(); const l = line(s, 10,10,50,10); con(s,'horizontal',[l.id]); con(s,'fix',[l.a]);
+  let d = beginDrag(s, { id: l.b, at: [50,10], part:'point' });
+  d.move([70,30]); const moved = d.end(); near(at(moved,l.b),[70,10],1e-4); near(at(s,l.b),[50,10]);
+  s = must(tryAddConstraint(s, { type:'fix', refs:[l.id] })); d = beginDrag(s, { id:l.b, at:[50,10], part:'point' });
+  ok(d.locked); d.move([70,30]); eq(d.end(),null);
+});
+test('circle dimensions, tangency, and concentric circles', () => {
+  let s = sk(); const a = circle(s,0,0,10), b = circle(s,30,5,8), l = line(s,-20,14,20,12);
+  con(s,'coincident',[a.c,'origin']); con(s,'radius',[a.id],{value:10});
+  s = must(tryAddConstraint(s,{type:'tangent',refs:[l.id,a.id],side:-1}));
+  s = must(tryAddConstraint(s,{type:'tangent',refs:[a.id,b.id],inside:false}));
+  const c = s.entities.find(e=>e.id===b.id); near(Math.hypot(...at(s,b.c))-c.r,10,1e-6);
+});
+test('number expressions are finite arithmetic, never JavaScript', () => {
+  for (const [text,v] of [['60/2+5',35],['1,5*2',3],['2*(3+4)',14],['-3 mm',-3],['45°',45]]) eq(parseNumber(text),v);
+  for (const text of ['', '1/0', '2+', '(3', 'window', '1;alert(1)', 'Infinity']) eq(parseNumber(text),null);
+});
+run();
+</script>

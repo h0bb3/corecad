@@ -1,0 +1,50 @@
+<!doctype html><meta charset="utf-8"><title>Analytic planar profiles</title>
+<script type="module">
+import { test, eq, ok, near, run } from './harness.js';
+import { sk, rect, circle, line, arc } from './fixtures/sketches.js';
+import { arrangement, findRegions, openEnds, pointInRegion, loopArea, profileRefFrom, resolveProfile } from '../src/sketch/profiles.js';
+function verify(s, areas) {
+  const a = arrangement(s), r = a.regions;
+  near(r.map(r=>r.area).sort((a,b)=>a-b), areas.sort((a,b)=>a-b),1e-5);
+  eq(r.length, a.graph.edges-a.graph.vertices+a.graph.components,'Euler');
+  for(const region of r) {
+    ok(pointInRegion(region.inside,region),'interior point'); ok(loopArea(region.outer)>0);
+    ok(region.holes.every(h=>loopArea(h)<0));
+    for(const loop of [region.outer,...region.holes]) if(loop.length>1) loop.forEach((p,i)=>eq(p.b,loop[(i+1)%loop.length].a,'exact welded joint'));
+    ok(r.every(other=>other===region || !pointInRegion(region.inside,other)),'regions disjoint');
+  }
+  return r;
+}
+test('rectangle, circular hole, construction and nesting',()=> {
+  const s=sk(); rect(s,0,0,60,40); verify(s,[2400]); circle(s,15,20,4); verify(s,[2400-16*Math.PI,16*Math.PI]);
+  const t=sk(); rect(t,0,0,100,100); circle(t,50,50,30); circle(t,50,50,10); verify(t,[10000-900*Math.PI,800*Math.PI,100*Math.PI]);
+  circle(t,20,20,3,{construction:true}); verify(t,[10000-900*Math.PI,800*Math.PI,100*Math.PI]);
+});
+test('intersecting circles, profile side identity after changing centres',()=> {
+  const s=sk(); circle(s,0,0,10); const c=circle(s,10,0,10);
+  const lens=200*Math.PI/3-50*Math.sqrt(3), r=verify(s,[lens,100*Math.PI-lens,100*Math.PI-lens]);
+  const refs=r.map(profileRefFrom); s.points.find(p=>p.id===c.c).x=12;
+  for(let i=0;i<r.length;i++) eq(resolveProfile(findRegions(s),refs[i]).region.sides,r[i].sides);
+});
+test('partitions, overlapping rectangles, dangling lines and bridges',()=> {
+  let s=sk(); rect(s,0,0,60,40); line(s,20,0,20,40); verify(s,[800,1600]);
+  s=sk(); rect(s,0,0,40,40); rect(s,20,20,60,60); verify(s,[1200,400,1200]);
+  s=sk(); rect(s,0,0,60,40); line(s,10,10,20,20); verify(s,[2400]); eq(openEnds(s).length,2);
+  s=sk(); rect(s,0,0,60,40); rect(s,20,10,40,30); line(s,0,20,20,20); verify(s,[2000,400]);
+});
+test('touching circles, exact arcs, translated and welded outlines',()=> {
+  let s=sk(); rect(s,0,0,60,40); circle(s,30,10,10); verify(s,[2400-100*Math.PI,100*Math.PI]);
+  s=sk(); line(s,0,10,30,10); arc(s,30,0,30,-10,30,10); line(s,30,-10,0,-10); arc(s,0,0,0,10,0,-10); verify(s,[600+100*Math.PI]);
+  s=sk(); rect(s,10000,10000,10060,10040); circle(s,10015,10020,4); verify(s,[2400-16*Math.PI,16*Math.PI]);
+  s=sk(); rect(s,0,0,60,40); s.points[0].x+=1e-8; verify(s,[2400]); s.points[0].x+=1e-3; verify(s,[]); eq(openEnds(s).length,2);
+});
+test('deterministic random rectangle and circle arrangements conserve Euler count',()=> {
+  let seed=61542; const rnd=()=>((seed=(1664525*seed+1013904223)>>>0)/2**32);
+  for(let k=0;k<60;k++) {
+    const s=sk(); for(let j=0;j<7;j++) { const x=Math.round(rnd()*50),y=Math.round(rnd()*50),r=5+Math.round(rnd()*12); if(j%2) circle(s,x,y,r); else rect(s,x,y,x+r,y+r); }
+    const a=arrangement(s); eq(a.regions.length,a.graph.edges-a.graph.vertices+a.graph.components);
+    for(const r of a.regions) { ok(pointInRegion(r.inside,r)); ok(a.regions.every(o=>o===r || !pointInRegion(r.inside,o))); }
+  }
+});
+run();
+</script>

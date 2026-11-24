@@ -13,7 +13,7 @@ const tests = [];
 export function test(name, fn) { tests.push([name, fn]); }
 
 const show = v => {
-  try { return typeof v === 'string' ? JSON.stringify(v) : JSON.stringify(v, (k, x) => (typeof x === 'number' && !Number.isFinite(x) ? String(x) : ArrayBuffer.isView(x) ? [...x] : x)); }
+  try { return (typeof v === 'string' ? JSON.stringify(v) : JSON.stringify(v, (k, x) => (typeof x === 'number' && !Number.isFinite(x) ? String(x) : ArrayBuffer.isView(x) ? [...x] : x))) ?? String(v); }
   catch { return String(v); }
 };
 
@@ -59,6 +59,7 @@ export async function run() {
       lines.push(`FAIL  ${name}: ${e?.message ?? e}`);
       const where = String(e?.stack ?? '').split('\n').find(l => /\.js:\d+/.test(l) && !l.includes('harness.js'));
       if (where) lines.push(`      ${where.trim()}`);
+      else if (e?.stack) lines.push(String(e.stack).split('\n').slice(1, 4).join('\n'));
     }
     out.textContent = lines.join('\n');
   }

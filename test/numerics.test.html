@@ -1,0 +1,405 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>solver prototype</title>
+<script type="module">
+import { test, eq, ok, near, run } from './harness.js';
+import { createSketch, addPoint, addLine, addCircle, addArc, addConstraint, addRect, ent, pt, clone } from './fixtures/numerics-model.js';
+import { buildSystem, lm, analyse, solveSketch, analyseSketch, tryAddConstraint, setDimensions, beginDrag } from '../src/sketch/solver/numerics.js';
+
+const notes = window.__notes = {};
+const note = (k, v) => { notes[k] = v; };
+const r4 = v => Array.isArray(v) ? v.map(r4) : +v.toFixed(4);
+const must = r => { ok(r.ok, () => 'rejected: ' + r.reason + ' ' + JSON.stringify(r.blame)); return r.sketch; };
+const add = (s, c) => { const r = tryAddConstraint(s, c); ok(r.ok, () => `constraint ${c.type} rejected: ${r.reason} ${JSON.stringify(r.blame)}`); return [r.sketch, r.id]; };
+const P = (s, id) => r4(pt(s, id));
+
+// ---- gradients against central differences ----
+test('every gradient agrees with central differences', () => {
+  let s = createSketch();
+  const a = addLine(s, 1, 2, 31, 9), b = addLine(s, 4, -7, 22, 30), c = addCircle(s, 12, 5, 7), d = addCircle(s, -9, 14, 4);
+  const arc = addArc(s, 40, 10, 50, 10, 40, 20), arc2 = addArc(s, 60, -10, 65, -10, 60, -5), p = addPoint(s, 17, 23);
+  const cs = [
+    { type: 'pointOnLine', p, l: a.id }, { type: 'pointOnCircle', p, c: c.id }, { type: 'pointOnCircle', p, c: arc.id },
+    { type: 'parallel', a: a.id, b: b.id }, { type: 'perpendicular', a: a.id, b: b.id }, { type: 'angle', a: a.id, b: b.id, value: 33 },
+    { type: 'angle', a: a.id, b: b.id, value: 133, flipA: true }, { type: 'equal', a: a.id, b: b.id }, { type: 'equal', a: c.id, b: arc.id },
+    { type: 'equal', a: arc.id, b: arc2.id }, { type: 'midpoint', p, l: a.id }, { type: 'distance', a: a.p1, b: b.p2, mode: 'aligned', value: 12 },
+    { type: 'distancePL', p, l: b.id, side: 1, value: 3 }, { type: 'distancePL', p, l: b.id, side: -1, value: 3 }, { type: 'radius', c: arc.id, value: 9 }, { type: 'diameter', c: arc.id, value: 9 },
+    { type: 'tangent', a: a.id, b: c.id, side: 1 }, { type: 'tangent', a: a.id, b: arc.id, side: -1 }, { type: 'tangent', a: c.id, b: d.id, mode: 'ext' },
+    { type: 'tangent', a: c.id, b: d.id, mode: 'int' }, { type: 'tangent', a: c.id, b: arc.id, mode: 'ext' }, { type: 'tangent', a: arc.id, b: arc2.id, mode: 'int' },
+  ];
+  for (const c0 of cs) addConstraint(s, c0);
+  // the two "at a shared point" forms
+  const t = addLine(s, 50, 10, 55, 31); addConstraint(s, { type: 'coincident', a: t.p1, b: arc.s }); addConstraint(s, { type: 'tangent', a: t.id, b: arc.id, side: 1 });
+  const arc3 = addArc(s, 30, 30, 40, 20, 20, 40); addConstraint(s, { type: 'coincident', a: arc3.s, b: arc.e }); addConstraint(s, { type: 'tangent', a: arc.id, b: arc3.id, mode: 'ext' });
+  const sys = buildSystem(s), X = sys.X0.slice(), f0 = new Float64Array(sys.m), f1 = new Float64Array(sys.m), f2 = new Float64Array(sys.m);
+  sys.eval(X, f0, true);
+  const J = sys.eqs.map(q => { const row = new Float64Array(sys.n); q.cols.forEach((k, i) => { row[k] = q.vals[i]; }); return row; });
+  let worst = 0, where = '';
+  for (let k = 0; k < sys.n; k++) {
+    const h = 1e-6, x = X[k];
+    X[k] = x + h; sys.eval(X, f1, false); X[k] = x - h; sys.eval(X, f2, false); X[k] = x;
+    for (let i = 0; i < sys.m; i++) { const fd = (f1[i] - f2[i]) / (2 * h), e = Math.abs(fd - J[i][k]); if (e > worst) { worst = e; where = sys.eqs[i].cid + ' var ' + k + ' fd ' + fd + ' an ' + J[i][k]; } }
+  }
+  note('gradient check', { equations: sys.m, variables: sys.n, worst, where });
+  ok(worst < 1e-7, where);
+});
+
+// ---- counting ----
+test('degrees of freedom of the bare entities', () => {
+  let s = createSketch(); eq(analyseSketch(s).dof, 0);
+  addPoint(s, 3, 4); eq(analyseSketch(s).dof, 2);
+  addLine(s, 0, 0, 10, 5); eq(analyseSketch(s).dof, 6);
+  addCircle(s, 5, 5, 3); eq(analyseSketch(s).dof, 9);
+  addArc(s, 0, 0, 10, 0, 0, 10); eq(analyseSketch(s).dof, 14);
+});
+
+test('rectangle: 4 unknowns, no equation, 4 DOF; tied to the origin 2; dimensioned 0', () => {
+  let s = createSketch();
+  const L = addRect(s, 3, 2, 58, 37);
+  let a = analyseSketch(s); eq([a.n, a.m, a.dof], [4, 0, 4]);
+  let id;
+  [s] = add(s, { type: 'coincident', a: L[0].p1, b: 'origin' });
+  a = analyseSketch(s); eq([a.n, a.m, a.dof], [2, 0, 2]);
+  note('rect after origin', [P(s, L[0].p1), P(s, L[0].p2), P(s, L[2].p1), P(s, L[2].p2)]);
+  [s] = add(s, { type: 'distance', a: L[0].p1, b: L[0].p2, mode: 'h', dir: 1, value: 60 });
+  [s, id] = add(s, { type: 'distance', a: L[1].p1, b: L[1].p2, mode: 'v', dir: 1, value: 40 });
+  a = analyseSketch(s); eq([a.n, a.m, a.dof], [0, 0, 0]);
+  near([pt(s, L[0].p1), pt(s, L[0].p2), pt(s, L[2].p1), pt(s, L[2].p2)], [[0, 0], [60, 0], [60, 40], [0, 40]], 1e-9);
+  ok(Object.values(a.states).every(v => v === 'full'));
+  const r = setDimensions(s, [[id, 25]]); ok(r.ok);
+  near(pt(r.sketch, L[2].p1), [60, 25], 1e-9);
+  // redundant and conflicting dimensions on the top side
+  let t = tryAddConstraint(s, { type: 'distance', a: L[2].p2, b: L[2].p1, mode: 'h', dir: 1, value: 60 });
+  note('redundant top dim', t); eq([t.ok, t.reason], [false, 'redundant']);
+  t = tryAddConstraint(s, { type: 'distance', a: L[2].p2, b: L[2].p1, mode: 'h', dir: 1, value: 70 });
+  note('conflicting top dim', t); eq([t.ok, t.reason], [false, 'conflict']);
+  t = tryAddConstraint(s, { type: 'vertical', l: L[0].id });
+  note('vertical on the dimensioned bottom', t); eq([t.ok, t.reason], [false, 'conflict']);
+  const bare = createSketch(), Lb = addRect(bare, 0, 0, 10, 10);
+  t = tryAddConstraint(bare, { type: 'vertical', l: Lb[0].id });
+  note('vertical on a horizontal line', t); eq([t.ok, t.reason], [false, 'degenerate']);
+  t = tryAddConstraint(bare, { type: 'horizontal', l: Lb[0].id });
+  note('horizontal twice', t); eq([t.ok, t.reason], [false, 'redundant']);
+  t = tryAddConstraint(bare, { type: 'coincident', a: Lb[0].p1, b: Lb[2].p1 });
+  note('coincident opposite corners', t); eq(t.ok, false);
+  t = tryAddConstraint(s, { type: 'parallel', a: L[0].id, b: L[2].id });
+  note('parallel on the rectangle', t); eq([t.ok, t.reason], [false, 'redundant']);
+  t = tryAddConstraint(s, { type: 'equal', a: L[0].id, b: L[2].id });
+  note('equal on the rectangle', t); eq([t.ok, t.reason], [false, 'redundant']);
+  t = tryAddConstraint(s, { type: 'distance', a: L[0].p1, b: L[2].p1, mode: 'aligned', value: 80 });
+  note('diagonal 80 on a 60 x 40', t); eq(t.ok, false);
+});
+
+test('a free rectangle grows on both sides when its width changes (least movement)', () => {
+  let s = createSketch(), id;
+  const L = addRect(s, 0, 0, 60, 40);
+  [s, id] = add(s, { type: 'distance', a: L[0].p1, b: L[0].p2, mode: 'h', dir: 1, value: 60 });
+  eq(analyseSketch(s).dof, 3);
+  const r = setDimensions(s, [[id, 80]]); ok(r.ok);
+  note('free rect 60 -> 80', [P(r.sketch, L[0].p1), P(r.sketch, L[0].p2), P(r.sketch, L[2].p1), P(r.sketch, L[2].p2), r.steps]);
+  near([pt(r.sketch, L[0].p1), pt(r.sketch, L[2].p1)], [[-10, 0], [70, 40]], 1e-9);
+});
+
+test('3-4-5 triangle from a rough sketch', () => {
+  let s = createSketch();
+  const a = addLine(s, 1, 1, 28, -2), b = addLine(s, 28, -2, 27, 35), c = addLine(s, 27, 35, 1, 1);
+  for (const [x, y] of [[a.p2, b.p1], [b.p2, c.p1], [c.p2, a.p1], [a.p1, 'origin']]) [s] = add(s, { type: 'coincident', a: x, b: y });
+  eq(analyseSketch(s).dof, 4);
+  [s] = add(s, { type: 'horizontal', l: a.id });
+  let k1, k2, k3;
+  [s, k1] = add(s, { type: 'distance', a: a.p1, b: a.p2, mode: 'aligned', value: 30 });
+  [s, k2] = add(s, { type: 'distance', a: b.p1, b: b.p2, mode: 'aligned', value: 40 });
+  [s, k3] = add(s, { type: 'distance', a: c.p1, b: c.p2, mode: 'aligned', value: 50 });
+  const an = analyseSketch(s);
+  note('triangle', { B: P(s, a.p2), C: P(s, b.p2), dof: an.dof, n: an.n, m: an.m });
+  near([pt(s, a.p2), pt(s, b.p2)], [[30, 0], [30, 40]], 1e-8); eq(an.dof, 0);
+  // impossible: 30 + 40 < 80
+  let r = setDimensions(s, [[k3, 80]]); note('triangle 50 -> 80', r); eq(r.ok, false);
+  // possible and large: stays on the same side
+  r = setDimensions(s, [[k3, 69]]); ok(r.ok); note('triangle 50 -> 69', { C: P(r.sketch, b.p2), steps: r.steps });
+  ok(pt(r.sketch, b.p2)[1] > 0, 'flipped below the base');
+  r = setDimensions(s, [[k1, 15]]); ok(r.ok); note('triangle base 30 -> 15', { B: P(r.sketch, a.p2), C: P(r.sketch, b.p2), steps: r.steps });
+  near(pt(r.sketch, b.p2), [(225 + 2500 - 1600) / 30, Math.sqrt(2500 - ((225 + 2500 - 1600) / 30) ** 2)], 1e-7);
+  r = setDimensions(s, [[k1, 5]]); note('triangle base 30 -> 5 (impossible)', r); eq(r.ok, false);
+  r = setDimensions(s, [[k1, 30], [k2, 400], [k3, 420]]); ok(r.ok); note('triangle x10 on two sides', { C: P(r.sketch, b.p2), steps: r.steps }); ok(pt(r.sketch, b.p2)[1] > 0);
+  ok(pt(r.sketch, b.p2)[1] > 0, 'flipped below the base');
+  // a 4th, consistent, dimension is redundant; an angle that disagrees is a conflict
+  let t = tryAddConstraint(s, { type: 'angle', a: a.id, b: b.id, value: 90 });
+  note('angle 90 on the 3-4-5', t); eq([t.ok, t.reason], [false, 'redundant']);
+  t = tryAddConstraint(s, { type: 'perpendicular', a: a.id, b: b.id });
+  note('perpendicular on the 3-4-5', t); eq([t.ok, t.reason], [false, 'redundant']);
+  t = tryAddConstraint(s, { type: 'angle', a: a.id, b: b.id, value: 80 });
+  note('angle 80 on the 3-4-5', t); eq([t.ok, t.reason], [false, 'conflict']);
+});
+
+test('perpendicular, parallel, equal, midpoint from far away', () => {
+  let s = createSketch();
+  const a = addLine(s, 0, 0, 10, 0), b = addLine(s, 0, 0, 7, 7);
+  [s] = add(s, { type: 'fix', e: a.id });
+  [s] = add(s, { type: 'coincident', a: b.p1, b: a.p1 });
+  let [t] = add(s, { type: 'perpendicular', a: a.id, b: b.id });
+  note('perpendicular from 45', P(t, b.p2)); near(pt(t, b.p2)[0], 0, 1e-8); ok(pt(t, b.p2)[1] > 5);
+  [t] = add(s, { type: 'parallel', a: a.id, b: b.id });
+  note('parallel from 45', P(t, b.p2)); near(pt(t, b.p2)[1], 0, 1e-8); ok(pt(t, b.p2)[0] > 5);
+  // exactly perpendicular lines made parallel: the residual has a jump there, and must still solve
+  let s2 = createSketch(); const c = addLine(s2, 0, 0, 10, 0), d = addLine(s2, 5, 0, 5, 8);
+  [s2] = add(s2, { type: 'fix', e: c.id });
+  [t] = add(s2, { type: 'parallel', a: c.id, b: d.id });
+  note('parallel from exactly 90', [P(t, d.p1), P(t, d.p2)]); near(pt(t, d.p1)[1], pt(t, d.p2)[1], 1e-8);
+  [t] = add(s, { type: 'equal', a: a.id, b: b.id });
+  note('equal', P(t, b.p2)); near(Math.hypot(...pt(t, b.p2)), 10, 1e-8); near(pt(t, b.p2)[0], pt(t, b.p2)[1], 1e-8);
+  const m = addPoint(s, 3, 4);
+  [t] = add(s, { type: 'midpoint', p: m, l: a.id });
+  near(pt(t, m), [5, 0], 1e-9);
+  [t] = add(s, { type: 'midpoint', p: m, l: b.id });
+  note('midpoint of the free line', [P(t, m), P(t, b.p2)]);
+  near(pt(t, m), [pt(t, b.p2)[0] / 2, pt(t, b.p2)[1] / 2], 1e-9);
+});
+
+test('angle dimension: directed, no supplement, survives large changes', () => {
+  let s = createSketch(), k;
+  const a = addLine(s, 0, 0, 20, 0), b = addLine(s, 0, 0, 14, 14);
+  [s] = add(s, { type: 'coincident', a: a.p1, b: 'origin' }); [s] = add(s, { type: 'horizontal', l: a.id });
+  [s] = add(s, { type: 'coincident', a: b.p1, b: 'origin' });
+  [s, k] = add(s, { type: 'angle', a: a.id, b: b.id, value: 45 });
+  eq(analyseSketch(s).dof, 2);
+  const out = {};
+  for (const v of [60, 120, 170, 10, 200, 359]) {
+    const r = setDimensions(s, [[k, v]]); ok(r.ok, 'angle ' + v);
+    const q = pt(r.sketch, b.p2), got = (Math.atan2(q[1], q[0]) * 180 / Math.PI + 360) % 360;
+    out[v] = [r4(q), r4(Math.hypot(...q)), r.steps]; near(got, v, 1e-7);
+  }
+  note('angle sweep', out);
+});
+
+test('tangent: line and circle, the side is kept; circles outside and inside', () => {
+  let s = createSketch(), kr;
+  const c = addCircle(s, 0, 0, 10), l = addLine(s, -20, 14, 20, 12);
+  [s] = add(s, { type: 'coincident', a: c.c, b: 'origin' }); [s, kr] = add(s, { type: 'radius', c: c.id, value: 10 });
+  let [t] = add(s, { type: 'tangent', a: l.id, b: c.id, side: -1 });
+  const d = (q, L) => { const a = pt(q, L.p1), b = pt(q, L.p2); return ((b[0] - a[0]) * (0 - a[1]) - (b[1] - a[1]) * (0 - a[0])) / Math.hypot(b[0] - a[0], b[1] - a[1]); };
+  note('tangent line', { p1: P(t, l.p1), p2: P(t, l.p2), signedDistance: r4(d(t, l)), dof: analyseSketch(t).dof });
+  near(d(t, l), -10, 1e-8); eq(analyseSketch(t).dof, 3);
+  const r = setDimensions(t, [[kr, 30]]); ok(r.ok); near(d(r.sketch, l), -30, 1e-8);
+  note('tangent line after radius 30', { p1: P(r.sketch, l.p1), p2: P(r.sketch, l.p2) });
+  const c2 = addCircle(s, 30, 5, 8);
+  let [u] = add(s, { type: 'tangent', a: c.id, b: c2.id, mode: 'ext' });
+  note('external', { centre: P(u, c2.c), r: r4(ent(u, c2.id).r) });
+  near(Math.hypot(...pt(u, c2.c)) - ent(u, c2.id).r, 10, 1e-8);
+  const c3 = addCircle(s, 3, 1, 4);
+  [u] = add(s, { type: 'tangent', a: c.id, b: c3.id, mode: 'int' });
+  note('internal', { centre: P(u, c3.c), r: r4(ent(u, c3.id).r) });
+  near(Math.hypot(...pt(u, c3.c)) + ent(u, c3.id).r, 10, 1e-8);
+});
+
+test('rounded corner: tangent at a shared end point is regular (no false redundancy)', () => {
+  let s = createSketch();
+  // an L of two lines with a corner arc drawn roughly
+  const a = addLine(s, 0, 0, 39, 0), arc = addArc(s, 41, 9, 40, -1, 51, 11), b = addLine(s, 50, 10, 50, 40);
+  [s] = add(s, { type: 'coincident', a: a.p1, b: 'origin' }); [s] = add(s, { type: 'horizontal', l: a.id }); [s] = add(s, { type: 'vertical', l: b.id });
+  [s] = add(s, { type: 'coincident', a: a.p2, b: arc.s }); [s] = add(s, { type: 'coincident', a: arc.e, b: b.p1 });
+  [s] = add(s, { type: 'tangent', a: a.id, b: arc.id, side: 1 }); [s] = add(s, { type: 'tangent', a: b.id, b: arc.id, side: 1 });
+  let an = analyseSketch(s); note('corner before dims', { dof: an.dof, n: an.n, m: an.m, c: P(s, arc.c), s: P(s, arc.s), e: P(s, arc.e) });
+  let kr;
+  [s, kr] = add(s, { type: 'radius', c: arc.id, value: 10 });
+  [s] = add(s, { type: 'distance', a: a.p1, b: b.p1, mode: 'h', dir: 1, value: 50 });
+  [s] = add(s, { type: 'distance', a: a.p1, b: b.p2, mode: 'v', dir: 1, value: 40 });
+  an = analyseSketch(s);
+  note('corner', { dof: an.dof, n: an.n, m: an.m, c: P(s, arc.c), s: P(s, arc.s), e: P(s, arc.e), dependent: an.dependent });
+  eq(an.dof, 0); near([pt(s, arc.c), pt(s, arc.s), pt(s, arc.e)], [[40, 10], [40, 0], [50, 10]], 1e-8);
+  const r = setDimensions(s, [[kr, 25]]); ok(r.ok);
+  near([pt(r.sketch, arc.c), pt(r.sketch, arc.s), pt(r.sketch, arc.e)], [[25, 25], [25, 0], [50, 25]], 1e-8);
+  // the same sketch with the general tangency equation: the double root shows as a lost rank
+  const g = clone(s); for (const c of g.constraints) if (c.type === 'tangent') c.general = true;
+  const rg = solveSketch(g), ag = rg.ok ? analyse(rg.sys, rg.X) : null;
+  note('corner, general form', { ok: rg.ok, iters: rg.lm?.iters, dof: ag?.dof, dependent: ag?.dependent.map(d => d.id) });
+});
+
+test('slot: two lines and two arcs, fully dimensioned', () => {
+  let s = createSketch();
+  const top = addLine(s, 31, 11, -1, 9), bot = addLine(s, 0, -10, 30, -11);
+  const right = addArc(s, 30, 0, 30, -10, 30, 10), left = addArc(s, 0, 0, 0, 10, 0, -10);
+  for (const [x, y] of [[bot.p2, right.s], [right.e, top.p1], [top.p2, left.s], [left.e, bot.p1]]) [s] = add(s, { type: 'coincident', a: x, b: y });
+  for (const [l, a] of [[bot, right], [top, right], [top, left], [bot, left]]) [s] = add(s, { type: 'tangent', a: l.id, b: a.id, side: 1 });
+  let an = analyseSketch(s); note('slot free', { dof: an.dof, n: an.n, m: an.m });
+  [s] = add(s, { type: 'coincident', a: left.c, b: 'origin' });
+  [s] = add(s, { type: 'horizontal', a: left.c, b: right.c });
+  [s] = add(s, { type: 'distance', a: left.c, b: right.c, mode: 'h', dir: 1, value: 30 });
+  an = analyseSketch(s); note('slot before radius', { dof: an.dof, free: Object.entries(an.states).filter(e => e[1] === 'free').map(e => e[0]) });
+  [s] = add(s, { type: 'radius', c: left.id, value: 10 });
+  an = analyseSketch(s);
+  note('slot', { dof: an.dof, n: an.n, m: an.m, top: [P(s, top.p1), P(s, top.p2)], bot: [P(s, bot.p1), P(s, bot.p2)], rc: P(s, right.c), dep: an.dependent });
+  eq(an.dof, 1);     // the other radius is still free: a tapered slot
+  [s] = add(s, { type: 'equal', a: left.id, b: right.id });
+  an = analyseSketch(s); note('slot equal', { dof: an.dof, top: [P(s, top.p1), P(s, top.p2)], bot: [P(s, bot.p1), P(s, bot.p2)] });
+  eq(an.dof, 0);
+  near([pt(s, top.p1), pt(s, top.p2), pt(s, bot.p1), pt(s, bot.p2)], [[30, 10], [0, 10], [0, -10], [30, -10]], 1e-7);
+  const t = tryAddConstraint(s, { type: 'radius', c: right.id, value: 10 }); note('slot second radius', t); eq(t.reason, 'redundant');
+});
+
+test('plate with a hole: 0 DOF, colours', () => {
+  let s = createSketch();
+  const L = addRect(s, 0, 0, 55, 35), c = addCircle(s, 12, 18, 3);
+  [s] = add(s, { type: 'coincident', a: L[0].p1, b: 'origin' });
+  let an = analyseSketch(s); note('plate states 1', an.states);
+  [s] = add(s, { type: 'distance', a: L[0].p1, b: L[0].p2, mode: 'h', dir: 1, value: 60 });
+  an = analyseSketch(s);
+  eq([an.states[L[1].id], an.states[L[0].id], an.states[L[3].id], an.states[L[2].id], an.states[c.id]], ['free', 'full', 'free', 'free', 'free']);
+  eq([an.states[L[0].p1], an.states[L[0].p2], an.states[L[1].p2]], ['full', 'full', 'free']);
+  [s] = add(s, { type: 'distance', a: L[1].p1, b: L[1].p2, mode: 'v', dir: 1, value: 40 });
+  [s] = add(s, { type: 'distancePL', p: c.c, l: L[3].id, side: 1, value: 15 });
+  an = analyseSketch(s); note('plate, hole from the left side', { centre: P(s, c.c), dof: an.dof });
+  [s] = add(s, { type: 'distancePL', p: c.c, l: L[0].id, side: 1, value: 20 });
+  [s] = add(s, { type: 'diameter', c: c.id, value: 8 });
+  an = analyseSketch(s);
+  note('plate', { centre: P(s, c.c), r: ent(s, c.id).r, dof: an.dof });
+  eq(an.dof, 0); ok(Object.values(an.states).every(v => v === 'full'));
+});
+
+test('redundancy that holds only on the solution: perpendicular, perpendicular, parallel', () => {
+  let s = createSketch();
+  const a = addLine(s, 0, 0, 10, 1), b = addLine(s, 20, 0, 21, 12), c = addLine(s, 0, 20, 12, 22);
+  [s] = add(s, { type: 'perpendicular', a: a.id, b: b.id }); [s] = add(s, { type: 'perpendicular', a: b.id, b: c.id });
+  eq(analyseSketch(s).dof, 10);
+  const t = tryAddConstraint(s, { type: 'parallel', a: a.id, b: c.id }); note('perp perp parallel', t); eq([t.ok, t.reason], [false, 'redundant']);
+});
+
+// ---- dragging ----
+test('drag: a stick pinned at the origin follows on its circle', () => {
+  let s = createSketch();
+  const a = addLine(s, 0, 0, 50, 0);
+  [s] = add(s, { type: 'coincident', a: a.p1, b: 'origin' }); [s] = add(s, { type: 'distance', a: a.p1, b: a.p2, mode: 'aligned', value: 50 });
+  const d = beginDrag(s, { id: a.p2, at: [50, 0] });
+  for (let i = 1; i <= 10; i++) d.move([50 + 5 * i, 10 * i]);
+  const q = pt(d.sketch(), a.p2); note('stick', { end: r4(q), stats: d.stats });
+  near(q, [50 / Math.SQRT2, 50 / Math.SQRT2], 1e-6);
+  const e = beginDrag(s, { id: a.p2, at: [50, 0] }); e.move([-300, 1]);     // one huge jump across the pin
+  note('stick, one jump to the other side', { end: P(e.sketch(), a.p2), stats: e.stats });
+  near(Math.hypot(...pt(e.sketch(), a.p2)), 50, 1e-7);
+});
+
+test('drag: a free stick is pulled along by its end', () => {
+  let s = createSketch();
+  const a = addLine(s, 0, 0, 50, 0);
+  [s] = add(s, { type: 'distance', a: a.p1, b: a.p2, mode: 'aligned', value: 50 });
+  const d = beginDrag(s, { id: a.p2, at: [50, 0] });
+  for (let i = 1; i <= 20; i++) d.move([50, 2 * i]);
+  const t = d.sketch(); note('free stick pulled up 40', { dragged: r4(pt(t, a.p2)), other: r4(pt(t, a.p1)), stats: d.stats });
+  near(pt(t, a.p2), [50, 40], 2e-2); near(Math.hypot(pt(t, a.p2)[0] - pt(t, a.p1)[0], pt(t, a.p2)[1] - pt(t, a.p1)[1]), 50, 1e-8);
+});
+
+test('drag: a rectangle corner, a fully fixed corner, a line body, a circle rim', () => {
+  let s = createSketch();
+  const L = addRect(s, 0, 0, 60, 40);
+  [s] = add(s, { type: 'coincident', a: L[0].p1, b: 'origin' });
+  let d = beginDrag(s, { id: L[1].p2, at: [60, 40] }); d.move([75, 55]); let t = d.sketch();
+  note('rect corner drag', [P(t, L[0].p2), P(t, L[1].p2), P(t, L[2].p2)]);
+  near([pt(t, L[0].p2), pt(t, L[1].p2), pt(t, L[2].p2)], [[75, 0], [75, 55], [0, 55]], 1e-4);
+  d = beginDrag(s, { id: L[1].id, at: [60, 20] }); d.move([70, 33]); t = d.sketch();       // the right side by its body: only x can change
+  near([pt(t, L[1].p1), pt(t, L[1].p2)], [[70, 0], [70, 40]], 1e-4);
+  let s2; [s2] = add(s, { type: 'distance', a: L[0].p1, b: L[0].p2, mode: 'h', dir: 1, value: 60 });
+  d = beginDrag(s2, { id: L[1].p2, at: [60, 40] }); d.move([75, 55]); t = d.sketch();
+  near(pt(t, L[1].p2), [60, 55], 1e-4);
+  const c = addCircle(s, 100, 0, 10);
+  d = beginDrag(s, { id: c.id, at: [110, 0] }); d.move([100, 25]); t = d.sketch();
+  near([ent(t, c.id).r, ...pt(t, c.c)], [25, 100, 0], 1e-4);
+  // a circle tangent to a fixed line: dragging the rim moves the centre so that it stays tangent
+  let s3 = createSketch(); const base = addLine(s3, -50, 0, 50, 0), c3 = addCircle(s3, 0, 10, 10);
+  [s3] = add(s3, { type: 'fix', e: base.id }); [s3] = add(s3, { type: 'tangent', a: base.id, b: c3.id, side: 1 });
+  d = beginDrag(s3, { id: c3.id, at: [0, 20] }); for (let i = 1; i <= 10; i++) d.move([0, 20 + 2 * i]); t = d.sketch();
+  note('tangent circle rim drag', { r: r4(ent(t, c3.id).r), c: P(t, c3.c), stats: d.stats });
+  near(pt(t, c3.c)[1], ent(t, c3.id).r, 1e-8); near(2 * ent(t, c3.id).r, 40, 1e-3);
+});
+
+test('drag: an arc end keeps the arc an arc; the rim changes the radius', () => {
+  let s = createSketch();
+  const a = addArc(s, 0, 0, 10, 0, 0, 10);
+  [s] = add(s, { type: 'coincident', a: a.c, b: 'origin' });
+  let d = beginDrag(s, { id: a.e, at: [0, 10] }); for (let i = 1; i <= 10; i++) d.move([-2 * i, 10 + i]); let t = d.sketch();
+  note('arc end drag', { s: P(t, a.s), e: P(t, a.e), stats: d.stats });
+  near(Math.hypot(...pt(t, a.s)), Math.hypot(...pt(t, a.e)), 1e-8);
+  d = beginDrag(s, { id: a.id, at: [Math.SQRT1_2 * 10, Math.SQRT1_2 * 10] }); d.move([Math.SQRT2 * 10, Math.SQRT2 * 10]); t = d.sketch();
+  note('arc rim drag', { s: P(t, a.s), e: P(t, a.e) });
+  near([pt(t, a.s), pt(t, a.e)], [[20, 0], [0, 20]], 1e-4);
+});
+
+test('drag: four-bar linkage, 300 frames round and round without flipping or drifting off the constraints', () => {
+  let s = createSketch();
+  const g = addLine(s, 0, 0, 100, 0), a = addLine(s, 0, 0, 0, 30), b = addLine(s, 0, 30, 100, 60), c = addLine(s, 100, 60, 100, 0);
+  [s] = add(s, { type: 'fix', e: g.id });
+  for (const [x, y] of [[a.p1, g.p1], [a.p2, b.p1], [b.p2, c.p1], [c.p2, g.p2]]) [s] = add(s, { type: 'coincident', a: x, b: y });
+  for (const [l, v] of [[a, 30], [b, Math.hypot(100, 30)], [c, 60]]) [s] = add(s, { type: 'distance', a: l.p1, b: l.p2, mode: 'aligned', value: v });
+  eq(analyseSketch(s).dof, 1);
+  const d = beginDrag(s, { id: a.p2, at: [0, 30] });
+  const t0 = performance.now();
+  for (let i = 1; i <= 300; i++) { const th = Math.PI / 2 + i * 2 * Math.PI / 100; d.move([40 * Math.cos(th), 40 * Math.sin(th)]); }
+  const ms = performance.now() - t0, t = d.sketch();
+  note('four-bar', { crank: P(t, a.p2), rocker: P(t, b.p2), stats: d.stats, msPerFrame: r4(ms / 300) });
+  near(pt(t, a.p2), [0, 30], 1e-2); near(pt(t, b.p2), [100, 60], 1e-2);
+  // one jump to the far side, without and with small steps
+  const j1 = beginDrag(s, { id: a.p2, at: [0, 30] }); j1.move([0, -40]);
+  const j2 = beginDrag(s, { id: a.p2, at: [0, 30] }, { maxStep: 5 }); let guard = 0; while (!j2.move([0, -40]).arrived && guard++ < 50);
+  note('four-bar jump', { plain: [P(j1.sketch(), a.p2), P(j1.sketch(), b.p2), j1.stats], stepped: [P(j2.sketch(), a.p2), P(j2.sketch(), b.p2), j2.stats] });
+});
+
+// ---- size ----
+function chain(nSeg) {   // a zig-zag of nSeg lines with length dimensions, pinned at the origin
+  let s = createSketch(), prev = 'origin';
+  for (let i = 0; i < nSeg; i++) {
+    const l = addLine(s, i * 10, (i % 2) * 10, (i + 1) * 10, ((i + 1) % 2) * 10);
+    addConstraint(s, { type: 'coincident', a: l.p1, b: prev });
+    addConstraint(s, { type: 'distance', a: l.p1, b: l.p2, mode: 'aligned', value: Math.SQRT2 * 10 });
+    prev = l.p2;
+  }
+  return [s, prev];
+}
+function truss(nPts) {   // a rigid strip of triangles: 2 * nPts - 3 members
+  let s = createSketch(); const pts = [], members = [];
+  for (let i = 0; i < nPts; i++) pts.push([i * 10, (i % 2) * 15]);
+  const bar = (i, j) => { const l = addLine(s, ...pts[i], ...pts[j]); members.push([i, j, l]); addConstraint(s, { type: 'distance', a: l.p1, b: l.p2, mode: 'aligned', value: Math.hypot(pts[i][0] - pts[j][0], pts[i][1] - pts[j][1]) }); return l; };
+  const at = Array.from({ length: nPts }, () => []);
+  for (let i = 0; i + 1 < nPts; i++) { const l = bar(i, i + 1); at[i].push(l.p1); at[i + 1].push(l.p2); }
+  for (let i = 0; i + 2 < nPts; i++) { const l = bar(i, i + 2); at[i].push(l.p1); at[i + 2].push(l.p2); }
+  for (const list of at) for (let i = 1; i < list.length; i++) addConstraint(s, { type: 'coincident', a: list[0], b: list[i] });
+  addConstraint(s, { type: 'coincident', a: at[0][0], b: 'origin' });
+  return [s, at];
+}
+test('size: 200 lines in a chain, dragged by the far end', () => {
+  const [s, end] = chain(200);
+  let t0 = performance.now(); const sys = buildSystem(s); const build = performance.now() - t0;
+  t0 = performance.now(); const an = analyse(sys, sys.X0); const tAn = performance.now() - t0;
+  const d = beginDrag(s, { id: end, at: pt(s, end) });
+  const times = [];
+  for (let i = 1; i <= 60; i++) { t0 = performance.now(); d.move([2000 - i * 3, i * 4]); times.push(performance.now() - t0); }
+  times.sort((a, b) => a - b);
+  const t = d.sketch();
+  note('chain 200', { n: sys.n, m: sys.m, dof: an.dof, buildMs: r4(build), analyseMs: r4(tAn), medianFrameMs: r4(times[30]), worstFrameMs: r4(times[59]), stats: d.stats, end: P(t, end) });
+  ok(d.stats.failed === 0);
+});
+test('size: a rigid truss of 200 members, one member short, dragged', () => {
+  const [s0, at] = truss(102);
+  const s = clone(s0);
+  s.constraints.splice(s.constraints.findIndex(c => c.type === 'distance'), 1);     // remove one length: a mechanism
+  let t0 = performance.now(); const sys = buildSystem(s); const build = performance.now() - t0;
+  t0 = performance.now(); const an = analyse(sys, sys.X0); const tAn = performance.now() - t0;
+  const an0 = analyseSketch(s0);
+  const tip = at[101][0], p0 = pt(s, tip);
+  const d = beginDrag(s, { id: tip, at: p0 });
+  const times = [];
+  for (let i = 1; i <= 60; i++) { t0 = performance.now(); d.move([p0[0] - i * 2, p0[1] + i * 3]); times.push(performance.now() - t0); }
+  times.sort((a, b) => a - b);
+  note('truss 200', { lines: s.entities.filter(e => e.type === 'line').length, n: sys.n, m: sys.m, dof: an.dof, rigidDof: an0.dof, buildMs: r4(build), analyseMs: r4(tAn), medianFrameMs: r4(times[30]), worstFrameMs: r4(times[59]), stats: d.stats });
+});
+test('size: 50 dimensioned rectangles (200 lines) reduce to nothing', () => {
+  let s = createSketch();
+  for (let i = 0; i < 50; i++) {
+    const L = addRect(s, i * 70, 0, i * 70 + 60, 40);
+    addConstraint(s, { type: 'distance', a: L[0].p1, b: L[0].p2, mode: 'h', dir: 1, value: 60 });
+    addConstraint(s, { type: 'distance', a: L[1].p1, b: L[1].p2, mode: 'v', dir: 1, value: 40 });
+    addConstraint(s, { type: 'distance', a: 'origin', b: L[0].p1, mode: 'h', dir: 1, value: i * 70 || 0 });
+  }
+  const t0 = performance.now(); const an = analyseSketch(s); const ms = performance.now() - t0;
+  note('50 rectangles', { n: an.n, m: an.m, dof: an.dof, ms: r4(ms), issues: an.issues.length });
+});
+run();
+</script>
