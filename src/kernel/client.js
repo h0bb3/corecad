@@ -30,7 +30,7 @@ export function createKernel() {
     return new Promise((resolve, reject) => { pending.set(id, { resolve, reject, type }); worker.postMessage({ type, seq: id, ...args, poison: [...poison] }); });
   }
   function restart(skip = false) {
-    worker.terminate(); if (skip && lastProgress?.key) poison.add(lastProgress.key);
+    worker.terminate(); if (skip && lastProgress?.key && pending.has(lastProgress.seq)) poison.add(lastProgress.key);
     for (const p of pending.values()) p.type === 'rebuild' ? p.resolve({ status: 'superseded' }) : p.reject(new Error('The kernel was restarted. Please export again.'));
     pending.clear(); lastProgress = null; spawn(); emit('restart');
   }

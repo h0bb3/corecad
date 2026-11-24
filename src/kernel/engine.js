@@ -50,7 +50,7 @@ export function createEngine(post) {
     lastState = state;
     if (job.purpose === 'commit') pinned = new Set(keys);
     if (exporting) { collect(Math.max(96, job.doc.features.length * 3)); return { state, features: results }; }
-    const out = { status: 'done', seq: job.seq, count, features: results, bodies: state.bodies.map(packBody),
+    const out = { status: 'done', seq: job.seq, tag: job.tag, count, features: results, bodies: state.bodies.map(packBody),
       ...(job.before ? { before: before.bodies.map(packBody) } : {}),
       stats: { recomputed, cached: count - recomputed, ms: performance.now() - start, heap: heapBytes() } };
     if (job.tool && tool) { const mesh = packBody(tool).mesh; out.tool = { positions: mesh.positions, normals: mesh.normals, indices: mesh.indices, op: job.doc.features[count - 1].operation ?? 'cut' }; }

@@ -121,8 +121,11 @@ One screen with Model and Sketch modes, a feature browser, contextual toolbar,
 viewport, floating forms and status line. Every control has hover help, including
 disabled controls and form fields. The model stays usable while the worker builds.
 Faces and edges highlight on hover/selection. Origin planes, standard views, fit,
-orbit, pan and zoom are provided. Sketch mode is orthographic with a registered SVG
-overlay. Middle drag pans; right drag or Shift+middle orbits; wheel zooms.
+orbit, pan and zoom are provided. Sketch mode is orthographic with a registered
+canvas overlay (CSS pixel coordinates; no extra DOM per curve). Middle drag or
+Shift+right drag pans; right drag orbits in model mode and pans in sketch mode;
+wheel zooms at the cursor. Autosave uses localStorage with visible quota failures;
+downloaded `.corecad` files are the durable, portable copy.
 
 Shortcuts: S sketch, L line, R rectangle, C circle, A arc, D dimension, X construction,
 E extrude, H hole (H/V in sketch), F fillet, Shift+F chamfer, F6 fit, Home home view,

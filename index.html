@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+ <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+ <meta name="theme-color" content="#eef3f2"><meta name="description" content="A small parametric CAD workshop in your browser. Sketch, constrain, extrude and export real solids.">
+ <title>CoreCAD — Parametric workshop</title>
+ <link rel="icon" href="./assets/corecad.svg" type="image/svg+xml"><link rel="stylesheet" href="./style.css">
+</head>
+<body>
+ <header class="appbar">
+  <a class="brand" href="./" title="CoreCAD · Parametric workshop"><img src="./assets/corecad.svg" alt="" width="26" height="26"><span>core<span>cad</span></span><small>0.1</small></a>
+  <span class="bar-divider"></span><button id="project-name" class="project-name" data-action="rename-project" title="Rename this project">Untitled</button><span id="save-state" class="save-state">Local project</span>
+  <div class="app-actions"><button data-action="new" title="Start a new project. The current project can be downloaded first.">New</button><button data-action="open" title="Open a .corecad project · Ctrl+O">Open</button><button data-action="save" title="Download the editable .corecad project · Ctrl+S">Save</button><button class="export-button" data-action="export-menu" title="Export visible solids as STL for printing or STEP for CAD">Export <span>↗</span></button><button class="icon-button" data-action="help" title="Keyboard shortcuts and modelling help">?</button></div>
+ </header>
+ <nav class="toolbar" aria-label="Modelling tools"><div class="mode-pill" id="mode-pill">MODEL</div><div id="tools" class="tool-items"></div><div class="toolbar-end"><button class="icon-button" id="undo" data-action="undo" title="Undo · Ctrl+Z">↶</button><button class="icon-button" id="redo" data-action="redo" title="Redo · Ctrl+Y">↷</button></div></nav>
+ <main>
+  <aside class="browser"><div class="browser-heading"><span>PROJECT</span><span class="units-tag" title="All model dimensions are in millimetres">mm</span></div><div id="browser-content"></div><div id="browser-actions"></div><div class="browser-foot"><span class="tiny-mark"></span>PARAMETRIC WORKSHOP</div></aside>
+  <section id="viewport" aria-label="CAD workspace">
+   <div class="viewbar"><button data-view="home" title="Isometric view · Home">Isometric</button><span></span><button data-view="top" title="Look down the Z axis">Top</button><button data-view="front" title="Look along the Y axis">Front</button><button data-view="right" title="Look along the X axis">Right</button><select id="more-views" aria-label="More standard views" title="More standard views"><option value="">More</option><option value="bottom">Bottom</option><option value="back">Back</option><option value="left">Left</option></select><button data-action="fit" title="Fit all geometry in view · F6">Fit</button><button id="projection" data-action="projection" title="Toggle orthographic and perspective projection">Ortho</button></div>
+   <div id="welcome" class="welcome"><div class="eyebrow">FROM AN IDEA TO A PART</div><h1>Make something<br>that fits.</h1><p>Start with a sketch. Add dimensions.<br>Give it depth.</p><div class="plane-choices"><button data-plane="XY" title="Start a sketch on the horizontal XY plane"><b>XY</b><span>Top plane</span></button><button data-plane="XZ" title="Start a sketch on the vertical XZ plane"><b>XZ</b><span>Front plane</span></button><button data-plane="YZ" title="Start a sketch on the vertical YZ plane"><b>YZ</b><span>Right plane</span></button></div><small>Millimetres. Real solids. Yours to keep.</small></div>
+   <div id="context-note" class="context-note"></div><aside id="panel" class="panel" hidden></aside><div id="toast" role="status" class="toast" hidden></div><div id="sketch-numbers" class="sketch-numbers" hidden></div>
+   <div id="view-help" class="view-help">Right drag <b>orbit</b><span>·</span>Middle drag <b>pan</b><span>·</span>Scroll <b>zoom</b></div>
+  </section>
+ </main>
+ <footer class="statusbar"><span id="status-dot" class="status-dot"></span><span id="status">Starting geometry kernel…</span><button id="stop" data-action="stop" title="Stop the active geometry operation and restart its worker" hidden>Stop</button><button id="retry" data-action="retry" title="Reload the kernel and retry stopped operations" hidden>Retry kernel</button><span class="status-spacer"></span><span id="coordinates"></span><span id="metrics"></span><span class="status-mm">mm</span></footer>
+ <input id="file-input" type="file" accept=".corecad,.json" title="Open a CoreCAD project" hidden><div id="modal-root"></div>
+ <noscript>CoreCAD needs JavaScript and a modern browser with WebAssembly and WebGL.</noscript><script type="module" src="./src/app.js"></script>
+</body></html>
