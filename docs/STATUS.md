@@ -236,3 +236,43 @@ between those (round ones by their axis). Dimension labels are placed by
 simple rules and can still crowd on a busy part. The numbers of a sketch are
 drawn in the sketch's plane, which may be under the solid. Overall sizes
 follow the axes of space, not of a turned part. Not tried by a person yet.
+
+## Objects in the slicer, and colours (2026-11-25)
+
+An exported STL arrived in Bambu Studio as one object, because an STL file is
+one mesh: it has no objects in it. Three changes:
+
+- **3MF export.** Every part that is to be seen is an object of its own, with
+  the part's name, where it stands. Meshes are welded into closed surfaces.
+  This is the format to print from.
+- **STL.** With several parts the Export dialog gives a .zip with one STL for
+  each part, named after it; one part is a plain .stl as before. The command
+  keeps one mesh unless `per_part` is asked for.
+- **Colours.** A part can have a colour and single faces a colour of their
+  own: the Colour tool (swatches, any colour, none), the dot beside a part in
+  the list, and `set_color`. They are shown in the view, kept in the project,
+  and written to 3MF (the object's colour, and painted triangles) and to STEP
+  (per part).
+
+Verification: `test/export.test.html` (5 tests: the zip writer against a known
+checksum; welding and the closed-surface check; colours in the document; a 3MF
+from the real kernel read back, with names, colours, closed meshes, volumes,
+boxes and the painted triangles of a plate and of its linked copy; STL for
+each part; STEP names and the colour that was chosen). `python
+tools/e2e_export.py`: colours by mouse and by command, then the exported files
+read with Python's own zip and XML readers (checksums, three named and
+coloured objects, each closed, right volumes and places, painted triangles),
+the STL zip, STEP, the Export dialog, a reload. 104 page tests in all.
+
+**Not verified: any slicer.** None is installed on the machine this was built
+on. How Bambu Studio reads a 3MF that is not its own was taken from its source
+(`bbs_3mf.cpp`: object names, one object for each build item, `basematerials`
+colours on objects and triangles); recent versions ask "Standard 3MF Import
+color" when such a file is opened. Whether an older version shows the colours
+is not known; the objects and their names do not depend on it.
+
+Limits: colours are plain, one for a part or a face; no textures, no
+transparency. A part with several bodies is one object. In STEP only the
+part's colour is written, not painted faces. The kernel writes STEP colours
+after converting them, so the conversion is undone first; a colour comes back
+within about 1/255 of what was chosen.

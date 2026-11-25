@@ -1,0 +1,97 @@
+<!doctype html><meta charset="utf-8"><title>Export: objects, names, colours</title><script type="module">
+import {test,eq,ok,near,throws,run} from './harness.js';
+import {createKernel} from '../src/kernel/client.js';
+import {createDocument,makeFeature,addFeature} from '../src/doc/model.js';
+import {makePart,addPart,updatePart,copyPart,setPartColor,paintFaces,appearanceOf,sceneOf} from '../src/doc/parts.js';
+import {validateDocument} from '../src/doc/schema.js';
+import {zip,unzip,crc32} from '../src/core/zip.js';
+import {weld,isClosed,modelXml,package3mf} from '../src/kernel/threemf.js';
+const k=createKernel();
+const part=(d,data={})=>{const m=makePart(d,data);return [addPart(m.doc,m.part),m.part.id];};
+const feat=(d,type,p,data={})=>{const m=makeFeature(d,type,{part:p,...data});return [addFeature(m.doc,m.feature),m.feature.id];};
+const text=(bytes)=>new TextDecoder().decode(bytes);
+/** The objects of a 3MF as the file has them: name, colour, corners, triangles with their colours. */
+function read3mf(bytes){
+ const files=unzip(bytes),model=files.find(f=>f.name==='3D/3dmodel.model');ok(model,'the model is in the package');
+ const x=new DOMParser().parseFromString(text(model.data),'application/xml');ok(!x.querySelector('parsererror'),'the model is well-formed XML');
+ const colors=[...x.querySelectorAll('basematerials > base')].map(b=>b.getAttribute('displaycolor'));
+ const objects=[...x.querySelectorAll('resources > object')].map(o=>{
+  const v=[...o.querySelectorAll('vertex')].map(e=>['x','y','z'].map(a=>Number(e.getAttribute(a)))),t=[...o.querySelectorAll('triangle')];
+  return {id:o.getAttribute('id'),name:o.getAttribute('name'),color:o.hasAttribute('pindex')?colors[Number(o.getAttribute('pindex'))]:null,vertices:v,
+   triangles:t.flatMap(e=>['v1','v2','v3'].map(a=>Number(e.getAttribute(a)))),painted:t.map(e=>e.hasAttribute('p1')?colors[Number(e.getAttribute('p1'))]:null)};});
+ return {files:files.map(f=>f.name),unit:x.documentElement.getAttribute('unit'),title:x.querySelector('metadata[name=Title]')?.textContent,colors,objects,items:[...x.querySelectorAll('build > item')].map(i=>i.getAttribute('objectid'))};
+}
+/** The volume a closed mesh encloses, and the box round it. */
+function measure(o){let vol=0;const P=o.vertices,T=o.triangles;
+ for(let i=0;i<T.length;i+=3){const [a,b,c]=[P[T[i]],P[T[i+1]],P[T[i+2]]];vol+=(a[0]*(b[1]*c[2]-b[2]*c[1])-a[1]*(b[0]*c[2]-b[2]*c[0])+a[2]*(b[0]*c[1]-b[1]*c[0]))/6;}
+ return {volume:vol,box:[[0,1,2].map(i=>Math.min(...P.map(p=>p[i]))),[0,1,2].map(i=>Math.max(...P.map(p=>p[i])))]};}
+/** The triangles of a binary STL: how many, and the box round them. */
+function readStl(bytes){const v=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),n=v.getUint32(80,true),lo=[1e9,1e9,1e9],hi=[-1e9,-1e9,-1e9];eq(bytes.length,84+50*n,'a whole binary STL');
+ for(let t=0;t<n;t++)for(let c=0;c<3;c++)for(let a=0;a<3;a++){const x=v.getFloat32(84+t*50+12+c*12+a*4,true);if(x<lo[a])lo[a]=x;if(x>hi[a])hi[a]=x;}return {triangles:n,box:[lo,hi]};}
+
+test('zip: stored files with their checksums, read back as they went in',()=>{
+ eq(crc32(new TextEncoder().encode('123456789')),0xcbf43926);
+ const z=zip([{name:'a.txt',data:'hello'},{name:'dir/åäö.bin',data:new Uint8Array([0,1,2,255])}]);eq([z[0],z[1],z[2],z[3]],[0x50,0x4b,3,4]);
+ const back=unzip(z);eq(back.map(f=>f.name),['a.txt','dir/åäö.bin']);eq(text(back[0].data),'hello');eq([...back[1].data],[0,1,2,255]);
+ eq(new DataView(z.buffer).getUint16(z.length-22+10,true),2,'the directory lists both');eq([...zip([{name:'a',data:'x'}])],[...zip([{name:'a',data:'x'}])],'the same files give the same bytes');
+});
+test('A mesh of faces with corners of their own becomes one closed surface',()=>{
+ // a tetrahedron, each face with its own three vertices
+ const P=[[0,0,0],[1,0,0],[0,1,0],[0,0,1]],F=[[0,2,1],[0,1,3],[1,2,3],[0,3,2]],pos=F.flatMap(f=>f.flatMap(i=>P[i])),idx=[...Array(12).keys()];
+ const w=weld(pos,idx,t=>t===2?5:-1);eq(w.vertices.length,12);eq(w.triangles.length,12);eq(w.colors,[-1,-1,5,-1]);ok(isClosed(w.triangles));
+ ok(!isClosed(w.triangles.slice(0,9)),'a face missing is seen');ok(!isClosed([...w.triangles.slice(0,9),w.triangles[9],w.triangles[11],w.triangles[10]]),'a face turned the wrong way is seen');
+ eq(weld([0,0,0, 0,0,1e-7, 1,0,0, 0,1,0],[0,1,2, 0,2,3]).triangles,[0,1,2],'a sliver that closes up is left out');
+ const xml=modelXml({title:'A & B',objects:[{name:'Plate "1"',color:0,...w}],colors:['#ff0000','#00ff00','#0000ff','#111111','#222222','#333333']});
+ ok(xml.includes('<metadata name="Title">A &amp; B</metadata>')&&xml.includes('name="Plate &quot;1&quot;" pid="1" pindex="0"')&&xml.includes('displaycolor="#FF0000"'),xml.slice(0,600));
+ eq((xml.match(/ p1="5"/g)??[]).length,1);eq(read3mf(package3mf({title:'T',objects:[{name:'O',color:-1,...w}],colors:[]})).objects[0].color,null);
+});
+let doc,plate,pin,twin,hidden,tool,built;
+test('Colours belong to the document: a part\'s, and those of painted faces',async()=>{
+ await k.ready;let d=createDocument('Fixture'),f;
+ [d,plate]=part(d,{name:'Plate'});[d,f]=feat(d,'box',plate,{size:[60,40,12]});
+ [d,tool]=part(d,{name:'Bore',pos:[15,0,-5],parent:plate});[d]=feat(d,'cylinder',tool,{diameter:10,height:30});[d]=feat(d,'combine',plate,{operation:'cut',tools:[tool]});
+ [d,pin]=part(d,{name:'Pin',pos:[100,0,0],rot:[0,90,0]});[d]=feat(d,'cylinder',pin,{diameter:10,height:30});
+ [d,hidden]=part(d,{name:'Spare',pos:[0,200,0],hidden:true});[d]=feat(d,'sphere',hidden,{diameter:20});
+ const l=copyPart(d,plate,{linked:true});d=updatePart(l.doc,l.id,{name:'Plate',pos:[0,60,0]});twin=l.id;
+ built=await k.rebuild(d);ok(built.features.every(x=>x.status==='ok'));
+ const body=built.bodies.find(b=>b.part===plate),top=body.mesh.faces.findIndex(x=>x.plane?.n[2]>.99),wall=body.mesh.faces.findIndex(x=>x.cyl);
+ d=setPartColor(d,plate,'#D43F3A');eq(d.parts.find(p=>p.id===plate).color,'#d43f3a');
+ d=paintFaces(d,plate,[{body:body.id,labels:body.mesh.faces[top].labels},{body:body.id,labels:body.mesh.faces[wall].labels}],'#2f6fd0');
+ d=paintFaces(d,plate,[{body:body.id,labels:body.mesh.faces[wall].labels}],'#f2c230');eq(d.parts.find(p=>p.id===plate).paint.map(x=>x.color),['#2f6fd0','#f2c230'],'a face has one colour: the last one given');
+ d=setPartColor(d,twin,'#58a84a');eq(validateDocument(d),[]);
+ ok(validateDocument(updatePart(d,pin,{color:'red'})).some(e=>/#rrggbb/.test(e)));ok(validateDocument(updatePart(d,pin,{paint:[{body:'f1',labels:['f1/top']}]})).some(e=>/painted face/.test(e)));
+ const scene=sceneOf(d,built.bodies,new Map(Object.entries(built.used))),look=(b)=>appearanceOf(d,b,b.mesh.faces);
+ let a=look(scene.find(b=>b.part===plate));eq(a.color,'#d43f3a');eq([...a.faces].sort((x,y)=>x[0]-y[0]),[[top,'#2f6fd0'],[wall,'#f2c230']].sort((x,y)=>x[0]-y[0]));
+ a=look(scene.find(b=>b.part===twin));eq(a.color,'#58a84a','a linked copy has its own colour');eq(a.faces.size,2,'and the painted faces of its original');
+ eq(look(scene.find(b=>b.part===pin)),{color:null,faces:new Map()});
+ eq(setPartColor(d,plate,null).parts.find(p=>p.id===plate).color,undefined);eq(paintFaces(d,plate,d.parts.find(p=>p.id===plate).paint,null).parts.find(p=>p.id===plate).paint,undefined);
+ const c=copyPart(d,plate),own=c.doc.parts.find(p=>p.id===c.id);eq(own.color,'#d43f3a');ok(own.paint.every(x=>x.body!==body.id&&x.labels.every(l=>!l.startsWith(body.id+'/'))),'a copy of its own carries the paint over to its own faces');
+ doc=d;
+});
+test('3MF: every part an object of its own, named, coloured, closed, where it stands',async()=>{
+ const m=read3mf(new Uint8Array(await (await k.export(doc,{format:'3mf'})).arrayBuffer()));
+ eq(m.files,['[Content_Types].xml','_rels/.rels','3D/3dmodel.model']);eq(m.unit,'millimeter');eq(m.title,'Fixture');
+ eq(m.objects.map(o=>o.name),['Plate','Pin','Plate 2'],'the used-up tool and the hidden part are not there; two parts of one name are told apart');eq(m.items,m.objects.map(o=>o.id));
+ eq(m.objects.map(o=>o.color),['#D43F3A',null,'#58A84A']);eq(m.colors.slice().sort(),['#2F6FD0','#58A84A','#D43F3A','#F2C230']);
+ const [a,b,c]=m.objects;for(const o of m.objects)ok(isClosed(o.triangles),o.name+' is a closed surface');
+ const solid=28800-Math.PI*25*12;near(measure(a).volume,solid,2);near(measure(c).volume,solid,2);near(measure(b).volume,Math.PI*25*30,8,'a round part is a little smaller as flat triangles');
+ near(measure(a).box,[[-30,-20,0],[30,20,12]],1e-5);near(measure(c).box,[[-30,40,0],[30,80,12]],1e-5);near(measure(b).box,[[100,-5,-5],[130,5,5]],.02,'laid along X, where the part stands');
+ // the painted faces: the top (blue) and the wall of the hole (yellow), on the plate and on its linked copy
+ for(const o of [a,c]){const blue=o.painted.filter(x=>x==='#2F6FD0').length,yellow=o.painted.filter(x=>x==='#F2C230').length;ok(blue>=2&&yellow>=8,`${o.name}: ${blue} blue, ${yellow} yellow`);eq(o.painted.filter(x=>x&&!['#2F6FD0','#F2C230'].includes(x)).length,0);
+  for(let t=0;t<o.painted.length;t++)if(o.painted[t]==='#2F6FD0')ok([0,1,2].every(i=>Math.abs(o.vertices[o.triangles[3*t+i]][2]-12)<1e-6),'blue is the top');}
+ ok(b.painted.every(x=>x===null));
+ // a part with painted faces but no colour of its own gets the plain one for the rest
+ const plain=read3mf(new Uint8Array(await (await k.export(setPartColor(doc,plate,null),{format:'3mf'})).arrayBuffer()));eq(plain.objects[0].color,'#BAC8CA');
+});
+test('STL: one file for each part when there are several; STEP carries names and colours',async()=>{
+ const bytes=async(o)=>new Uint8Array(await (await k.export(doc,o)).arrayBuffer());
+ const files=unzip(await bytes({format:'stl',split:true}));eq(files.map(f=>f.name),['Plate.stl','Pin.stl','Plate 2.stl']);
+ const meshes=files.map(f=>readStl(f.data));near(meshes[0].box,[[-30,-20,0],[30,20,12]],1e-4);near(meshes[1].box,[[100,-5,-5],[130,5,5]],.02);near(meshes[2].box,[[-30,40,0],[30,80,12]],1e-4);
+ const whole=readStl(await bytes({format:'stl'}));eq(whole.triangles,meshes.reduce((n,m)=>n+m.triangles,0),'without split: everything as one mesh, as before');near(whole.box,[[-30,-20,-5],[130,80,12]],.02);
+ let one=updatePart(updatePart(doc,pin,{hidden:true}),twin,{hidden:true});near(readStl(await bytes.call(null,{format:'stl',split:true}).then(()=>k.export(one,{format:'stl',split:true})).then(b=>b.arrayBuffer()).then(b=>new Uint8Array(b))).box,[[-30,-20,0],[30,20,12]],1e-4,'a single part is a plain STL');
+ const step=text(await bytes({format:'step'}));ok(step.startsWith('ISO-10303-21;'));ok(step.includes("'Plate'")&&step.includes("'Pin'")&&step.includes("'Plate 2'"),'the parts by name');ok(/COLOUR_RGB\('',0\.8[23]\d*,0\.2[45]\d*,0\.2[23]\d*\)/.test(step),'the plate\'s red, as it was chosen: '+(step.match(/COLOUR_RGB[^;]*/g)??[]).join(' '));
+ await throws(()=>k.export(doc,{format:'obj'}),/3MF, STL or STEP/);
+ k.dispose();
+});
+run();
+</script>

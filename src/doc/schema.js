@@ -1,6 +1,6 @@
 import { DocError } from '../core/errors.js';
 import { validateFeature } from './features.js';
-import { PART_ID } from './parts.js';
+import { PART_ID, COLOR } from './parts.js';
 
 const vec3 = (v) => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
 
@@ -65,6 +65,17 @@ export function validateDocument(doc) {
     if (!(p.parent === null || p.parent === undefined || typeof p.parent === 'string')) errors.push(`${name}: invalid parent.`);
     if (!(p.link === undefined || (typeof p.link === 'string' && PART_ID.test(p.link)))) errors.push(`${name}: invalid link.`);
     if (!(p.hidden === undefined || typeof p.hidden === 'boolean')) errors.push(`${name}: hidden must be true or false.`);
+    if (!(p.color === undefined || (typeof p.color === 'string' && COLOR.test(p.color)))) errors.push(`${name}: a colour is written #rrggbb.`);
+    if (
+      !(
+        p.paint === undefined ||
+        (Array.isArray(p.paint) &&
+          p.paint.every(
+            (x) => x && typeof x.body === 'string' && Array.isArray(x.labels) && x.labels.every((l) => typeof l === 'string') && typeof x.color === 'string' && COLOR.test(x.color)
+          ))
+      )
+    )
+      errors.push(`${name}: a painted face needs its body, its labels and a colour written #rrggbb.`);
   }
   for (const p of parts.values()) {
     const name = p.name || p.id;

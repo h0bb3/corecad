@@ -7,9 +7,13 @@
 import * as Mat from '../core/mat.js';
 
 /** @typedef {{ id: string, name: string, parent: string | null, pos: number[], rot: number[],
- *              hidden?: boolean, link?: string }} Part */
+ *              hidden?: boolean, link?: string, color?: string, paint?: Paint[] }} Part
+ *  color: '#rrggbb', the colour of the whole part. paint: faces that have a colour of their own. */
+/** A face with a colour of its own: the face by the labels it carried when it was painted, on the body it was on.
+ *  @typedef {{ body: string, labels: string[], color: string }} Paint */
 
 export const PART_ID = /^o[1-9][0-9]*$/;
+export const COLOR = /^#[0-9a-f]{6}$/i;
 export const partById = (doc, id) => doc.parts.find((p) => p.id === id);
 export const featuresOf = (doc, id) => doc.features.filter((f) => f.part === id);
 export const childrenOf = (doc, id) => doc.parts.filter((p) => (p.parent ?? null) === id);
@@ -217,6 +221,62 @@ export function sceneOf(doc, bodies, used = new Map()) {
     else for (const b of byPart.get(part.id) ?? []) if (!doc.bodies?.[b.id]?.hidden) items.push({ ...b, matrix: W });
   }
   return items;
+}
+
+// ------------------------------------------------------------------ colours
+const sameLabels = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
+const overlap = (a, b) => {
+  const n = a.filter((x) => b.includes(x)).length;
+  return n / (a.length + b.length - n || 1);
+};
+
+/** Gives a part a colour ('#rrggbb'), or with null takes it away. */
+export const setPartColor = (doc, id, color) =>
+  updatePart(doc, id, (p) => {
+    const { color: _, ...rest } = p;
+    return color ? { ...rest, color: color.toLowerCase() } : rest;
+  });
+
+/**
+ * Gives faces of a part a colour of their own, or with null takes theirs away.
+ * @param {{ body: string, labels: string[] }[]} faces  each face by the body it is on and its labels (BodyOut.mesh.faces[i].labels)
+ */
+export function paintFaces(doc, id, faces, color) {
+  return updatePart(doc, id, (p) => {
+    const { paint = [], ...rest } = p,
+      kept = paint.filter((x) => !faces.some((f) => f.body === x.body && sameLabels(f.labels, x.labels))),
+      next = color ? [...kept, ...faces.map((f) => ({ body: f.body, labels: [...f.labels], color: color.toLowerCase() }))] : kept;
+    return next.length ? { ...rest, paint: next } : rest;
+  });
+}
+
+/**
+ * How a shown body looks: its colour, and the colours of the faces that were painted.
+ * @param {object} item   an item of sceneOf (for a linked copy, the copy's own colour goes over the original's;
+ *                        the original's painted faces show through)
+ * @param {{ labels: string[] }[]} faces  the faces of that body
+ * @returns {{ color: string | null, faces: Map<number, string> }}  faces: face number -> colour
+ */
+export function appearanceOf(doc, item, faces) {
+  const shown = partById(doc, item.part),
+    owner = item.instance ? partById(doc, item.from) : shown,
+    body = item.source ?? item.id,
+    painted = new Map();
+  for (const p of owner?.paint ?? []) {
+    if (p.body !== body) continue;
+    // The faces that carry most of the labels it had: a face that was split is painted in all its pieces.
+    let best = 0,
+      hits = [];
+    faces.forEach((f, i) => {
+      const s = overlap(p.labels, f.labels);
+      if (s > best + 1e-12) {
+        best = s;
+        hits = [i];
+      } else if (s > 0 && Math.abs(s - best) <= 1e-12) hits.push(i);
+    });
+    for (const i of hits) painted.set(i, p.color);
+  }
+  return { color: shown?.color ?? owner?.color ?? null, faces: painted };
 }
 
 // ------------------------------------------------------------------ copies

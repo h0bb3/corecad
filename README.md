@@ -26,8 +26,9 @@ The geometry libraries load from a CDN, so the first visit needs internet access
    preview. Invalid sizes explain the failure and keep the earlier solid.
 6. Double-click a feature in the history to edit it. Dimensions can also be
    edited by double-clicking their labels inside a sketch.
-7. **Save** downloads an editable `.corecad` project. **Export** produces STL
-   for printing or STEP with exact solid geometry.
+7. **Save** downloads an editable `.corecad` project. **Export** produces
+   3MF for printing (every part an object of its own in the slicer, with its
+   name and colours), STL, or STEP with exact solid geometry.
 
 ## Several parts
 
@@ -45,6 +46,14 @@ and its own place.
 - **Combine** joins other parts to the selected part, cuts them out of it, or
   keeps what they share. The others become its tools: hidden, listed under
   it, and still there to move or edit, with the result following.
+
+## Colours, and printing several parts
+
+- **Colour** gives the selected part a colour, or the faces you clicked a
+  colour of their own. The dot beside a part in the list does the same.
+- For printing, export **3MF**: each part arrives in the slicer as its own
+  object, named, coloured and where you placed it. An STL file is only one
+  mesh, so several parts as STL come as a .zip with one file for each.
 
 ## Sizes at a glance
 
@@ -129,6 +138,7 @@ python tools/e2e.py
 python tools/e2e_more.py
 python tools/e2e_parts.py
 python tools/e2e_api.py
+python tools/e2e_export.py
 ```
 
 These need Python 3 and Chrome; `tools/browser.py` uses only Python's standard

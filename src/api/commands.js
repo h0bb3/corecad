@@ -17,7 +17,8 @@ import { findRegions, profileRefFrom, regionAt, pointInRegion, pointInLoop } fro
 import { createDocument, makeFeature, addFeature, updateFeature, removeFeature, featureById, dependents } from '../doc/model.js';
 import { validateFeature } from '../doc/features.js';
 import { validateDocument, serialize, upgrade } from '../doc/schema.js';
-import { partById, featuresOf, worldOf, makePart, addPart, updatePart, removePart, partDependents, setParent, copyPart, unlinkPart, sceneOf, contentOf, descendantsOf, ancestorsOf } from '../doc/parts.js';
+import { partById, featuresOf, worldOf, makePart, addPart, updatePart, removePart, partDependents, setParent, copyPart, unlinkPart, sceneOf, contentOf, descendantsOf, ancestorsOf, setPartColor, paintFaces, appearanceOf } from '../doc/parts.js';
+import { PALETTE, colorFrom } from './colors.js';
 import * as Mat from '../core/mat.js';
 import { sizeOf, between, total } from './measure3d.js';
 import { dimensionsOf } from './dimensions.js';
@@ -225,6 +226,16 @@ export const TOOLS = [
     'Copies a part with everything under it. A copy of its own has its own history, free to change. linked: true makes a linked copy instead: it shows the original in another place and changes with it (make as many as needed; unlink_part makes one independent). The copy stands where the original stands unless told otherwise, and becomes the current part.',
     { part: PART_ARG, linked: bool('A linked copy.'), position: POSITION_ARG, rotation: ROTATION_ARG, by: VEC('Move the copy by [dx, dy, dz] mm from where the original stands.'), parent: PARENT_ARG, name: str('A name for the copy.') }
   ),
+  tool(
+    'set_color',
+    `Gives a part a colour, or single faces a colour of their own. Colours show in the view and go into 3MF files (each part an object with its colour, painted faces as painted triangles) and STEP files. Without "faces" the whole part is coloured.`,
+    {
+      color: { description: `"#rrggbb", or a name: ${PALETTE.map(([, n]) => n.toLowerCase()).join(', ')}. null takes the colour away.` },
+      part: PART_ARG,
+      faces: { description: 'The faces to colour instead of the whole part: "this" (the faces the person has selected, or the one they point at); a side name such as "top"; { "face": index } from list_faces (any face, round ones too); or a list of these. Each may say whose with "part" or "body".' },
+    },
+    ['color']
+  ),
   tool('edit_part', 'Renames a part, or hides or shows it (with everything under it). Hidden parts are not exported.', { part: PART_ARG, name: str('A new name.'), hidden: bool('true hides it, false shows it.') }),
   tool('unlink_part', 'Turns a linked copy into a part of its own, with its own history, in the same place.', { part: PART_ARG }),
   tool('delete_part', 'Deletes a part with its history and everything under it. If linked copies or combine features elsewhere use it, say with_dependents to delete those too, or the command lists them and changes nothing.', { part: PART_ARG, with_dependents: bool('Also delete the linked copies and combine features that use it.') }),
@@ -234,8 +245,12 @@ export const TOOLS = [
   tool('cancel_edit', 'Closes a sketch or a feature dialog that is open in the page without keeping its changes. The commands that change the model need this to be closed.'),
   tool(
     'export',
-    'The model as a file: "step" (exact geometry, for other CAD), "stl" (a mesh, for printing) or "corecad" (the project). Returned as text (step, corecad) or base64 (stl), or sent to the browser\'s downloads.',
-    { format: str('Default "step".', { enum: ['step', 'stl', 'corecad'] }), download: bool('true: save it through the browser instead of returning its content.') }
+    'The model as a file. "3mf": for slicers (Bambu Studio, OrcaSlicer, PrusaSlicer, Cura): every part an object of its own, with its name, its colour and its painted faces, where it stands. "stl": a plain mesh; an STL file cannot tell objects apart, so everything is one mesh unless per_part is asked for. "step": exact geometry for other CAD, parts named and coloured. "corecad": the project. Hidden parts are left out. Returned as text (step, corecad) or base64 (3mf, stl), or sent to the browser\'s downloads.',
+    {
+      format: str('Default "step".', { enum: ['3mf', 'step', 'stl', 'corecad'] }),
+      per_part: bool('For "stl" with several parts: a .zip with one STL file for each part, named after it.'),
+      download: bool('true: save it through the browser instead of returning its content.'),
+    }
   ),
   tool(
     'screenshot',
@@ -579,6 +594,8 @@ export function createCommands(app) {
         position: round(p.pos),
         rotation: round(p.rot),
         ...(p.hidden ? { hidden: true } : {}),
+        ...(p.color ? { color: p.color } : {}),
+        ...(p.paint?.length ? { painted_faces: p.paint.length } : {}),
         ...(used.has(p.id) ? { tool_of: used.get(p.id) } : {}),
         features: fs.map((f) => f.id),
         bodies: list.filter((b) => b.part === p.id).map((b) => b.id),
@@ -888,7 +905,10 @@ export function createCommands(app) {
     },
     async list_faces(a) {
       await settled();
-      return bodiesFor(a).map((b) => ({ body: b.id, part: b.part, faces: describeFaces(b) }));
+      return bodiesFor(a).map((b) => {
+        const look = appearanceOf(doc(), { id: b.id, part: b.part }, b.mesh.faces);
+        return { body: b.id, part: b.part, ...(look.color ? { color: look.color } : {}), faces: describeFaces(b).map((f) => (look.faces.has(f.face) ? { ...f, color: look.faces.get(f.face) } : f)) };
+      });
     },
     async list_edges(a) {
       await settled();
@@ -1174,6 +1194,27 @@ export function createCommands(app) {
       next = updatePart(next, c.id, { ...(a.name ? { name: String(a.name) } : {}), pos: pos ?? cur.pos, rot: rot ?? cur.rot });
       return partChange(next, (a.linked ? 'Linked copy of ' : 'Copy of ') + p.name, c.id, { copy_of: p.id });
     },
+    async set_color(a) {
+      free();
+      await settled();
+      const color = colorFrom(a.color);
+      if (a.faces === undefined) {
+        const p = partOf(a.part);
+        await commit(setPartColor(doc(), p.id, color), (color ? 'Colour ' : 'Clear the colour of ') + p.name, null, p.id);
+        return partOutcome(p.id);
+      }
+      // Faces: the person's, or described; of any shape. Each is painted on the part it belongs to.
+      const refs = Array.isArray(a.faces) ? a.faces : [a.faces],
+        whose = a.part !== undefined ? { part: partOf(a.part).id } : {},
+        picks = refs.flatMap((ref) => picksFrom(ref && typeof ref === 'object' && !Array.isArray(ref) ? { ...whose, ...ref } : typeof ref === 'string' && !theirWord(ref) && whose.part ? { ...whose, side: ref } : ref));
+      const edges = picks.filter((x) => x.kind !== 'face');
+      if (edges.length) throw Error('Only faces can be painted: what is selected or was named includes an edge.');
+      let next = doc();
+      for (const x of picks) next = paintFaces(next, x.body.part, [{ body: x.body.id, labels: topoOfBody(x.body).faces[x.index].labels }], color);
+      const parts = [...new Set(picks.map((x) => x.body.part))];
+      await commit(next, color ? 'Colour faces' : 'Clear the colour of faces', null, parts[0]);
+      return { painted: picks.map((x) => ({ part: x.body.part, body: x.body.id, face: x.index })), color, ...partOutcome(parts[0]) };
+    },
     async edit_part(a) {
       free();
       await settled();
@@ -1253,17 +1294,19 @@ export function createCommands(app) {
     async export(a) {
       await settled();
       const format = a.format ?? 'step';
-      if (!['step', 'stl', 'corecad'].includes(format)) throw Error('"format" is "step", "stl" or "corecad".');
-      const name = app.filename(doc()) + '.' + format;
+      if (!['3mf', 'step', 'stl', 'corecad'].includes(format)) throw Error('"format" is "3mf", "step", "stl" or "corecad".');
       if (format !== 'corecad' && !bodies().length) throw Error('There is no body to export yet.');
-      const blob = format === 'corecad' ? new Blob([serialize(doc())], { type: 'application/json' }) : await store.kernel.export(doc(), { format });
+      const blob = format === 'corecad' ? new Blob([serialize(doc())], { type: 'application/json' }) : await store.kernel.export(doc(), { format, split: !!a.per_part }),
+        // several parts as STL, one file each, come as a zip
+        zipped = format === 'stl' && !!a.per_part && new Uint8Array(await blob.slice(0, 2).arrayBuffer()).join() === '80,75',
+        name = app.filename(doc()) + (zipped ? ' STL.zip' : '.' + format);
       if (a.download) {
         app.download(blob, name);
         return { format, filename: name, bytes: blob.size, downloaded: true };
       }
       if (blob.size > 30e6) throw Error(`The file is ${Math.round(blob.size / 1e6)} MB: too large to return; ask for download: true.`);
-      return format === 'stl'
-        ? { format, filename: name, bytes: blob.size, base64: toBase64(new Uint8Array(await blob.arrayBuffer())) }
+      return format === 'stl' || format === '3mf'
+        ? { format, filename: name, bytes: blob.size, ...(zipped ? { zip: true } : {}), base64: toBase64(new Uint8Array(await blob.arrayBuffer())) }
         : { format, filename: name, bytes: blob.size, text: await blob.text() };
     },
     async screenshot(a) {

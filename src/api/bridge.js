@@ -20,7 +20,8 @@ export const INSTRUCTIONS =
   'A command that cannot be built changes nothing and says why. Changes are undo steps in the user\'s page (undo). ' +
   'When the user says "this", "here" or "that": they have clicked something in the page or hold their mouse on it. get_selection tells what; ' +
   'and the word "this" can be given wherever a command takes a face, edges, a part or a feature id (a hole on "this" face goes where they clicked). ' +
-  'measure tells how big something is and how far apart two things are; list_dimensions lists the numbers that drive the model, each with the command that changes it.';
+  'measure tells how big something is and how far apart two things are; list_dimensions lists the numbers that drive the model, each with the command that changes it. ' +
+  'set_color colours a part or single faces. For printing, export as "3mf": every part is then an object of its own in the slicer, with its name and colours.';
 
 /** Where the relay is. ?bridge=ws://localhost:… overrides it, for development only: never another host. */
 export function relayUrl(search = location.search) {

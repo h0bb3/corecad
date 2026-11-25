@@ -86,6 +86,18 @@ of what stands under that) in its own place and changes with it. A copy of
 its own duplicates the part, what stands under it and all their features with
 new ids, references included.
 
+A part may have `color` ('#rrggbb') and `paint`: faces with a colour of their
+own, each named by its body and the labels it carried when it was painted, and
+found again by those labels after a rebuild (a face that was split is painted
+in all its pieces). Colours are not geometry. A linked copy shows its
+original's colours unless it has a colour of its own.
+
+Export writes one object for every part that shows something, where it
+stands, under the part's name: 3MF (the meshes welded so that each is one
+closed surface, colours as `basematerials` with `pid`/`pindex` on an object
+and `pid`/`p1` on a painted triangle), STL (one mesh, or a zip of one file for
+each part: the format has no objects), STEP (exact, named, coloured).
+
 Looking back in history is per part: `roll: {part, count}` builds the first
 `count` features of that part and every other part in full.
 

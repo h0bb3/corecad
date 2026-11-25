@@ -35,7 +35,11 @@ import {
   contentOf,
   descendantsOf,
   ancestorsOf,
+  setPartColor,
+  paintFaces,
+  appearanceOf,
 } from './doc/parts.js';
+import { PALETTE } from './api/colors.js';
 import * as Mat from './core/mat.js';
 import { gizmoArrows, hitArrow, alongAxis, drawArrows } from './view/gizmo.js';
 import { sizeOf, spansOf, between, total, boxOf } from './api/measure3d.js';
@@ -76,6 +80,7 @@ let editor = null,
   selectedDim = null, // { feature, key }: the number that was clicked
   numbersFor = null, // the feature that was clicked in the history: its numbers are shown on the model
   hotDim = null, // { feature, key }: the number the mouse is on
+  colouring = false, // the Colour panel is open
   quietShown = false; // a change made from the view itself: the camera stays as it is
 // Whether sizes are shown where the mouse rests is kept between visits. Dimensions is not: its numbers
 // take the clicks that land on them, and a view that was left that way would be a surprise the next day.
@@ -542,7 +547,10 @@ const usedParts = () => new Map(Object.entries(store.state.build?.used ?? {}));
 /** What is drawn of `bodies`: each where it stands, the selected part marked when there are several. */
 function sceneFor(bodies, d = viewDoc()) {
   const mark = !editor && !draft && d.parts.length > 1 ? selectedPart : null;
-  return sceneOf(d, bodies ?? [], usedParts()).map((b) => (b.part === mark ? { ...b, chosen: true } : b));
+  return sceneOf(d, bodies ?? [], usedParts()).map((b) => {
+    const look = appearanceOf(d, b, b.mesh.faces);
+    return { ...b, color: look.color, faceColors: look.faces, ...(b.part === mark ? { chosen: true } : {}) };
+  });
 }
 const placementOf = (partId, d = viewDoc()) => worldOf(d).get(partId) ?? Mat.IDENTITY;
 /** The body under a pick, as the view has it (the bodies of a linked copy have ids of their own). */
@@ -584,6 +592,57 @@ function selectPart(pid) {
   view.select([]);
   refreshScene();
   renderBrowser();
+  renderColourPanel();
+}
+// ------------------------------------------------------------------ colours
+/** What a colour would be given to: the faces that are selected, else the selected part. */
+function colourTarget() {
+  const d = store.state.doc,
+    faces = selection.filter(stillThere).filter((h) => h.type === 'face'),
+    p = partById(d, selectedPart);
+  if (faces.length) {
+    const owner = partById(d, pickedBody(faces[0]).part);
+    return { faces, text: `${faces.length === 1 ? 'the selected face' : `the ${faces.length} selected faces`} of ${owner?.name ?? 'the part'}` };
+  }
+  return p ? { part: p, text: `the whole of ${p.name}` } : { text: '' };
+}
+function renderColourPanel() {
+  if (!colouring || editor || draft || mover) return;
+  const t = colourTarget();
+  let current = t.part?.color ?? '';
+  if (t.faces) {
+    const b = pickedBody(t.faces[0]);
+    current = b.faceColors?.get(t.faces[0].face) ?? '';
+  }
+  id('panel').innerHTML =
+    head('Colour') +
+    `<div class="panel-body"><p id="colour-target">${
+      t.text ? `For <b>${esc(t.text)}</b>.` : 'Select a part in the list, or click a face in the view.'
+    }</p><div class="swatches">${PALETTE.map(
+      ([hex, name]) => `<button class="swatch-button${current === hex ? ' on' : ''}" data-colour="${hex}" style="--c:${hex}" title="${name}"></button>`
+    ).join('')}</div><label class="field"><span>Another colour</span><input type="color" id="colour-custom" value="${
+      current || '#bac8ca'
+    }" title="Any colour: choose it here"></label><button data-colour="" title="Take the colour away again">No colour</button><p>Click a face to give it a colour of its own (Shift-click for several); with no face selected the whole part is coloured. Colours go into 3MF and STEP files.</p></div><div class="panel-actions"><button class="primary" data-action="close-panel" title="Close this panel · Esc">Done</button></div>`;
+  id('panel').hidden = false;
+  id('colour-custom').addEventListener('change', (e) => applyColour(e.target.value));
+}
+/** Gives the selected faces, or else the selected part, a colour; '' takes it away. */
+function applyColour(hex) {
+  const t = colourTarget(),
+    d = store.state.doc;
+  if (t.faces) {
+    let next = d;
+    for (const h of t.faces) {
+      const b = pickedBody(h);
+      if (b.instance) {
+        toast('The faces of a linked copy are those of its original: colour them there. The copy as a whole can have a colour: select it in the list.');
+        return;
+      }
+      next = paintFaces(next, b.part, [{ body: b.id, labels: b.mesh.faces[h.face].labels }], hex || null);
+    }
+    store.commit(next, hex ? 'Colour faces' : 'Clear the colour of faces');
+  } else if (t.part) store.commit(setPartColor(d, t.part.id, hex || null), (hex ? 'Colour ' : 'Clear the colour of ') + t.part.name);
+  else toast('Select a part in the list, or click a face in the view, to give it a colour.');
 }
 /** Looking back in a feature's own history, for the kernel. inclusive: the feature itself is built. */
 function rollTo(d, fid, inclusive) {
@@ -717,6 +776,7 @@ function modelClick(p, e) {
   view.dirty();
   renderBrowser();
   id('context-note').textContent = selectionNote();
+  renderColourPanel();
 }
 function renderTools() {
   if (editor) {
@@ -775,6 +835,7 @@ function renderTools() {
         'Move',
         'Place the selected part: drag it, type its position and rotation, choose its parent · M'
       ) +
+      tool('colour', 'Colour', 'Give the selected faces, or the selected part, a colour') +
       tool('new-part', 'Part', 'Start a new, empty part: the next sketch goes into it')
     );
   }
@@ -944,7 +1005,9 @@ function renderBrowser() {
             : '<span class="twist"></span>'
         }<span class="feature-symbol">${p.link ? '⧉' : fs.length ? '⬢' : '▢'}</span><span class="tree-name">${esc(
           p.name
-        )}</span>${note ? `<span class="part-note">${esc(note)}</span>` : ''}<button class="eye" data-part-eye="${
+        )}</span>${note ? `<span class="part-note">${esc(note)}</span>` : ''}<button class="swatch" data-part-colour="${
+          p.id
+        }" style="--c:${p.color ?? 'transparent'}" title="The colour of this part: click to change it"></button><button class="eye" data-part-eye="${
           p.id
         }" title="${p.hidden ? 'Show' : 'Hide'} this part and the parts under it">${
           p.hidden ? '○' : '◉'
@@ -1060,9 +1123,11 @@ store.subscribe((state) => {
   renderBrowser();
   renderTools();
   updatePreviewState();
+  renderColourPanel();
 });
 function enterSketch(plane, existing = null) {
   if (editor || draft || mover) return;
+  colouring = false;
   let doc = store.state.doc,
     feature,
     index,
@@ -1306,6 +1371,7 @@ function dimensionDialog(source) {
 }
 function startSketch() {
   if (editor || draft || mover) return;
+  colouring = false;
   const h = selection.find((h) => h.type === 'face');
   if (h) {
     try {
@@ -1362,6 +1428,7 @@ function toolChoices(d, feature) {
 }
 function beginFeature(type, existing = null) {
   if (editor || draft || mover) return;
+  colouring = false;
   if (rolled) {
     store.cancelPreview();
     rolled = false;
@@ -1930,10 +1997,13 @@ async function exportFile(format) {
   }
   try {
     toast('Preparing ' + format.toUpperCase() + '…');
-    const blob = await store.kernel.export(store.state.doc, { format });
-    download(blob, filename(store.state.doc) + '.' + format);
-    toast(format.toUpperCase() + ' exported.');
-    window.__lastExport = { format, size: blob.size };
+    const blob = await store.kernel.export(store.state.doc, { format, split: true }),
+      // several parts as STL come as a zip of one file each
+      zipped = format === 'stl' && new Uint8Array(await blob.slice(0, 2).arrayBuffer()).join() === '80,75',
+      name = filename(store.state.doc) + (zipped ? ' STL.zip' : '.' + format);
+    download(blob, name);
+    toast(zipped ? 'One STL for each part, in a .zip. For one file with every part as its own object, use 3MF.' : format.toUpperCase() + ' exported.');
+    window.__lastExport = { format, size: blob.size, name };
   } catch (e) {
     toast(e.message);
   }
@@ -1967,6 +2037,7 @@ async function openFile(file) {
 // ------------------------------------------------------------------ placing a part
 function startMove(pid) {
   if (editor || draft || mover) return;
+  colouring = false;
   const d = store.state.doc,
     p = partById(d, pid);
   if (!p) {
@@ -2142,6 +2213,10 @@ function duplicatePart(linked) {
 }
 const actions = {
   connect: openConnect,
+  colour: () => {
+    colouring = true;
+    renderColourPanel();
+  },
   dimensions: () => {
     dimsOn = !dimsOn;
     renderToggles();
@@ -2305,9 +2380,9 @@ const actions = {
   'export-menu': () =>
     showModal(
       'Export solids',
-      '<p>Export visible bodies. STL is a triangle mesh in millimetres for printing; STEP preserves exact solid geometry.</p>',
+      '<p><b>3MF</b> is for printing: every part is an object of its own, with its name and its colours, where it stands. Bambu Studio, OrcaSlicer, PrusaSlicer and Cura open it.</p><p><b>STL</b> is a plain triangle mesh. An STL file cannot tell one object from another, so with several parts you get a .zip with one STL for each. <b>STEP</b> keeps exact solids, named and coloured, for other CAD programs.</p><p>Hidden parts are left out.</p>',
       cancelButton +
-        '<button data-modal="stl" title="Export a binary STL mesh">STL</button><button class="primary" data-modal="step" title="Export exact solids as STEP">STEP</button>',
+        '<button data-modal="stl" title="A binary STL mesh; with several parts, one for each in a .zip">STL</button><button data-modal="step" title="Exact solids as STEP, named and coloured">STEP</button><button class="primary" data-modal="3mf" title="For slicers: every part an object of its own, with its name and colours">3MF</button>',
       (a) => {
         closeModal();
         if (a !== 'cancel') exportFile(a);
@@ -2399,6 +2474,7 @@ const actions = {
   },
   'close-panel': () => {
     id('panel').hidden = true;
+    colouring = false;
     if (replaneId) {
       replaneId = null;
       store.cancelPreview();
@@ -2447,7 +2523,7 @@ const actions = {
 let showPlanes = true;
 document.addEventListener('click', (e) => {
   const target = e.target.closest(
-    '[data-action],[data-plane],[data-view],[data-feature],[data-cid],[data-constraint],[data-modal],[data-region],[data-remove-edge],[data-visible],[data-body],[data-part-eye],[data-twist],[data-turn],[data-part]'
+    '[data-action],[data-plane],[data-view],[data-feature],[data-cid],[data-constraint],[data-modal],[data-region],[data-remove-edge],[data-visible],[data-body],[data-part-eye],[data-part-colour],[data-colour],[data-twist],[data-turn],[data-part]'
   );
   if (!target || target.disabled) return;
   const d = target.dataset;
@@ -2461,6 +2537,18 @@ document.addEventListener('click', (e) => {
     return;
   }
   const busy = editor || draft || mover;
+  if (d.colour !== undefined) {
+    if (!busy) applyColour(d.colour);
+    return;
+  }
+  if (d.partColour) {
+    if (busy) toast('Finish or cancel the current edit first.');
+    else {
+      selectPart(d.partColour);
+      actions.colour();
+    }
+    return;
+  }
   if (d.partEye) {
     if (busy) toast('Finish or cancel the current edit first.');
     else
@@ -2512,6 +2600,7 @@ document.addEventListener('click', (e) => {
         'unlink-part',
         'rename-part',
         'delete-part',
+        'colour',
       ].includes(d.action)
     ) {
       toast('Finish or cancel the current edit first.');
@@ -2958,7 +3047,7 @@ window.corecad = {
   },
   /** What is drawn: every body with the part it shows and where it stands (twelve numbers, row order). */
   get scene() {
-    return sceneFor(store.state.build?.bodies).map(({ mesh, ...b }) => b);
+    return sceneFor(store.state.build?.bodies).map(({ mesh, faceColors, ...b }) => ({ ...b, colors: [...faceColors] }));
   },
   get busy() {
     return store.state.busy;

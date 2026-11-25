@@ -1,11 +1,26 @@
 import { hash64, geometryKey } from '../core/hash.js';
 import * as Mat from '../core/mat.js';
 import { upgrade } from '../doc/schema.js';
-import { partById, worldOf, contentOf, consumedIn, buildOrder, sceneOf } from '../doc/parts.js';
+import { partById, worldOf, contentOf, consumedIn, buildOrder, sceneOf, appearanceOf } from '../doc/parts.js';
 import { evaluate, emptyState } from './features.js';
-import { packBody } from './topo.js';
+import { packBody, topoOf } from './topo.js';
+import { weld, package3mf } from './threemf.js';
+import { zip } from '../core/zip.js';
 import { dispose, movedShape } from './shapes.js';
 import { kernel, heapBytes, errorText, isFatal } from './occ.js';
+
+/** A colour as the kernel must be given it for a STEP file to hold the colour that was meant: the kernel
+ *  takes the numbers as linear light and writes them out encoded, so they are decoded first. */
+function forStep(hex) {
+  const linear = (i) => {
+    const c = parseInt(hex.slice(1 + 2 * i, 3 + 2 * i), 16) / 255,
+      l = c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    return Math.round(l * 255)
+      .toString(16)
+      .padStart(2, '0');
+  };
+  return '#' + linear(0) + linear(1) + linear(2);
+}
 
 /**
  * Builds the model. Every part has its own history: its features, in document order, starting
@@ -240,7 +255,14 @@ export function createEngine(post) {
       delay = Math.max(0, Math.min(ms, 2000));
     },
     rebuild,
-    /** The visible solids, each where it stands in the world, as one STEP or STL file. */
+    /**
+     * The visible solids, each where it stands in the world, as a file. One object for every part that
+     * shows something, with the part's name and colour:
+     *   '3mf'  a package for slicers: named objects, their colours and the colours of painted faces
+     *   'step' exact solids, named and coloured
+     *   'stl'  a mesh; with job.split and more than one part, a zip of one STL for each part
+     *          (an STL file cannot tell one object from another)
+     */
     async export(job) {
       const { doc, features, bodies, used } = await rebuild({ ...job, count: undefined, roll: null }, true),
         { r } = kernel();
@@ -250,37 +272,93 @@ export function createEngine(post) {
         (it) => !job.bodies || job.bodies.includes(it.id) || job.bodies.includes(it.source)
       );
       if (!items.length) throw Error('There are no visible solids to export.');
-      const shapes = items.map((it) => (Mat.isIdentity(it.matrix) ? it.body.shape.clone() : movedShape(it.body.shape, it.matrix)));
-      const perPart = new Map();
-      const names = items.map((it) => {
-        const n = (perPart.get(it.part) ?? 0) + 1;
-        perPart.set(it.part, n);
-        return { it, n };
-      });
+      if (!['3mf', 'step', 'stl'].includes(job.format)) throw Error('Choose 3MF, STL or STEP.');
+      // The parts, in the order of the document, each with what it shows and a name of its own.
+      const objects = [],
+        byPart = new Map(),
+        taken = new Set();
+      for (const it of items) {
+        if (!byPart.has(it.part)) {
+          const base = partById(doc, it.part)?.name ?? 'Part';
+          let name = base;
+          for (let n = 2; taken.has(name); n++) name = `${base} ${n}`;
+          taken.add(name);
+          byPart.set(it.part, { name, items: [] });
+          objects.push(byPart.get(it.part));
+        }
+        byPart.get(it.part).items.push(it);
+      }
+      const look = (it) => appearanceOf(doc, it, topoOf(it.body).faces),
+        MESH = { tolerance: 0.02, angularTolerance: 0.2 };
+      if (job.format === '3mf') {
+        const colors = [],
+          colorOf = (hex) => {
+            const c = hex.toLowerCase();
+            if (!colors.includes(c)) colors.push(c);
+            return colors.indexOf(c);
+          };
+        const out = objects.map((o) => {
+          const mesh = { vertices: [], triangles: [], colors: [] };
+          let own = null;
+          for (const it of o.items) {
+            const m = it.body.shape.mesh(MESH),
+              a = look(it),
+              faceOf = new Map(it.body.faces.map((f, i) => [f.hashCode, i])),
+              tri = new Int32Array(m.triangles.length / 3).fill(-1);
+            own ??= a.color;
+            for (const g of m.faceGroups) {
+              const hex = a.faces.get(faceOf.get(g.faceId));
+              if (hex) tri.fill(colorOf(hex), g.start / 3, (g.start + g.count) / 3);
+            }
+            let positions = m.vertices;
+            if (!Mat.isIdentity(it.matrix)) {
+              positions = new Float64Array(m.vertices.length);
+              for (let i = 0; i < positions.length; i += 3) positions.set(Mat.point(it.matrix, [m.vertices[i], m.vertices[i + 1], m.vertices[i + 2]]), i);
+            }
+            const w = weld(positions, m.triangles, (t) => tri[t]),
+              offset = mesh.vertices.length / 3;
+            for (const v of w.vertices) mesh.vertices.push(v);
+            for (const i of w.triangles) mesh.triangles.push(i + offset);
+            for (const c of w.colors) mesh.colors.push(c);
+          }
+          // A part without a colour that has painted faces still needs one for the rest of it.
+          const painted = mesh.colors.some((c) => c >= 0);
+          return { name: o.name, color: own ? colorOf(own) : painted ? colorOf('#bac8ca') : -1, ...mesh };
+        });
+        return package3mf({ title: doc.meta?.name ?? 'CoreCAD', objects: out, colors }).buffer;
+      }
+      const placed = (it) => (Mat.isIdentity(it.matrix) ? it.body.shape.clone() : movedShape(it.body.shape, it.matrix)),
+        made = [],
+        keep = (shape) => (made.push(shape), shape);
       try {
         if (job.format === 'step')
           return await r
             .exportSTEP(
-              shapes.map((shape, i) => {
-                const { it, n } = names[i],
-                  part = partById(doc, it.part)?.name ?? 'Part';
-                return { shape, name: (!it.instance && doc.bodies[it.id]?.name) || (perPart.get(it.part) > 1 ? `${part} ${n}` : part) };
-              })
+              objects.flatMap((o) =>
+                o.items.map((it, i) => ({
+                  shape: keep(placed(it)),
+                  name: (!it.instance && doc.bodies[it.id]?.name) || (o.items.length > 1 ? `${o.name} ${i + 1}` : o.name),
+                  ...(look(it).color ? { color: forStep(look(it).color) } : {}),
+                }))
+              )
             )
             .arrayBuffer();
-        if (job.format !== 'stl') throw Error('Choose STL or STEP.');
-        const compound = r.makeCompound(shapes.map((s) => s.clone()));
-        try {
-          return await compound
-            .blobSTL({ binary: true, tolerance: 0.02, angularTolerance: 0.2 })
-            .arrayBuffer();
-        } finally {
-          compound.delete();
-        }
-      } finally {
-        for (const s of shapes) {
+        const stl = async (its) => {
+          const compound = r.makeCompound(its.map((it) => keep(placed(it))));
           try {
-            s.delete();
+            return await compound.blobSTL({ binary: true, ...MESH }).arrayBuffer();
+          } finally {
+            compound.delete();
+          }
+        };
+        if (!job.split || objects.length < 2) return await stl(items);
+        const files = [];
+        for (const o of objects) files.push({ name: o.name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_') + '.stl', data: new Uint8Array(await stl(o.items)) });
+        return zip(files).buffer;
+      } finally {
+        for (const shape of made) {
+          try {
+            shape.delete();
           } catch {
             /* already deleted */
           }

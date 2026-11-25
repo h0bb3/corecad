@@ -69,10 +69,30 @@ export function createViewport(host, callbacks = {}) {
     free(solids);
     free(toolGroup);
     for (const b of bodies) {
+      // A body's own colour (b.color), else the plain one; the selected part is tinted towards the accent.
+      // Painted faces (b.faceColors: face number -> colour) are drawn through a colour for every vertex:
+      // each face has vertices of its own.
+      const g0 = geometry(b.mesh),
+        tint = (c) => (b.chosen ? c.lerp(new T.Color(0x35b89f), 0.18) : c),
+        base = b.color ? tint(new T.Color(b.color)) : new T.Color(b.chosen ? 0xa8d2c8 : b.instance ? 0xb9c4d6 : 0xbac8ca),
+        painted = b.faceColors?.size > 0;
+      if (painted) {
+        const colors = new Float32Array(b.mesh.positions.length),
+          I = b.mesh.indices;
+        for (let i = 0; i < colors.length; i += 3) colors.set([base.r, base.g, base.b], i);
+        for (const [face, hex] of b.faceColors) {
+          const c = tint(new T.Color(hex)),
+            start = b.mesh.faceTris[2 * face],
+            end = start + b.mesh.faceTris[2 * face + 1];
+          for (let k = start; k < end; k++) colors.set([c.r, c.g, c.b], I[k] * 3);
+        }
+        g0.setAttribute('color', new T.BufferAttribute(colors, 3));
+      }
       const mesh = new T.Mesh(
-        geometry(b.mesh),
+        g0,
         new T.MeshStandardMaterial({
-          color: b.chosen ? 0xa8d2c8 : b.instance ? 0xb9c4d6 : 0xbac8ca,
+          color: painted ? 0xffffff : base,
+          vertexColors: painted,
           metalness: 0.15,
           roughness: 0.55,
           side: T.DoubleSide,

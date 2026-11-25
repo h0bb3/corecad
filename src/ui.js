@@ -24,6 +24,7 @@ export const icons = {
   combine: 'M3 3h11v11H3zm7 7h11v11H10z',
   'move-part': 'M12 3v18M3 12h18M12 3 9 6m3-3 3 3m-3 15-3-3m3 3 3-3M3 12l3-3m-3 3 3 3m15-3-3-3m3 3-3 3',
   'new-part': 'm4 9 7-3.5L18 9l-7 3.5zm0 0v8l7 3.5v-8M18 9v4m1 3v6m-3-3h6',
+  colour: 'M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11zm-3 11a3 3 0 0 0 3 3',
 };
 export const icon = (name) =>
   `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${icons[name] ?? icons.sketch}"/></svg>`;

@@ -139,6 +139,23 @@ between two clicked things, and the Dimensions view). An agent gets the same:
   `edit_feature { id: "this" }` mean.
 - `screenshot { dimensions: true }` draws the driving numbers on the picture.
 
+## Colours and export
+
+- `set_color { part, color }` colours a part; `set_color { faces, color }`
+  gives single faces a colour of their own (`"this"`, a side, `{ face:
+  index }`, or a list). A colour is `#rrggbb` or a name (red, orange, yellow,
+  green, teal, blue, purple, pink, brown, black, white, grey); `null` takes
+  it away. A linked copy shows its original's colours unless it is given one
+  of its own.
+- `export { format: "3mf" }` is the file for a slicer: every part that is to
+  be seen is an object of its own, with the part's name and colour, where it
+  stands; painted faces are painted triangles. Tools that were used up and
+  hidden parts are left out.
+- `export { format: "stl" }` is one mesh of everything, because an STL file
+  cannot tell objects apart; `per_part: true` gives a zip with one STL for
+  each part instead.
+- `export { format: "step" }` has exact solids, named and coloured.
+
 ## The commands
 
 Arguments in brackets are optional.
@@ -174,12 +191,13 @@ Arguments in brackets are optional.
 | `combine` | [part], with, operation, [keep], [name] | Joins other parts to a part, cuts them out of it, or keeps what they share. |
 | `move_part` | [part], [position], [rotation], [by], [turn], [parent] | Places a part: where it stands, how it is turned, what it stands under. |
 | `copy_part` | [part], [linked], [position], [rotation], [by], [parent], [name] | A copy of its own, or a linked copy that follows the original. |
+| `set_color` | color, [part], [faces] | A colour for a part, or for single faces. |
 | `edit_part` | [part], [name], [hidden] | Renames a part, hides or shows it. |
 | `unlink_part` | [part] | Turns a linked copy into a part of its own. |
 | `delete_part` | [part], [with_dependents] | Deletes a part with its history and what is under it. |
 | `undo`, `redo` | - | As the buttons. |
 | `cancel_edit` | - | Closes a sketch or dialog that is open in the page, discarding. |
-| `export` | [format], [download] | STEP or the project as text, STL as base64, or a browser download. |
+| `export` | [format], [per_part], [download] | 3MF (an object for each part, named and coloured), STL, STEP or the project. |
 | `screenshot` | [view], [fit], [max], [dimensions] | The 3D view as a PNG data URL, with the driving numbers on it if asked. |
 | `set_view` | view, [fit] | Turns the camera to a standard view. |
 
