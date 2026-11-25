@@ -77,7 +77,8 @@ let editor = null,
   numbersFor = null, // the feature that was clicked in the history: its numbers are shown on the model
   hotDim = null, // { feature, key }: the number the mouse is on
   quietShown = false; // a change made from the view itself: the camera stays as it is
-// What the view bar's two toggles are set to, kept between visits.
+// Whether sizes are shown where the mouse rests is kept between visits. Dimensions is not: its numbers
+// take the clicks that land on them, and a view that was left that way would be a surprise the next day.
 const PREF = (name) => 'corecad.' + name + (new URLSearchParams(location.search).has('test') ? '.test' : '');
 function pref(name, fallback) {
   try {
@@ -95,7 +96,7 @@ function setPref(name, on) {
   }
 }
 let measureOn = pref('measure', true), // sizes where the mouse rests or clicks
-  dimsOn = pref('dimensions', false); // every driving number of the selected part
+  dimsOn = false; // every driving number of the selected part
 const REST_MS = 300; // how long the mouse must stay on something for it to be what the person points at
 const collapsed = new Set(); // the parts whose history is folded away in the browser
 const PRIMITIVES = ['box', 'cylinder', 'sphere'];
@@ -2143,7 +2144,6 @@ const actions = {
   connect: openConnect,
   dimensions: () => {
     dimsOn = !dimsOn;
-    setPref('dimensions', dimsOn);
     renderToggles();
     view.dirty();
     if (dimsOn)
