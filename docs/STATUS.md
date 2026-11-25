@@ -1,7 +1,153 @@
 # CoreCAD status — 2026-11-25
 
-The newest work is at the end: [0.2: parts](#02-parts-2026-11-25). The first
-sections describe 0.1 as it was finished.
+This page begins with where the project stands, what is decided, what is
+open and what comes next. [The log](#the-log) under that is how it got there,
+in the order the work was done.
+
+## Where it stands
+
+CoreCAD is live at [h0bb3.github.io/corecad](https://h0bb3.github.io/corecad/):
+`main` is what is published. The page is build `4284988a19` (the files of
+commit `05622ab`; `src/version.js` names the build).
+
+What it does:
+
+- **Sketches** on origin planes and flat faces, with constraints and driving
+  dimensions, solved by CoreCAD's own solver.
+- **Solids**: extrude and revolve (new body, join, cut, intersect), fillet
+  and chamfer, in an editable history with undo and redo.
+- **Parts**: each with its own history and its own place; groups; copies and
+  linked copies; combine (join, cut, intersect) of parts where they stand;
+  arrows and rings to move and turn them.
+- **Sizes on the model**: where the mouse rests, between two clicked things,
+  and the Dimensions view, where a number is clicked and typed over.
+- **Colours** for parts and for single faces. **Export** as 3MF (an object
+  for each part), STL and STEP, of everything or of one part. Project files,
+  and an autosave in the browser.
+- **For an agent**: 37 commands behind `window.corecad.run`
+  ([COMMANDS.md](COMMANDS.md)), and the same list over MCP through a relay
+  ([bridge/README.md](../bridge/README.md)): 38 tools with the relay's own.
+  "This", "selected" and "pointed" mean what the person has clicked or rests
+  the mouse on.
+- A tab notices a newer published build and reloads into it (the **Update**
+  button, `reload_app`).
+
+Verified on this build, 2026-11-25:
+
+- `python tools/run_tests.py`: 114 tests in 15 pages; the kernel pages run
+  the real OpenCascade worker.
+- The end-to-end scripts in headless Chrome, all passing: `tools/e2e.py`,
+  `e2e_more.py`, `e2e_parts.py` and `e2e_export.py` (real mouse and key
+  events), `e2e_api.py` (every command with expected volumes; the list of
+  commands is asserted exactly) and `e2e_bridge.py` (MCP over HTTP through a
+  local relay into the page).
+- On the public site: `e2e_api.py` against the published page, and
+  `e2e_bridge.py --live` through the public relay.
+
+Not verified:
+
+- **By hand.** What the owner has reported from use is in the log (turning
+  parts, which led to the rings; a 3MF opened in Bambu Studio). Everything
+  else rests on the scripts.
+- **A slicer.** Bambu Studio opened a 3MF from CoreCAD with the message "The
+  3mf file has invalid config, load geometry data only"; the geometry was
+  right. What causes the message was not found, and whether the parts arrive
+  as separate named objects with their colours is not confirmed.
+- **Claude's own connector.** The relay has been used by the test clients
+  and by an agent of the owner's. Adding it in Claude as a custom connector
+  has not been reported.
+- **Other browsers.** Chrome on a Windows desktop only.
+
+## Decided
+
+- **One way to do each thing; primitives, not conveniences** (the owner,
+  2026-11-25). How the rule is applied is in
+  [COMMANDS.md](COMMANDS.md#one-way-to-do-each-thing). Before a command or an
+  argument is added: if what is there can already do it, it is not added.
+- **The shapes of a sketch stay** (`rectangle`, `circle` and `polyline`
+  beside `line`): saving calls is worth something too, and a rectangle and a
+  circle bring the dimensions a person changes them by (the owner,
+  2026-11-25). This settles the shapes that are there. It does not open the
+  door to new shortcuts: ask first.
+- **An agent is the main user; a person inspects and directs.** A new
+  operation needs a command, a row in the history and readable numbers on
+  the model. A dialog and a toolbar button are not required (revolve has
+  neither).
+- **Groups are not scaled.** Placements are rigid everywhere.
+- **Nothing to install for a user.** The bridge is a hosted relay, not a
+  helper program on the user's machine.
+- **A static site with no build step**, tested in a real browser.
+
+## Open, for the owner
+
+1. **The page's own shortcuts.** Box, Cylinder, Sphere, Hole, Ungroup, the
+   symmetric tick of the extrude dialog and making things inside the selected
+   group are still in the page for a person, and the document still has the
+   features `box`, `cylinder`, `sphere` and `hole`. Take them out as well, or
+   leave them?
+2. **Bambu Studio.** Do the parts of a 3MF arrive as separate objects, named
+   and coloured? A file that shows the message above would help to find its
+   cause.
+3. **Sizes where the mouse rests** are on from the start (Measure turns them
+   off). They cost nothing to see, but they appear every time the mouse
+   stops. Right as the default?
+4. **In the Dimensions view a number takes the click**, not the model under
+   it. Right, or should the model win unless the number is hit exactly?
+5. **The Dimensions view shows the selected part** (and its tools), not
+   everything at once. Right?
+6. **The rings turn about the parent's axes.** Is a way to turn about the
+   part's own axes wanted?
+7. **A client is not told when the list of tools changes**: it reconnects to
+   read it again. Telling it needs a new version of the relay on its host.
+   Worth doing?
+
+## Next
+
+Operations that the others cannot make up, none started: **shell**,
+**mirror**, **sweep**, **loft**, in that order unless the owner says
+otherwise. The kernel build has the classes for all four
+(`docs/kernel-classes.txt`: `BRepOffsetAPI_MakeThickSolid`,
+`BRepBuilderAPI_Transform`, `BRepOffsetAPI_MakePipe`,
+`BRepOffsetAPI_ThruSections`), but none of them has been run here: try each
+in `test/spike.test.html` first and write down what it did in
+[KERNEL_NOTES.md](KERNEL_NOTES.md), as was done for the others.
+
+To settle for each before it is built, with one way to say each thing:
+
+- **Shell**: which faces are opened (by description, as edges are for a
+  fillet) and one thickness. What the new inner faces are called, so that a
+  later feature can refer to them.
+- **Mirror**: a feature of a part, which mirrors its bodies in an origin
+  plane or a flat face. It cannot be a placement: placements are rigid, so
+  no way of standing a copy makes it a mirror image.
+- **Sweep**: an area of one sketch along a path from another. It is the
+  first operation that takes two sketches.
+- **Loft**: areas of two or more sketches, in order.
+
+What a new operation touches (revolve, commit `65a526a`, is the pattern):
+
+- `src/kernel/shapes.js` (the solid, with a label on every face) and
+  `src/kernel/features.js` (building the feature in a history).
+- `src/doc/model.js`, `src/doc/features.js`, `src/types.js` (the feature, its
+  defaults and what makes it valid).
+- `src/api/commands.js` (the command and its schema, what `edit_feature` may
+  change, its numbers in `get_state`), `src/api/bridge.js` (the instructions
+  an MCP client reads).
+- `src/api/dimensions.js` (its numbers on the model) and `src/app.js` (its
+  row in the history).
+- Tests: a `test/kernel-<name>.test.html` with exact volumes, and
+  `tools/e2e_api.py`, whose `COMMANDS` list must name the new command.
+- `docs/COMMANDS.md`, `docs/SPEC.md`, `docs/KERNEL_NOTES.md`, this page.
+- `python tools/stamp.py`, then every test (see Development in the README).
+
+## The log
+
+Each section from here on was written when its work was done and is left as
+it was. Counts of commands and of tests are those of that day, and some
+commands that are named no longer exist: `add_box`, `add_cylinder`,
+`add_sphere`, `hole`, `ungroup`, `list_dimensions`, `list_commands` and
+`run_command`. The present is the top of this page and
+[COMMANDS.md](COMMANDS.md).
 
 ## v0.1
 
@@ -485,7 +631,8 @@ What was left, and why:
 - The shapes of `add_to_sketch`: `rectangle` and `polyline` are made of
   lines, and a `line` is a polyline of two points. A rectangle and a circle
   come with the dimensions a person changes them by, which lines would need
-  about eight more commands for. Open for a decision.
+  about eight more commands for. Decided the same day: they stay, because
+  saving calls is worth something too.
 - `add_dimension` keeps `value` (it is what the dimension is), and
   `list_edges` its `edges` (what a description means, before it is used).
 

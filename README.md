@@ -7,8 +7,7 @@ from several parts: place them, copy them, start them from a box, a cylinder
 or a sphere, and join or cut them with each other. Inspired by the way
 Fusion 360 works.
 
-**[Open CoreCAD](https://h0bb3.github.io/corecad/)** — the first working version.
-No account or installation. Projects stay in your browser or in files you download.
+**[Open CoreCAD](https://h0bb3.github.io/corecad/)**. No account or installation. Projects stay in your browser or in files you download.
 The geometry libraries load from a CDN, so the first visit needs internet access.
 
 ## Make a first part
@@ -103,9 +102,19 @@ The **?** button lists shortcuts. Every control has hover help.
 The first version includes the required sketch constraints, dimensions, profiles
 with holes, all four extrusion operations, quick holes, edge treatments, editable
 history, undo/redo and exports; 0.2 adds parts with their own histories, placement,
-copies, primitives and combining. See [STATUS](docs/STATUS.md) for
-validation and remaining limits, [SPEC](docs/SPEC.md) for the implementation contract,
-and [BRIEF](docs/BRIEF.md) for the original scope.
+copies, primitives and combining; since then groups, colours, sizes on the model,
+3MF export, revolve and the commands for agents.
+
+Where to read:
+
+| Page | What is in it |
+| --- | --- |
+| [STATUS](docs/STATUS.md) | Where the project stands, what is decided, what is open, what comes next, and the log of the work. Start here to continue. |
+| [COMMANDS](docs/COMMANDS.md) | The commands for scripts and agents, and the rule they follow. |
+| [bridge/README](bridge/README.md) | The MCP bridge: how a client reaches a tab, and what the code protects. |
+| [SPEC](docs/SPEC.md) | The implementation contract: document, parts, sketches, solids, references. |
+| [KERNEL_NOTES](docs/KERNEL_NOTES.md) | What was tried with the geometry kernel, and what it did. |
+| [BRIEF](docs/BRIEF.md) | The original scope. |
 
 ## Scripts and agents
 
@@ -165,6 +174,7 @@ python tools/e2e_more.py
 python tools/e2e_parts.py
 python tools/e2e_api.py
 python tools/e2e_export.py
+python tools/e2e_bridge.py   # the MCP bridge; this one needs Node
 ```
 
 These need Python 3 and Chrome; `tools/browser.py` uses only Python's standard
@@ -172,6 +182,19 @@ library to drive headless Chrome. Set `CHROME` if Chrome is in a nonstandard
 location. The end-to-end scripts edit with actual mouse and keyboard events.
 Their test autosave is separate from normal projects; screenshots and downloads
 go under ignored `.scratch/`. Tests do not import any scratch prototypes.
+
+- `tools/run_tests.py` runs every `test/*.test.html` and fails with "NOT
+  CURRENT" if `tools/stamp.py` was not run after the last change to the page.
+- `tools/e2e_bridge.py` starts the relay in `bridge/` with Node: have `node`
+  on the PATH or give its path in `NODE`. The relay's own tests are `npm
+  test` in `bridge/`.
+- `main` is the published site (GitHub Pages), about a minute after a push:
+  the new build is there when `src/version.js` on the site names it. Then
+  the same scripts check the public page: `python tools/e2e_api.py
+  "https://h0bb3.github.io/corecad/?test=1"`, and `python tools/e2e_bridge.py
+  --live` through the public relay.
+- A change to the commands needs its line in the `COMMANDS` list of
+  `tools/e2e_api.py`, which is compared with what the page has.
 
 Core modules are in `src/core`, `src/sketch`, `src/doc`, `src/kernel` and
 `src/view`. `src/app.js` connects the editor, forms and document store. Kernel

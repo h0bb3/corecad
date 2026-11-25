@@ -222,8 +222,9 @@ exercise dragging, quick holes, planes, undo and persistence. Screenshots go in
 `.scratch/`; no required source or test may depend on that ignored directory.
 
 Deferred: the brief's “should” tools (2D corner operations, trim, offset, mirror,
-named expressions, projected geometry, measure and section tools), plus imports,
-revolve, sweep, loft, shell, patterns, and joints or mates between parts (parts are
-placed by position and rotation). Arithmetic in number fields
+named expressions, projected geometry, a section tool), plus imports,
+sweep, loft, shell, patterns, and joints or mates between parts (parts are
+placed by position and rotation). Revolve and measuring were deferred at first
+and are done since. Arithmetic in number fields
 is evaluated once, not retained as a parametric expression. Desktop mouse/keyboard
 is the primary target. Any remaining limitations belong in `docs/STATUS.md`.

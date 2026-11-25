@@ -61,6 +61,12 @@ The page has buttons for a person that do several of these in one go (Box,
 Cylinder, Sphere, Hole, Ungroup). What they make is in the model like
 anything else, and `edit_feature` changes it.
 
+Where the rule stops: the shapes of `add_to_sketch`. A `rectangle` is four
+lines and a `polyline` is lines, and they stay beside `line`. One call does
+the work of about eight, and a rectangle and a circle come with the
+dimensions a person changes them by. That settles the shapes that are there;
+it is not a reason to add shortcuts.
+
 ## How they behave
 
 - **They are the page's own actions.** A command changes the model through
