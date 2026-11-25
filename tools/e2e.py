@@ -4,10 +4,11 @@ Run with: python tools/e2e.py. Inspection reads state and projects coordinates;
 it never inserts geometry or edits the document through JavaScript.
 """
 import json
+import sys
 from browser import Browser
 
 
-def run(p):
+def run(p, url='index.html?test=1'):
     def wait(expr='!corecad.busy', timeout=30):
         return p.wait('window.corecad && (' + expr + ')', timeout=timeout)
 
@@ -40,7 +41,7 @@ def run(p):
         fill('#dim-value', value)
         p.key('Enter')
 
-    p.goto('index.html?test=1')
+    p.goto(url)
     wait('window.corecadReady && !corecad.busy', 45)
     p.click('[data-plane="XY"]')
     p.key('r')
@@ -133,7 +134,7 @@ def run(p):
         assert p.js('window.__lastExport.size') > 1000
     p.key('s', modifiers=2)
     count = p.js('corecad.doc.features.length')
-    p.goto('index.html?test=1')
+    p.goto(url)
     wait('window.corecadReady && !corecad.busy', 40)
     assert p.js('corecad.doc.features.length') == count
     assert abs(p.js('corecad.build.bodies[0].volume') - 46720) < .05
@@ -144,7 +145,7 @@ def run(p):
 if __name__ == '__main__':
     with Browser(size=(1440, 960)) as browser:
         try:
-            run(browser.page)
+            run(browser.page, sys.argv[1] if len(sys.argv) > 1 else 'index.html?test=1')
         except Exception:
             p = browser.page
             print('State:', p.js('({doc:window.corecad?.doc,sketch:window.corecad?.sketch,draft:window.corecad?.draft,build:window.corecad?.build?.features})'))

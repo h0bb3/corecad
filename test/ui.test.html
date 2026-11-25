@@ -1,0 +1,9 @@
+<!doctype html><meta charset="utf-8"><title>UI text safety</title><script type="module">
+import {test,eq,ok,run} from './harness.js';
+import {check,selectField,field} from '../src/ui.js';
+test('Project and body names remain text inside forms',()=>{
+ const hostile='</option></select><img src="bad" onerror="window.injected=true">',box=document.createElement('div');
+ box.innerHTML=check('b',hostile,true,'tip')+selectField('s','Sketch',[[hostile,hostile]],hostile,'tip')+field('f','Name',hostile,'tip');
+ eq(box.querySelectorAll('img').length,0);eq(box.querySelector('option').value,hostile);eq(box.querySelector('option').textContent,hostile);eq(box.querySelector('#f').value,hostile);ok(!window.injected);
+});run();
+</script>

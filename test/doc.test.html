@@ -10,6 +10,7 @@ test('Document round trip, validation and forward fields',async()=>{
  eq(parseDocument(serializeDocument(d)),d);
  await throws(()=>parseDocument('{'),/JSON/); await throws(()=>parseDocument(JSON.stringify({...d,version:999})),/format|version|newer/i);
  await throws(()=>serializeDocument({...d,seq:0}),/id|seq|counter/i);
+ await throws(()=>serializeDocument({...d,features:[{...f,suppressed:'false'}]}),/Suppression/);
  eq(geometryKey(f),geometryKey({...f,name:'Renamed',ui:{visible:false}}));
 });
 test('Undo branches retain feature and sketch id watermarks',()=>{

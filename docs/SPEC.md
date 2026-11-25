@@ -10,15 +10,19 @@ existing repository. The existing Claude session is not part of this work.
 One static page, plain ES modules, no build, npm or server backend. Dependencies are
 loaded from jsDelivr at the versions in the brief: three 0.187.0, replicad 1.2.1,
 replicad-opencascadejs 1.2.1. All dimensions are millimetres; Z is up.
+The stylesheet optionally loads DM Sans and Manrope from Google Fonts for the
+workspace typography, with local system-font fallbacks. No additional runtime
+JavaScript library or build dependency is used.
 
 * `core/`: vectors, canonical plane frames, tolerances, numbers and errors.
 * `sketch/`: pure data operations, constraint solver, snapping and profile detection.
 * `doc/`: pure immutable documents, validation, history and topology references.
 * `kernel/`: OpenCascade ownership, labelled operations, feature evaluation, worker
   scheduling, meshing and export. No DOM and no sketch solving in the worker.
-* `app/`: document store, autosave and file handling.
+* `store.js`, `persist.js`: document store, autosave and file handling.
 * `view/`: camera mathematics, picking and three.js rendering.
-* `ui/`: controls, feature dialogs and the SVG sketch editor; `main.js` connects them.
+* `app.js`, `ui.js`: controls, feature dialogs and application orchestration.
+* `sketch/editor.js`: canvas sketch editor, snapping and tool state machines.
 
 The tested L0 files are installed from `.scratch/lead/wave0`. Prototypes are a source
 of tested algorithms, not an obligation to reproduce their proposed file count.
@@ -68,12 +72,12 @@ Degenerate lines, circles and arcs are refused. Dragging uses a temporary handle
 small motion steps and the same equations, committing only on release.
 
 Drawing supports chained lines, two-corner rectangles, centre/rim circles,
-three-point arcs and points. Nearby points/origin, horizontal/vertical directions,
+centre/start/end arcs and points. Nearby points/origin, horizontal/vertical directions,
 midpoints and curves snap with constraints; Ctrl disables inference. Typed rectangle
-width/height, line length and circle diameter create dimensions in the same action.
+width/height, line length and circle/arc radius create dimensions in the same action.
 Selection, construction toggle, deleting geometry/constraints and editing dimension
-labels are available. Free geometry is blue; fully determined geometry is dark
-(light in the dark theme). The sketch status shows remaining degrees of freedom.
+labels are available. Free geometry is blue; fully determined geometry is green;
+explicitly fixed geometry is purple. The sketch status shows remaining degrees of freedom.
 
 ## Profiles
 
@@ -81,7 +85,7 @@ Analytic line/circle intersections split curves into a planar half-edge arrangem
 Endpoints weld at the shared tolerance. Half-edges sort by tangent and curvature;
 clockwise successor walks find bounded faces. Bridges and dangling edges bound no
 region. Disconnected nested loops form holes. Curves remain exact lines/arcs/circles
-in the result; tessellation is only for display and containment.
+in the result; tessellation is only for display. Containment uses analytic ray crossings.
 
 Every region has a counter-clockwise outer loop, clockwise holes, exact signed area,
 an interior point, entity-id key and orientation signature. Profile selection stores

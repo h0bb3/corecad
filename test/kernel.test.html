@@ -4,7 +4,7 @@ import {createKernel} from '../src/kernel/client.js';
 import {createDocument} from '../src/doc/model.js';
 import {findRegions,profileRefFrom} from '../src/sketch/profiles.js';
 import {faceRefFrom,edgeRefFrom} from '../src/doc/refs.js';
-import {plateSketch,sk,circle} from './fixtures/sketches.js';
+import {plateSketch,sk,circle,rect,arc,line} from './fixtures/sketches.js';
 const k=createKernel();let d=createDocument('Test plate'),plate,cut,rounded;
 const sketch=(id,s,plane={kind:'base',base:'XY'})=>({id,type:'sketch',name:id,plane,...s});
 const extrude=(id,s,operation='new',distance=10,flip=false)=>({id,type:'extrude',name:id,sketch:s.id,profiles:findRegions(s).map(profileRefFrom),operation,extent:{type:'oneSide',distance},flip,targets:null});
@@ -42,10 +42,44 @@ test('STL and STEP exports contain real solids',async()=>{
  const stl=await k.export(d,{format:'stl'}),v=new DataView(await stl.arrayBuffer());ok(v.getUint32(80,true)>20);eq(v.byteLength,84+50*v.getUint32(80,true));
  const step=await k.export(d,{format:'step'});ok((await step.text()).startsWith('ISO-10303-21;'));ok(step.size>10000);
 });
+test('Join, intersect, disconnected join, two sides and alternate planes',async()=>{
+ const q=structuredClone(d);q.features=q.features.slice(0,2);const s=sk();rect(s,30,0,80,40);const f=sketch('f8',s);q.features.push(f,extrude('f9',f,'join'));q.seq=9;
+ let r=good(await k.rebuild(q));eq(r.bodies.length,1);eq(r.bodies[0].id,'f2');near(r.bodies[0].volume,32000,.003);
+ q.features[3].operation='intersect';r=good(await k.rebuild(q));near(r.bodies[0].volume,12000,.003);
+ q.features[3].operation='new';r=good(await k.rebuild(q));eq(r.bodies.length,2);
+ const far=sk();rect(far,100,0,110,10);q.features[2]=sketch('f8',far);q.features[3]=extrude('f9',q.features[2],'join');r=good(await k.rebuild(q));eq(r.bodies.length,2);eq(r.features[3].code,'join-made-body');
+ q.features=q.features.slice(0,2);q.features[1].extent={type:'twoSides',distance:7,distance2:3};near(good(await k.rebuild(q)).bodies[0].volume,24000,.003);
+ q.features[0].plane.base='XZ';r=good(await k.rebuild(q));near(r.bodies[0].bbox,[[0,-7,0],[60,3,40]],1e-5);
+ q.features[0].plane.base='YZ';r=good(await k.rebuild(q));near(r.bodies[0].bbox,[[-3,0,0],[7,60,40]],1e-5);
+});
+test('Analytic nested profiles and arc wires produce valid solids',async()=>{
+ const s=sk();rect(s,0,0,60,40);circle(s,20,20,5);const f=sketch('f20',s),ex=extrude('f21',f);ex.profiles=[profileRefFrom(findRegions(f)[0])];const q={...createDocument(),seq:21,features:[f,ex]};
+ near(good(await k.rebuild(q)).bodies[0].volume,24000-250*Math.PI,.005);
+ const slot=sk();line(slot,0,-5,20,-5);arc(slot,20,0,20,-5,20,5);line(slot,20,5,0,5);arc(slot,0,0,0,5,0,-5);q.features[0]=sketch('f20',slot);q.features[1]=extrude('f21',q.features[0]);near(good(await k.rebuild(q)).bodies[0].volume,2000+250*Math.PI,.005);
+});
+test('Chamfer volume and lost face references are explicit',async()=>{
+ const q=structuredClone(d),b=rounded.bodies[0],edge=b.mesh.edges.findIndex(e=>e.kind==='circle'&&e.closed&&Math.abs(e.mid[2]-10)<1e-6);
+ ok(edge>=0);q.features.push({id:'f6',type:'chamfer',name:'Rim',edges:[edgeRefFrom(b,edge)],distance:1,kseq:1});q.seq=6;
+ near(good(await k.rebuild(q)).bodies[0].volume,23360-13*Math.PI/3,.005);
+ q.features=q.features.filter(f=>f.id!=='f2');const lost=await k.rebuild(q);eq(lost.features.find(f=>f.id==='f3').code,'plane-lost');eq(lost.bodies.length,0);
+ await throws(()=>k.export(q,{format:'step'}),/failed features/);
+});
 test('Latest request wins without stale preview',async()=>{
  k.debugDelay(100);const q=structuredClone(d);q.features[1].extent.distance=11;
  const first=k.rebuild(q);await new Promise(r=>setTimeout(r,30));q.features[1].extent.distance=12;const second=k.rebuild(q);
- eq((await first).status,'superseded');near(good(await second).bodies[0].volume,28032,.005);k.debugDelay(0);k.dispose();
+ eq((await first).status,'superseded');near(good(await second).bodies[0].volume,28032,.005);k.debugDelay(0);
+});
+test('Stop discards the active worker, preserves the document, and retry clears poison',async()=>{
+ const q=structuredClone(d);q.features[1].extent.distance=17;k.debugDelay(150);
+ const reached=new Promise(resolve=>{const off=k.on('progress',m=>{if(m.featureId==='f2'){off();resolve();}});});
+ const first=k.rebuild(q);await reached;k.stop();eq((await first).status,'superseded');await k.ready;
+ const skipped=await k.rebuild(q);eq(skipped.features[1].status,'error');ok(/stopped|crashed/.test(skipped.features[1].message));
+ k.retry();await k.ready;near(good(await k.rebuild(q)).bodies[0].volume,39712,.005);
+});
+test('Prefix eviction releases old shape ownership during sustained parameter edits',async()=>{
+ const q=structuredClone(d);q.features=q.features.slice(0,2);let r;
+ for(let i=0;i<125;i++){q.features[1].extent.distance=10+i*.1;r=good(await k.rebuild(q));}
+ ok(r.stats.prefixes<=96);ok(r.stats.ownedShapes<=96);near(r.bodies[0].volume,2400*22.4,.01);k.dispose();
 });
 run();
 </script>

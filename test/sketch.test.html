@@ -34,6 +34,9 @@ test('circle dimensions, tangency, and concentric circles', () => {
   s = must(tryAddConstraint(s,{type:'tangent',refs:[a.id,b.id],inside:false}));
   const c = s.entities.find(e=>e.id===b.id); near(Math.hypot(...at(s,b.c))-c.r,10,1e-6);
 });
+test('fixing a valid arc eliminates its intrinsic equation without false redundancy',()=>{
+ let s=sk();const a=arc(s,0,0,10,0,0,10);s=must(tryAddConstraint(s,{type:'fix',refs:[a.id]}));eq(analyseSketch(s).dof,0);eq(analyseSketch(s).redundant,[]);
+});
 test('number expressions are finite arithmetic, never JavaScript', () => {
   for (const [text,v] of [['60/2+5',35],['1,5*2',3],['2*(3+4)',14],['-3 mm',-3],['45°',45]]) eq(parseNumber(text),v);
   for (const text of ['', '1/0', '2+', '(3', 'window', '1;alert(1)', 'Infinity']) eq(parseNumber(text),null);
