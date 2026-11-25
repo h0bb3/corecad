@@ -251,11 +251,14 @@ def run(p, url='index.html?test=1'):
     step('a move that would empty an intersection, and other mistakes, are refused and change nothing')
 
     # ---- a group moves and hides what is under it; export has what is to be seen, where it stands
-    group = call('add_part', name='Group')
-    assert group['part']['kind'] == 'empty'
+    assert call('add_part', name='Empty')['part']['kind'] == 'empty'
+    call('undo')
+    group = call('add_group', name='Group', parent=None)
+    assert group['part']['kind'] == 'group' and group['part']['contains'] == [] and 'box' not in group['part'], group['part']
     call('move_part', part='Block', parent='Group')
     lifted = call('move_part', part='Group', by=[0, 0, 100])
-    assert lifted['part']['kind'] == 'group' and row(call('get_state'), 'Block')['box'] == [[-5, -5, 100], [5, 5, 110]]
+    assert lifted['part']['kind'] == 'group' and lifted['part']['contains'] == [row(lifted_state := call('get_state'), 'Block')['id']], lifted['part']
+    assert row(lifted_state, 'Block')['box'] == [[-5, -5, 100], [5, 5, 110]] and lifted['part']['box'] == [[-5, -5, 100], [5, 5, 110]]
     assert stl_box() == [[-20, -30, 0], [20, 110, 110]]
     hidden = call('edit_part', part='Group', hidden=True)
     assert [b.get('shown', True) for b in hidden['bodies'] if b['part'] == row(call('get_state'), 'Block')['id']] == [False]
@@ -267,6 +270,60 @@ def run(p, url='index.html?test=1'):
     assert own['part']['kind'] == 'part' and own['part']['name'] == 'Twin' and len(own['part']['features']) == 5 and own['part']['box'] == [[-20, -30, 40], [20, 30, 60]], own['part']
     assert p.js('document.querySelectorAll("[data-part]").length') == len(call('get_state')['parts']), 'the page lists every part'
     step('groups, hiding, export in place, delete with dependents, undo, unlink')
+
+    # ---- groups: parts gathered where they stand; what is made next goes into the group; combine takes a group whole
+    untouched = call('get_document')
+    a = call('add_box', size=[10, 10, 10], position=[200, 0, 0], name='Foot A', parent=None)
+    b = call('add_box', size=[10, 10, 10], position=[230, 0, 0], name='Foot B', parent=None)
+    feet = call('add_group', name='Feet', parts=['Foot A', 'Foot B'], position=[200, 0, 0])
+    fid = feet['part']['id']
+    assert feet['part']['kind'] == 'group' and feet['part']['contains'] == [a['part']['id'], b['part']['id']] and feet['part']['position'] == [200, 0, 0], feet['part']
+    assert feet['part']['box'] == [[195, -5, 0], [235, 5, 10]] and feet['part']['features'] == [] and feet['part']['bodies'] == []
+    state = call('get_state')
+    assert state['current_part'] == fid
+    assert row(state, 'Foot B')['parent'] == fid and row(state, 'Foot B')['position'] == [30, 0, 0] and row(state, 'Foot B')['box'] == [[225, -5, 0], [235, 5, 10]], row(state, 'Foot B')
+    names = [x['name'] for x in state['parts']]
+    assert names.index('Feet') < names.index('Foot A') < names.index('Foot B'), 'in the list the group stands where its first part stood'
+    c = call('add_box', size=[10, 10, 10], position=[60, 0, 0], name='Foot C')      # no parent given: into the group that is current
+    assert c['part']['parent'] == fid and c['part']['box'] == [[255, -5, 0], [265, 5, 10]], c['part']
+    d = call('add_box', size=[10, 10, 10], position=[90, 0, 0], name='Foot D')      # the current part stands in the group: so does the next
+    assert d['part']['parent'] == fid
+    call('undo')
+    loose = call('add_box', size=[10, 10, 10], position=[0, 300, 0], name='Loose', parent=None)
+    assert loose['part']['parent'] is None
+    sk = call('add_sketch', plane='XY', part='Feet', shapes=[{'type': 'rectangle', 'corner': [0, 20], 'width': 5, 'height': 5}])
+    made = next(x for x in call('get_state')['parts'] if x['id'] == sk['part'])
+    assert made['parent'] == fid and made['kind'] == 'part' and sk['part'] not in (fid, loose['part']['id']), 'a sketch "in" a group starts a part of its own there: %s' % made
+    assert len(call('list_faces', part='Feet')) == 3, 'a listing of a group is of everything in it'
+    fails('combine', 'is a group', part='Feet', operation='join', **{'with': ['Loose']})
+    fails('add_group', 'already stands under', parts=['Feet', 'Foot A'])
+    fails('add_group', 'under one of the parts', parts=['Feet'], parent='Foot A')
+    slab = call('add_box', size=[100, 20, 4], position=[230, 0, 3], name='Slab', parent=None)
+    cut = call('combine', part='Slab', operation='cut', **{'with': ['Feet']})
+    near(vol(cut, slab['part']['id']), 100 * 20 * 4 - 3 * 10 * 10 * 4, 1e-6, 'a group as a tool: everything in it is cut out')
+    assert row(cut, 'Feet')['tool_of'] == slab['part']['id'] and row(cut, 'Feet')['parent'] == slab['part']['id']
+    fails('ungroup', 'as a whole', part='Feet')
+    fails('ungroup', 'not a group', part='Loose')
+    call('undo')
+    blue = call('set_color', part='Feet', color='blue')
+    assert blue['part']['color'] == '#2f6fd0' and 'color' not in row(call('get_state'), 'Foot A')
+    assert set(p.js('corecad.scene.filter(b => ["Foot A", "Foot B", "Foot C"].includes(corecad.parts.find(x => x.id === b.part).name)).map(b => b.color)')) == {'#2f6fd0'}, 'the colour of the group is the colour of what is in it'
+    turned = call('move_part', part='Feet', turn={'axis': 'z', 'angle': 90})
+    assert turned['part']['rotation'] == [0, 0, 90] and turned['part']['box'] == [[225, -35, 0], [235, 35, 10]], turned['part']
+    whole = call('copy_part', part='Feet', by=[0, 100, 0])
+    assert whole['part']['kind'] == 'group' and whole['part']['name'] == 'Feet copy' and len(whole['part']['contains']) == 4 and whole['part']['box'] == [[225, 65, 0], [235, 135, 10]], whole['part']
+    call('undo')
+    out = call('ungroup', part='Feet')
+    assert out['ungrouped'] == fid and len(out['freed']) == 4 and 'Feet' not in [x['name'] for x in out['parts']], out
+    assert row(out, 'Foot B')['parent'] is None and row(out, 'Foot B')['rotation'] == [0, 0, 90] and row(out, 'Foot B')['box'] == [[225, -5, 0], [235, 5, 10]], row(out, 'Foot B')
+    assert p.js('document.querySelectorAll("[data-part]").length') == len(out['parts'])
+    content = lambda d: {k: v for k, v in d.items() if k not in ('seq', 'pseq', 'meta')}     # undo keeps the counters: ids are never used twice
+    for _ in range(20):
+        if content(call('get_document')) == content(untouched):
+            break
+        call('undo')
+    assert content(call('get_document')) == content(untouched)
+    step('add_group gathers parts where they stand; new parts go into the current group; a group as a tool; colour, turn, copy, ungroup')
 
     # ---- "this": what the person has clicked, and what their mouse rests on
     def page(point):

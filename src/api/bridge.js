@@ -15,6 +15,7 @@ export const INSTRUCTIONS =
   'Units are millimetres, Z is up. Start with get_state. A project is made of parts; each part has its own history of features and its own place. ' +
   'Start a part with add_box, add_cylinder or add_sphere, or with add_sketch (shapes on a plane or on a face) and extrude; then hole, fillet, chamfer. ' +
   'move_part places a part, copy_part repeats it (linked: the copy follows the original), combine joins another part to it or cuts one out of it. ' +
+  'add_group keeps parts together under a name (a container with a place and no shape: moving, turning, hiding, colouring or exporting it does that to what is in it). ' +
   'Everything stays editable: set_dimension changes a sketch, edit_feature a feature, and what is built on it follows. ' +
   'Every change answers with the bodies\' volumes and any problems: read them, and use screenshot to look at the result. ' +
   'A command that cannot be built changes nothing and says why. Changes are undo steps in the user\'s page (undo). ' +

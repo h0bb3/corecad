@@ -44,6 +44,12 @@ and its own place.
   Y or Z. Each ring and button always turns about its own axis, round the
   middle of the part. Its parent is chosen there too, or by dragging the part
   onto another in the list; a part moves with its parent.
+- **Group** makes a container for parts: a name and a place, and no shape
+  of its own. Drag parts onto it in the list, or make them while it is
+  selected. Moving, turning, hiding, copying or exporting a group does that
+  to everything in it, and its colour is the colour of the parts in it that
+  have none of their own. A group can hold groups. **Ungroup** takes it away
+  and leaves the parts where they are.
 - **Copy** makes a part with its own history. **Linked copy** shows the
   original in another place and changes with it.
 - **Combine** joins other parts to the selected part, cuts them out of it, or

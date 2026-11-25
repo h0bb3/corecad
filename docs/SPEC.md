@@ -57,7 +57,7 @@ history of 0.1; everything else in this document holds per part.
 
 The file is format 2: `{format:'corecad', version:2, meta, seq, pseq, parts,
 features, bodies}`. A part is `{id:'oN', name, parent, pos, rot, hidden?,
-link?}`. Every feature has `part`: a part's history is the features with its
+link?, group?}`. Every feature has `part`: a part's history is the features with its
 id, in document order, built from nothing. Feature ids stay unique in the
 whole project, so face labels are too. A format 1 file is read as one part
 (`doc/schema.js`, `upgrade`); files are always written in format 2.
@@ -86,11 +86,23 @@ of what stands under that) in its own place and changes with it. A copy of
 its own duplicates the part, what stands under it and all their features with
 new ids, references included.
 
+A part with `group: true` is a group: a container. It has a name, a
+placement and children, and never features (a file in which a feature names a
+group is refused). It is not a new kind of node: everything that walks the
+tree (placement, visibility, what a combine or a linked copy takes, export of
+one part, copies) treats it as a part that happens to have no solids. What it
+adds is in the page and the command set: what is made while it is selected is
+made in it, it folds away in the list, and it can be taken away again
+(`ungroup`) with its children left where they stand. Groups are not scaled:
+placements stay rigid.
+
 A part may have `color` ('#rrggbb') and `paint`: faces with a colour of their
 own, each named by its body and the labels it carried when it was painted, and
 found again by those labels after a rebuild (a face that was split is painted
 in all its pieces). Colours are not geometry. A linked copy shows its
-original's colours unless it has a colour of its own.
+original's colours unless it has a colour of its own. A part without a colour
+takes the colour of the nearest part it stands under that has one: that is how
+a group's colour reaches what is in it.
 
 Export writes one object for every part that shows something, where it
 stands, under the part's name: 3MF (the meshes welded so that each is one

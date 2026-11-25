@@ -38,6 +38,9 @@ import {
   setPartColor,
   paintFaces,
   appearanceOf,
+  childrenOf,
+  ungroup,
+  containerOf,
 } from './doc/parts.js';
 import { PALETTE } from './api/colors.js';
 import * as Mat from './core/mat.js';
@@ -220,7 +223,9 @@ function shownDimensions() {
     const used = usedParts(),
       own = partById(d, selectedPart),
       hidden = (pid) => [pid, ...ancestorsOf(d, pid)].some((x) => partById(d, x)?.hidden),
-      scope = new Set(own ? [own.id, ...descendantsOf(d, own.id).filter((x) => used.has(x))] : d.parts.filter((p) => !hidden(p.id)).map((p) => p.id));
+      scope = new Set(
+        own ? [own.id, ...descendantsOf(d, own.id).filter((x) => own.group || used.has(x))] : d.parts.filter((p) => !hidden(p.id)).map((p) => p.id)
+      );
     features = d.features.filter((f) => scope.has(f.part));
   } else if (numbersFor === selectedFeature) {
     // Only a feature the person clicked in the history: one that was just made is selected too, and its
@@ -582,9 +587,12 @@ function refreshScene() {
 /** The part a new sketch goes into: the selected one, else the newest with a history; null when one must be made. */
 function homePart(d = store.state.doc) {
   const p = partById(d, selectedPart);
+  if (p?.group) return null; // a group is selected: what is made now is a new part in it
   if (p && !p.link) return p.id;
-  return [...d.parts].reverse().find((x) => !x.link)?.id ?? null;
+  return [...d.parts].reverse().find((x) => !x.link && !x.group)?.id ?? null;
 }
+/** The group a new part goes into: the selected group, or the one the selected part stands in; null for none. */
+const container = (d = store.state.doc) => containerOf(d, selectedPart);
 function selectPart(pid) {
   selectedPart = pid;
   selectedFeature = null;
@@ -606,7 +614,7 @@ function colourTarget() {
     const owner = partById(d, pickedBody(faces[0]).part);
     return { faces, text: `${faces.length === 1 ? 'the selected face' : `the ${faces.length} selected faces`} of ${owner?.name ?? 'the part'}` };
   }
-  return p ? { part: p, text: `the whole of ${p.name}` } : { text: '' };
+  return p ? { part: p, text: p.group ? `everything in ${p.name} that has no colour of its own` : `the whole of ${p.name}` } : { text: '' };
 }
 function renderColourPanel() {
   if (!colouring || editor || draft || mover) return;
@@ -838,7 +846,8 @@ function renderTools() {
         'Place the selected part: drag it, type its position and rotation, choose its parent · M'
       ) +
       tool('colour', 'Colour', 'Give the selected faces, or the selected part, a colour') +
-      tool('new-part', 'Part', 'Start a new, empty part: the next sketch goes into it')
+      tool('new-part', 'Part', 'Start a new, empty part: the next sketch goes into it') +
+      tool('new-group', 'Group', 'A group: a container for parts. It has a place and no shape; it moves, turns, hides and colours what is in it')
     );
   }
   id('undo').disabled = editor ? !editor.canUndo : !store.history.canUndo;
@@ -855,7 +864,9 @@ function renderFeatureActions() {
       p.link
         ? '<button data-action="unlink-part" title="Make this linked copy a part of its own, with its own history">Unlink</button>'
         : ''
-    }<button data-action="rename-part" title="Rename this part">Rename</button><button data-action="export-part" title="Export this part alone, with what stands under it: 3MF, STL or STEP">Export</button><button data-action="delete-part" title="Delete this part, its history and the parts under it">Delete</button>`);
+    }<button data-action="rename-part" title="Rename this part">Rename</button><button data-action="export-part" title="Export this part alone, with what stands under it: 3MF, STL or STEP">Export</button>${
+      p.group ? '<button data-action="ungroup" title="Take the group away and leave what is in it where it is">Ungroup</button>' : ''
+    }<button data-action="delete-part" title="Delete this part, its history and the parts under it">Delete</button>`);
     return;
   }
   setHTML('browser-actions', f
@@ -978,12 +989,18 @@ function renderBrowser() {
   };
   // Every part with its own history under it; a part's children are indented under it.
   const partRows = treeOrder(doc)
+    .filter(({ part: p }) => !ancestorsOf(doc, p.id).some((a) => collapsed.has(a) && partById(doc, a)?.group))
     .map(({ part: p, depth }) => {
       const fs = featuresOf(doc, p.id),
         own = bodies.filter((b) => b.part === p.id),
         open = !collapsed.has(p.id),
-        source = p.link ? partById(doc, p.link) : null;
-      const note = used.has(p.id)
+        source = p.link ? partById(doc, p.link) : null,
+        inside = p.group ? childrenOf(doc, p.id).length : 0;
+      const note = p.group
+        ? inside
+          ? `${inside} ${inside === 1 ? 'part' : 'parts'}`
+          : 'empty'
+        : used.has(p.id)
         ? used.get(p.id) === p.parent
           ? 'tool'
           : 'tool of ' + (partById(doc, used.get(p.id))?.name ?? 'a part')
@@ -995,17 +1012,19 @@ function renderBrowser() {
       return (
         `<div role="button" tabindex="0" draggable="true" class="tree-row part-row ${
           !selectedFeature && selectedPart === p.id ? 'selected' : ''
-        } ${used.has(p.id) ? 'used' : ''} ${p.hidden ? 'hidden-part' : ''}" style="--depth:${depth}" data-part="${
+        } ${used.has(p.id) ? 'used' : ''} ${p.hidden ? 'hidden-part' : ''} ${p.group ? 'group-row' : ''}" style="--depth:${depth}" data-part="${
           p.id
         }" title="${esc(p.name)}${
           used.has(p.id) ? ' (tool of ' + esc(partById(doc, used.get(p.id))?.name ?? 'a part') + ')' : note ? ' (' + esc(note) + ')' : ''
-        } · Click to select, double-click to place it, drag onto another part to put it under that">${
-          fs.length
-            ? `<button class="twist" data-twist="${p.id}" title="${
-                open ? 'Fold away' : 'Show'
-              } the history of this part">${open ? '▾' : '▸'}</button>`
+        } · ${
+          p.group ? 'A group: click to select, double-click to place it, drag parts onto it to put them in' : 'Click to select, double-click to place it, drag onto another part to put it under that'
+        }">${
+          fs.length || inside
+            ? `<button class="twist" data-twist="${p.id}" title="${open ? 'Fold away' : 'Show'} ${
+                p.group ? 'what is in this group' : 'the history of this part'
+              }">${open ? '▾' : '▸'}</button>`
             : '<span class="twist"></span>'
-        }<span class="feature-symbol">${p.link ? '⧉' : fs.length ? '⬢' : '▢'}</span><span class="tree-name">${esc(
+        }<span class="feature-symbol">${p.group ? '▤' : p.link ? '⧉' : fs.length ? '⬢' : '▢'}</span><span class="tree-name">${esc(
           p.name
         )}</span>${note ? `<span class="part-note">${esc(note)}</span>` : ''}<button class="swatch" data-part-colour="${
           p.id
@@ -1144,7 +1163,7 @@ function enterSketch(plane, existing = null) {
     // On a face: the part that face belongs to. On an origin plane: the selected part, or a first part.
     partId = plane.kind === 'face' ? featureById(doc, plane.ref.body)?.part : homePart(doc);
     if (!partId) {
-      const made = makePart(doc);
+      const made = makePart(doc, { parent: container(doc) });
       doc = made.doc;
       newPart = made.part;
       partId = newPart.id;
@@ -1155,7 +1174,7 @@ function enterSketch(plane, existing = null) {
   const local = existing
       ? sketchFrame(feature)
       : frameOfSketch(feature, store.state.build?.bodies ?? []).frame,
-    frame = Mat.frame(placementOf(partId, store.state.doc), local);
+    frame = Mat.frame(placementOf(partId, newPart ? addPart(doc, newPart) : store.state.doc), local);
   sketchSession = { base: doc, index, isNew, newPart };
   if (!newPart) selectedPart = partId;
   selectedFeature = feature.id;
@@ -1391,7 +1410,9 @@ function startSketch() {
     `<div class="panel-body"><p>Choose an origin plane, or close this panel and select a flat face on your part.</p><p>${
       partById(store.state.doc, homePart())
         ? `The sketch goes into <b>${esc(partById(store.state.doc, homePart()).name)}</b>, on its own origin planes.`
-        : 'This starts the first part.'
+        : partById(store.state.doc, container())
+        ? `The sketch starts a new part in <b>${esc(partById(store.state.doc, container()).name)}</b>.`
+        : 'This starts a new part.'
     }</p>` +
     ['XY', 'XZ', 'YZ']
       .map(
@@ -1446,7 +1467,7 @@ function beginFeature(type, existing = null) {
   if (existing) feature = structuredClone(existing);
   else if (PRIMITIVES.includes(type)) {
     // A primitive starts a part of its own, named after it.
-    const made = makePart(base, { base: type[0].toUpperCase() + type.slice(1) });
+    const made = makePart(base, { base: type[0].toUpperCase() + type.slice(1), parent: container(base) });
     base = made.doc;
     newPart = made.part;
     feature = makeFeature(base, type, { part: newPart.id }).feature;
@@ -1506,11 +1527,13 @@ function beginFeature(type, existing = null) {
   if (!existing && type === 'combine') {
     // The part picked first is the one that is changed; the others picked with it are what it is combined with.
     const picked = [...new Set(selection.map((h) => pickedBody(h)?.part).filter(Boolean))],
-      target = partById(base, picked[0] ?? homePart(base));
-    if (!target || target.link || base.parts.length < 2) {
+      target = partById(base, picked[0]) ?? partById(base, selectedPart) ?? partById(base, homePart(base));
+    if (!target || target.link || target.group || base.parts.length < 2) {
       toast(
         target?.link
           ? LINKED
+          : target?.group
+          ? 'A group has no shape of its own to change: select the part that the others are to be joined to or cut out of.'
           : 'Combine needs two parts: one to change, and another to join to it or cut out of it. Make one with Box, Cylinder or Sphere.'
       );
       return;
@@ -2331,11 +2354,31 @@ const actions = {
   sphere: () => beginFeature('sphere'),
   combine: () => beginFeature('combine'),
   'new-part': () => {
-    const made = makePart(store.state.doc);
+    const made = makePart(store.state.doc, { parent: container() });
     selectedFeature = null;
     selectedPart = made.part.id;
     store.commit(addPart(made.doc, made.part), 'New part');
-    toast(`${made.part.name} is empty. Sketch on a plane to give it a history, or place other parts under it with Move.`);
+    toast(`${made.part.name} is empty. Sketch on a plane to give it a shape.`);
+  },
+  'new-group': () => {
+    const made = makePart(store.state.doc, { base: 'Group', group: true, parent: container() });
+    selectedFeature = null;
+    selectedPart = made.part.id;
+    store.commit(addPart(made.doc, made.part), 'New group');
+    toast(`${made.part.name} is empty. Drag parts onto it in the list; what you make while it is selected goes into it.`);
+  },
+  ungroup: () => {
+    const g = partById(store.state.doc, selectedPart);
+    if (!g?.group) return;
+    let next;
+    try {
+      next = ungroup(store.state.doc, g.id);
+    } catch (error) {
+      toast(error.message);
+      return;
+    }
+    selectedPart = null;
+    store.commit(next, 'Ungroup ' + g.name);
   },
   'move-part': () => startMove(selectedPart ?? homePart()),
   'copy-part': () => duplicatePart(false),
@@ -2619,7 +2662,7 @@ const actions = {
         ]
           .map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`)
           .join('') +
-        '</table><p>Number fields accept arithmetic, decimals with a dot or comma, and a trailing mm. Blue geometry can move; green geometry is constrained. Dimensions in parentheses are measurements. Double-click history entries to edit them.</p><p>A project is made of parts. Each part has its own history and its own place: select one in the list or in the view, and Move places it (arrows to move it, rings to turn it), Copy and Linked copy repeat it, Combine joins another part to it or cuts one out of it. Box, Cylinder and Sphere start a part without a sketch.</p><p>Rest the mouse on a face or an edge to see how big it is; click one and Shift-click another for the distance or the angle between them. Dimensions (D) shows the numbers that drive the selected part where they are: click one, type, Enter.</p>',
+        '</table><p>Number fields accept arithmetic, decimals with a dot or comma, and a trailing mm. Blue geometry can move; green geometry is constrained. Dimensions in parentheses are measurements. Double-click history entries to edit them.</p><p>A project is made of parts. Each part has its own history and its own place: select one in the list or in the view, and Move places it (arrows to move it, rings to turn it), Copy and Linked copy repeat it, Combine joins another part to it or cuts one out of it. Box, Cylinder and Sphere start a part without a sketch. A Group is a container: it has a place but no shape, and moves, turns, hides and colours the parts in it; drag parts onto it in the list.</p><p>Rest the mouse on a face or an edge to see how big it is; click one and Shift-click another for the distance or the angle between them. Dimensions (D) shows the numbers that drive the selected part where they are: click one, type, Enter.</p>',
       '<button class="primary" data-modal="close" title="Close help">Got it</button>',
       closeModal,
       true
@@ -2679,7 +2722,9 @@ document.addEventListener('click', (e) => {
     if (busy) return;
     selectPart(d.part);
     const p = partById(store.state.doc, d.part);
-    id('context-note').textContent = p?.link
+    id('context-note').textContent = p?.group
+      ? 'A group · Move places everything in it; parts you make now go into it; drag parts onto it in the list.'
+      : p?.link
       ? 'A linked copy: it follows its original. Move places it; Unlink makes it a part of its own.'
       : 'Part selected · Move places it, Combine joins or cuts other parts, new sketches go into it.';
     return;
@@ -2711,6 +2756,8 @@ document.addEventListener('click', (e) => {
         'delete-part',
         'export-part',
         'colour',
+        'new-group',
+        'ungroup',
       ].includes(d.action)
     ) {
       toast('Finish or cancel the current edit first.');
@@ -2997,6 +3044,8 @@ const api = createCommands({
     return was;
   },
   homePart: () => homePart(),
+  /** The group a new part would go into, as the page has it: the selected group, or the one the selected part is in. */
+  container: () => container(),
   cancelEdit: () => {
     if (editor) finishSketch(true);
     if (draft) endFeature(false);

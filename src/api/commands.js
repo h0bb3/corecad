@@ -17,7 +17,7 @@ import { findRegions, profileRefFrom, regionAt, pointInRegion, pointInLoop } fro
 import { createDocument, makeFeature, addFeature, updateFeature, removeFeature, featureById, dependents } from '../doc/model.js';
 import { validateFeature } from '../doc/features.js';
 import { validateDocument, serialize, upgrade } from '../doc/schema.js';
-import { partById, featuresOf, worldOf, makePart, addPart, updatePart, removePart, partDependents, setParent, copyPart, unlinkPart, sceneOf, contentOf, descendantsOf, ancestorsOf, setPartColor, paintFaces, appearanceOf } from '../doc/parts.js';
+import { partById, featuresOf, worldOf, makePart, addPart, updatePart, removePart, partDependents, setParent, copyPart, unlinkPart, sceneOf, contentOf, descendantsOf, ancestorsOf, childrenOf, groupParts, ungroup, setPartColor, paintFaces, appearanceOf } from '../doc/parts.js';
 import { PALETTE, colorFrom } from './colors.js';
 import * as Mat from '../core/mat.js';
 import { sizeOf, between, total } from './measure3d.js';
@@ -194,9 +194,21 @@ export const TOOLS = [
   ),
   tool(
     'add_part',
-    'A new, empty part: a place for sketches (give it to add_sketch as "part", or leave that out: it is now the current part), or a group to put other parts under so that they move together.',
+    'A new, empty part: a place for sketches (give it to add_sketch as "part", or leave that out: it is now the current part). To keep parts together, use add_group.',
     { name: str('A name for the part.'), position: POSITION_ARG, rotation: ROTATION_ARG, parent: PARENT_ARG }
   ),
+  tool(
+    'add_group',
+    'A group: a container for parts. It has a name and a place and no shape of its own; what is in it moves, turns and hides with it, takes its colour where it has none, and is exported with it. Give "parts" to put parts that are there into it (they stay where they are in space); a group can hold groups. The group becomes the current part: parts made next go into it unless they are given a "parent".',
+    {
+      name: str('A name for the group, such as what the parts make up together.'),
+      parts: { type: 'array', items: { type: 'string' }, description: 'Parts to put into it, by id or name; "this" for the part the person has selected.' },
+      position: POSITION_ARG,
+      rotation: ROTATION_ARG,
+      parent: PARENT_ARG,
+    }
+  ),
+  tool('ungroup', 'Takes a group away and leaves what was in it where it is, under what the group stood under. (delete_part deletes a group with everything in it.)', { part: str('The group, by id or name; or "this". Left out: the current part.') }),
   tool(
     'combine',
     'Joins other parts to a part, cuts them out of it, or keeps only what it shares with them, where they stand. It is a step in the history of the part that is changed. The other parts become its tools: hidden, placed under it, and still there to edit or move (the result follows). A group or a linked copy can be taken too.',
@@ -271,7 +283,8 @@ export const TOOLS = [
  * @param {() => void} app.ready          called before a change: leave any look-back in the history
  * @param {(featureId: string | null, partId?: string | null) => void} app.shown   a command made or changed this: select it, fit the view
  * @param {() => string | null} app.currentPart   the part being worked on
- * @param {() => string | null} app.homePart      the part a new sketch goes into (never a linked copy)
+ * @param {() => string | null} app.homePart      the part a new sketch goes into (never a linked copy or a group)
+ * @param {() => string | null} [app.container]  the group a new part goes into: the one the person has selected, or the one their part is in
  * @param {() => { selected: object[], pointed: object | null, part: string | null, feature: string | null }} app.chosen
  *   what the person has clicked and what their mouse last rested on. A pick is { kind: 'face' | 'edge', index,
  *   body, part, instance, matrix, point }: `body` a built body's id, `point` in its part's frame, `matrix` where
@@ -506,8 +519,10 @@ export function createCommands(app) {
     if (a.body !== undefined) return [findBody(list, a.body)];
     if (a.part !== undefined) {
       const p = partOf(a.part),
-        own = list.filter((b) => b.part === p.id);
-      if (!own.length) throw Error(`${p.name} (${p.id}) has no body${p.link ? ': it is a linked copy and shows the bodies of ' + p.link : ''}.`);
+        inside = p.group ? new Set(descendantsOf(doc(), p.id)) : null,
+        own = list.filter((b) => (inside ? inside.has(b.part) && !b.away : b.part === p.id));
+      if (!own.length)
+        throw Error(`${p.name} (${p.id}) has no body${p.link ? ': it is a linked copy and shows the bodies of ' + p.link : p.group ? ': it is a group with nothing built in it' : ''}.`);
       return own;
     }
     return list.filter((b) => !b.away);
@@ -589,8 +604,9 @@ export function createCommands(app) {
       return {
         id: p.id,
         name: p.name,
-        kind: p.link ? 'linked copy' : fs.length ? 'part' : d.parts.some((x) => x.parent === p.id) ? 'group' : 'empty',
+        kind: p.group ? 'group' : p.link ? 'linked copy' : fs.length ? 'part' : 'empty',
         ...(p.link ? { copy_of: p.link } : {}),
+        ...(p.group ? { contains: childrenOf(d, p.id).map((x) => x.id) } : {}),
         parent: p.parent ?? null,
         position: round(p.pos),
         rotation: round(p.rot),
@@ -760,7 +776,11 @@ export function createCommands(app) {
     return next;
   }
   /** The placement a new part is given. */
-  const placementFrom = (a) => ({ parent: parentFrom(a.parent), pos: vec3(a.position, 'position', [0, 0, 0]), rot: vec3(a.rotation, 'rotation', [0, 0, 0]) });
+  const placementFrom = (a) => ({
+    parent: a.parent === undefined ? app.container?.() ?? null : parentFrom(a.parent),
+    pos: vec3(a.position, 'position', [0, 0, 0]),
+    rot: vec3(a.rotation, 'rotation', [0, 0, 0]),
+  });
   async function primitive(type, a, data) {
     free();
     await settled();
@@ -931,11 +951,14 @@ export function createCommands(app) {
       if (typeof where === 'string' && PLANES.includes(where.toUpperCase())) {
         plane = { kind: 'base', base: where.toUpperCase() };
         // The part it goes into: the one named, the current one, or a new one ("new", or when there is none).
-        const home = a.part === undefined ? partById(base, app.homePart()) : a.part === 'new' ? null : partOf(a.part);
+        // A group has no history: named, it gets a new part for the sketch; so does the group the person has selected.
+        const named = a.part === undefined ? partById(base, app.homePart()) : a.part === 'new' ? null : partOf(a.part),
+          home = named?.group ? null : named,
+          into = named?.group ? named.id : app.container?.() ?? null;
         if (home?.link) throw Error(`${home.name} is a linked copy and has no history of its own: sketch in the original (${home.link}), or unlink_part first.`);
         if (home) partId = home.id;
         else {
-          const made = makePart(base);
+          const made = makePart(base, { parent: into });
           base = made.doc;
           newPart = made.part;
           partId = newPart.id;
@@ -1133,10 +1156,41 @@ export function createCommands(app) {
       await commit(addPart(made.doc, made.part), 'New part', null, made.part.id);
       return partOutcome(made.part.id);
     },
+    async add_group(a) {
+      free();
+      await settled();
+      const members = a.parts === undefined ? [] : Array.isArray(a.parts) ? [...new Set(a.parts.map((ref) => partOf(ref).id))] : null;
+      if (!members) throw Error('"parts" lists the parts to put into the group, by id or name.');
+      const d = doc(),
+        inside = members.filter((id) => ancestorsOf(d, id).some((x) => members.includes(x)));
+      if (inside.length) throw Error(`${partById(d, inside[0]).name} already stands under another of these parts: name only the part it stands under.`);
+      const data = {
+        ...(a.name ? { name: String(a.name) } : {}),
+        pos: vec3(a.position, 'position', [0, 0, 0]),
+        rot: vec3(a.rotation, 'rotation', [0, 0, 0]),
+        // where it stands in the tree: as told; else where the first of its parts stands; else in the group that is selected
+        ...(a.parent !== undefined ? { parent: parentFrom(a.parent) } : members.length ? {} : { parent: app.container?.() ?? null }),
+      };
+      if (data.parent && members.some((id) => id === data.parent || descendantsOf(d, id).includes(data.parent)))
+        throw Error('A group cannot stand under one of the parts it is to hold.');
+      const made = groupParts(d, members, data);
+      return partChange(made.doc, 'New group', made.id);
+    },
+    async ungroup(a) {
+      free();
+      await settled();
+      const g = partOf(a.part);
+      if (!g.group) throw Error(`${g.name} (${g.id}) is not a group.`);
+      const d = doc(),
+        freed = childrenOf(d, g.id).map((x) => x.id);
+      await commit(ungroup(d, g.id), 'Ungroup ' + g.name, null, g.parent ?? null);
+      return { ungrouped: g.id, freed, parts: partRows(), problems: problems(), bodies: bodyRows() };
+    },
     async combine(a) {
       free();
       await settled();
       const target = partOf(a.part);
+      if (target.group) throw Error(`${target.name} is a group and has no shape of its own: name the part that is to be changed. (A group can be given in "with": everything in it is then joined or cut.)`);
       if (target.link) throw Error(`${target.name} is a linked copy: combine changes a part with a history. Use the original (${target.link}), or unlink_part first.`);
       if (!['join', 'cut', 'intersect'].includes(a.operation)) throw Error('"operation" is "join", "cut" or "intersect".');
       const made = makeFeature(doc(), 'combine', { part: target.id, operation: a.operation, tools: toolsFrom(a.with, target), keep: !!a.keep, ...(a.name ? { name: String(a.name) } : {}) });

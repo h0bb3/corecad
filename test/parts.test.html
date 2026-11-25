@@ -4,7 +4,7 @@ import * as Mat from '../src/core/mat.js';
 import {createDocument,makeFeature,addFeature} from '../src/doc/model.js';
 import {upgrade,validateDocument,parse,serialize} from '../src/doc/schema.js';
 import {createHistory} from '../src/doc/history.js';
-import {makePart,addPart,updatePart,removePart,partById,featuresOf,worldOf,setParent,setWorld,contentOf,consumedIn,buildOrder,sceneOf,copyPart,unlinkPart,partDependents,treeOrder,descendantsOf} from '../src/doc/parts.js';
+import {makePart,addPart,updatePart,removePart,partById,featuresOf,worldOf,setParent,setWorld,contentOf,consumedIn,buildOrder,sceneOf,copyPart,unlinkPart,partDependents,treeOrder,descendantsOf,groupParts,ungroup,containerOf,setPartColor,appearanceOf} from '../src/doc/parts.js';
 
 /** A document with parts made from short descriptions: part('a', {pos, parent}). */
 function scene(...specs){
@@ -117,6 +117,42 @@ test('A copy of its own has new ids throughout; a linked copy has none',()=>{
  const l=copyPart(d,ids.plate,{linked:true}),link=partById(l.doc,l.id);eq(link.link,ids.plate);eq(link.pos,[10,0,0]);eq(featuresOf(l.doc,l.id),[]);eq(l.doc.seq,d.seq);
  eq(partById(copyPart(l.doc,l.id).doc,'o5').link,ids.plate,'a copy of a link is a link to the same original');
  const u=unlinkPart(l.doc,l.id);eq(validateDocument(u.doc),[]);ok(!partById(u.doc,l.id));eq(partById(u.doc,u.id).name,link.name);eq(featuresOf(u.doc,u.id).map(f=>f.type),['box','combine','hole']);
+});
+test('A group holds parts where they stand, has no history, and can be taken away again',()=>{
+ let {d,ids}=scene(['top',{pos:[0,0,40]}],['leg',{pos:[10,0,0],rot:[0,0,90]}],['other'],['twin',{link:'leg',pos:[50,0,0]}]);
+ const before=worldOf(d);
+ const g=groupParts(d,[ids.leg,ids.top],{name:'Table',pos:[100,0,0],rot:[0,0,90]});d=g.doc;eq(validateDocument(d),[]);
+ const table=partById(d,g.id);ok(table.group===true);eq(table.parent,null);eq(table.pos,[100,0,0]);
+ eq(treeOrder(d).map(x=>[x.part.name,x.depth]),[['Table',0],['top',1],['leg',1],['other',0],['twin',0]],'the group stands where the first of its parts stood');
+ near(worldOf(d).get(ids.top),before.get(ids.top),1e-9);near(worldOf(d).get(ids.leg),before.get(ids.leg),1e-9);
+ eq(contentOf(d,g.id).map(x=>x.from),[g.id,ids.top,ids.leg]);eq(descendantsOf(d,g.id).sort(),[ids.top,ids.leg].sort());
+ // it moves what is in it
+ const moved=updatePart(d,g.id,{pos:[100,0,25]});near(Mat.point(worldOf(moved).get(ids.top),[0,0,0]),[0,0,65],1e-9);
+ // no history of its own, and never a linked copy; it is kept in the file
+ ok(validateDocument(feature(d,'box',g.id).d).some(e=>/group has no features/.test(e)));
+ ok(validateDocument(updatePart(d,g.id,{link:ids.other})).some(e=>/cannot be a linked copy/.test(e)));
+ ok(validateDocument(updatePart(d,g.id,{group:'yes'})).some(e=>/group can only be true/.test(e)));
+ eq(parse(serialize(d)).parts.find(p=>p.id===g.id).group,true);
+ // where new parts go: into the group that is selected, or the group the selected part is in
+ eq(containerOf(d,g.id),g.id);eq(containerOf(d,ids.leg),g.id);eq(containerOf(d,ids.other),null);eq(containerOf(d,null),null);
+ // colour: the group's, unless a part has its own; a linked copy looks like its original unless it has a colour itself
+ let c=setPartColor(setPartColor(d,g.id,'#112233'),ids.top,'#aa0000');const look=(doc,item)=>appearanceOf(doc,item,[]).color;
+ eq(look(c,{id:'f1',part:ids.top}),'#aa0000');eq(look(c,{id:'f2',part:ids.leg}),'#112233');eq(look(c,{id:'f3',part:ids.other}),null);
+ const copyOfLeg={id:ids.twin+'~0~f2',part:ids.twin,from:ids.leg,source:'f2',instance:true};eq(look(c,copyOfLeg),'#112233');eq(look(setPartColor(c,ids.twin,'#00ff00'),copyOfLeg),'#00ff00');
+ const whole=copyPart(c,g.id,{linked:true}),w=whole.doc,inCopy=(from)=>({id:'x',part:whole.id,from,source:'f',instance:true});
+ eq(look(w,inCopy(ids.top)),'#aa0000');eq(look(w,inCopy(ids.leg)),'#112233');eq(look(setPartColor(w,g.id,null),inCopy(ids.leg)),null);
+ // taking the group away leaves everything where it is
+ const lone=ungroup(d,g.id);eq(validateDocument(lone),[]);ok(!partById(lone,g.id));eq(partById(lone,ids.top).parent,null);
+ near(worldOf(lone).get(ids.leg),before.get(ids.leg),1e-9);near(worldOf(lone).get(ids.top),before.get(ids.top),1e-9);
+ // a group in a group: the inner one goes where its first part stood; taking the outer away leaves it at the top
+ const inner=groupParts(d,[ids.leg],{name:'Legs'});eq(partById(inner.doc,inner.id).parent,g.id);eq(validateDocument(inner.doc),[]);
+ const out=ungroup(inner.doc,g.id);eq(partById(out,inner.id).parent,null);eq(partById(out,ids.leg).parent,inner.id);near(worldOf(out).get(ids.leg),before.get(ids.leg),1e-9);
+ // what uses the group as a whole stops it; a part is not a group
+ await_throws(()=>ungroup(w,g.id),/linked copy/);await_throws(()=>ungroup(feature(d,'combine',ids.other,{operation:'cut',tools:[g.id]}).d,g.id),/as a whole/);
+ await_throws(()=>ungroup(d,ids.other),/not a group/);
+ // a copy of a group is a group with copies of what is in it; an empty group is named by itself
+ const k=copyPart(d,g.id);eq(validateDocument(k.doc),[]);ok(partById(k.doc,k.id).group);eq(partById(k.doc,k.id).name,'Table copy');eq(k.doc.parts.filter(p=>p.parent===k.id).map(p=>p.name),['top','leg']);
+ const e=groupParts(d,[]);eq(partById(e.doc,e.id).name,'Group 1');eq(partById(e.doc,e.id).parent,null);eq(groupParts(e.doc,[]).doc.parts.at(-1).name,'Group 2');
 });
 test('Removing a part takes what is under it; what it leaves hanging is named first',()=>{
  let {d,ids}=scene(['plate'],['hole',{parent:'plate'}],['twin',{link:'plate'}],['user']);

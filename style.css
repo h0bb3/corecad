@@ -1212,3 +1212,11 @@ main {
   padding: 4px 8px;
   border: 1px solid #dce5e3;
 }
+
+/* A group in the list: a container, not a shape. */
+.part-row.group-row .feature-symbol {
+  color: #5c7f8f;
+}
+.part-row.group-row .tree-name {
+  letter-spacing: 0.2px;
+}

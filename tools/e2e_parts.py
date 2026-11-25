@@ -485,6 +485,126 @@ def run(p, url='index.html?test=1'):
     assert p.js('corecad.doc.features.map(f=>f.part)') == ['o1', 'o1']
     near(body_of('o1')['volume'], 24000, .01, 'the old plate')
     step('a project in the old format opens as one part')
+
+    # ---- a group: a container with a place and no shape, for keeping parts together
+    def placed():
+        return {b['part']: b['at'] for b in scene() if not b['instance']}
+
+    def colour_of(pid):
+        return p.js('corecad.scene.filter(b => b.part === ' + json.dumps(pid) + ').map(b => b.color)')
+
+    def shown(selector):
+        return p.js('!!document.querySelector(' + json.dumps(selector) + ')')
+
+    p.click('[data-view="home"]')
+    p.key('b')
+    wait('corecad.draft && corecad.draft.type === "box"')
+    fill('#box-x', 12)
+    fill('#box-y', 12)
+    fill('#box-z', 45)
+    apply()
+    assert [x['id'] for x in parts()] == ['o1', 'o2']
+    p.click('[data-action="new-group"]')
+    wait('!corecad.busy && corecad.parts.length === 3')
+    g = parts()[-1]
+    gid, row = g['id'], f'[data-part="{g["id"]}"]'
+    assert g['name'] == 'Group 1' and g['group'] is True and g['parent'] is None and p.js('corecad.selectedPart') == gid, g
+    assert p.js('document.querySelector(' + json.dumps(row) + ').classList.contains("group-row")')
+    assert p.js('document.querySelector(' + json.dumps(row + ' .part-note') + ').textContent') == 'empty'
+    before = placed()
+    for pid in ('o1', 'o2'):
+        scroll_to(f'[data-part="{pid}"]', 'center')
+        drag_row(f'[data-part="{pid}"] .tree-name', row + ' .tree-name')
+        wait('!corecad.busy && corecad.parts.find(x=>x.id===' + json.dumps(pid) + ').parent === ' + json.dumps(gid))
+    assert placed() == before, 'nothing moved in space'
+    assert p.js('document.querySelector(' + json.dumps(row + ' .part-note') + ').textContent') == '2 parts'
+    # the group folds away what is in it
+    p.click(f'[data-twist="{gid}"]')
+    assert not shown('[data-part="o1"]') and not shown('[data-part="o2"]') and shown(row)
+    p.click(f'[data-twist="{gid}"]')
+    assert shown('[data-part="o1"]') and shown('[data-part="o2"]')
+    # it moves what is in it
+    p.click(row)
+    assert p.js('corecad.selectedPart') == gid and p.js('document.getElementById("context-note").textContent').startswith('A group')
+    p.key('m')
+    wait('!!corecad.moving')
+    assert len(p.js('corecad.rings')) == 3, 'a group is placed like a part: arrows and rings round the middle of what is in it'
+    fill('#move-z', 50)
+    apply_move()
+    assert part(gid)['pos'] == [0, 0, 50] and placed() == {k: [v[0], v[1], v[2] + 50] for k, v in before.items()}, placed()
+    # what is made while the group is selected goes into it: a box, and a sketch (which lies on the group's plane)
+    p.click(row)
+    p.key('b')
+    wait('corecad.draft && corecad.draft.type === "box"')
+    apply()
+    box = parts()[-1]
+    assert box['parent'] == gid and box['pos'] == [0, 0, 0] and placed()[box['id']] == [0, 0, 50], box
+    p.click(row)
+    p.click('#browser-content [data-plane="XY"]')
+    wait('!!corecad.sketch')
+    sid = p.js('corecad.sketch.part')
+    assert sid not in [x['id'] for x in parts()], 'a group has no history: the sketch starts a part of its own'
+    p.key('r')
+    at([70, 0])
+    at([90, 15])
+    p.key('Escape')
+    p.key('Enter', modifiers=2)
+    wait('!corecad.busy && !corecad.editing')
+    assert part(sid)['parent'] == gid and part(sid)['pos'] == [0, 0, 0], part(sid)
+    p.key('e')
+    wait('corecad.draft && corecad.draft.type === "extrude"')
+    apply()
+    assert placed()[sid] == [0, 0, 50] and body_of(sid)['bbox'][0][2] == 0, 'the sketch lay on the plane of the group, 50 up'
+    assert p.js('corecad.doc.features.every(f => f.part !== ' + json.dumps(gid) + ')'), 'nothing was added to the group itself'
+    inside = [x['id'] for x in parts() if x['parent'] == gid]
+    assert inside == ['o1', 'o2', box['id'], sid], inside
+    # a colour for the group is the colour of what is in it that has none of its own
+    p.click(row)
+    p.click('[data-action="colour"]')
+    p.wait('!!document.getElementById("colour-target")')
+    assert 'everything in Group 1' in p.js('document.getElementById("colour-target").textContent')
+    p.click('[data-colour="#d43f3a"]')
+    wait('!corecad.busy && corecad.parts.find(x=>x.id===' + json.dumps(gid) + ').color === "#d43f3a"')
+    assert all(colour_of(pid) == ['#d43f3a'] for pid in inside), [colour_of(pid) for pid in inside]
+    p.click('[data-part="o2"]')
+    p.click('[data-action="colour"]')
+    p.wait('!!document.getElementById("colour-target")')
+    p.click('[data-colour="#2f6fd0"]')
+    wait('!corecad.busy && corecad.parts[1].color === "#2f6fd0"')
+    assert colour_of('o2') == ['#2f6fd0'] and colour_of('o1') == ['#d43f3a']
+    p.key('Escape')
+    # hiding it hides what is in it
+    p.click(f'[data-part-eye="{gid}"]')
+    wait('!corecad.busy && corecad.scene.length === 0')
+    p.click(f'[data-part-eye="{gid}"]')
+    wait('!corecad.busy && corecad.scene.length === 4')
+    # a copy of a group is a group with copies of what is in it
+    p.click(row)
+    p.screenshot('.scratch/e2e-parts-group.png')
+    p.click('[data-action="copy-part"]')
+    wait('!!corecad.moving && corecad.parts.length === 10')
+    twin = part(p.js('corecad.moving.id'))
+    assert twin['group'] is True and twin['name'] == 'Group 1 copy' and len([x for x in parts() if x['parent'] == twin['id']]) == 4, twin
+    assert not untitled_now(), untitled_now()
+    p.key('Escape')
+    wait('!corecad.busy && !corecad.editing')
+    p.key('z', modifiers=2)
+    wait('!corecad.busy && corecad.parts.length === 5')
+    # taking the group away leaves what was in it where it is
+    there = placed()
+    p.click(row)
+    assert shown('[data-action="ungroup"]')
+    assert not untitled_now(), untitled_now()
+    p.click('[data-action="ungroup"]')
+    wait('!corecad.busy && corecad.parts.length === 4')
+    assert all(x['parent'] is None for x in parts()) and placed() == there, parts()
+    assert colour_of('o1') == [None] and colour_of('o2') == ['#2f6fd0'], 'the colour was the group\'s'
+    p.click('[data-part="o1"]')
+    assert not shown('[data-action="ungroup"]')
+    p.key('z', modifiers=2)
+    wait('!corecad.busy && corecad.parts.length === 5')
+    assert [x['id'] for x in parts() if x['parent'] == gid] == inside and placed() == there
+    step('a group holds parts: dragged in, made in it, moved, coloured, hidden and copied with it; ungroup leaves them where they are')
     assert not p.errors(), p.errors()
 
 

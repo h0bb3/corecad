@@ -310,3 +310,38 @@ about X and a turn about Z are two different turns, each the one asked for.
 
 Limits: the rings turn about the parent's axes (the axes of space for a part
 that stands on its own), not about the part's own axes once it is turned.
+
+## Groups (2026-11-25)
+
+Asked for: something in the tree that only organises, a container that can be
+moved and turned, so that not everything has to be a part with a shape.
+
+- A **group** is a part marked `group: true`: a name, a place, children, and
+  never a history. The toolbar has **Group**; `add_group` is the command.
+- Parts go into it by dragging them onto it in the list, by `add_group` with
+  `parts` (they stay where they are in space; the group takes the place of
+  the first of them in the list), or by being made while the group, or a
+  part in it, is selected: Box, Cylinder, Sphere, Part, and a sketch on an
+  origin plane, which then lies on that plane of the group.
+- What a group does to what is in it: Move (arrows and rings round the middle
+  of everything in it), hide and show, Copy (a group with copies), Linked
+  copy, Export of it alone, and colour (the colour of the parts in it that
+  have none of their own). It folds away in the list and says how many parts
+  it holds. Combine takes a group as a tool (everything in it) but never as
+  the part that is changed.
+- **Ungroup** takes the group away and leaves its parts where they are. It is
+  refused while a linked copy or a combine uses the group as a whole.
+- Not done, on purpose: scaling a group. Placements are rigid everywhere, and
+  a scaled group would make every measure in it mean two things.
+
+Verification: `test/parts.test.html` (the model: grouping keeps places, no
+features on a group, the colour rules, ungroup, groups in groups, copies);
+`tools/e2e_parts.py` with the mouse (the toolbar button, dragging parts in,
+folding, moving, a box and a sketch made in it, colour, hide, copy, Ungroup,
+undo); `tools/e2e_api.py` (`add_group`, `ungroup`, new parts in the current
+group, a group as a combine tool, refusals); `tools/e2e_export.py` (a group
+exported as its parts, with its colour where they have none).
+
+Limits: a group is selected in the list, not in the view (a click in the view
+selects the part that was hit). Parts cannot be reordered in the list by
+dragging, only put under one another.

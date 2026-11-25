@@ -65,6 +65,8 @@ export function validateDocument(doc) {
     if (!(p.parent === null || p.parent === undefined || typeof p.parent === 'string')) errors.push(`${name}: invalid parent.`);
     if (!(p.link === undefined || (typeof p.link === 'string' && PART_ID.test(p.link)))) errors.push(`${name}: invalid link.`);
     if (!(p.hidden === undefined || typeof p.hidden === 'boolean')) errors.push(`${name}: hidden must be true or false.`);
+    if (!(p.group === undefined || p.group === true)) errors.push(`${name}: group can only be true.`);
+    if (p.group && p.link) errors.push(`${name}: a group cannot be a linked copy.`);
     if (!(p.color === undefined || (typeof p.color === 'string' && COLOR.test(p.color)))) errors.push(`${name}: a colour is written #rrggbb.`);
     if (
       !(
@@ -102,6 +104,7 @@ export function validateDocument(doc) {
     const part = parts.get(f.part);
     if (!part) errors.push(`${f.name || f.id}: it belongs to no part.`);
     else if (part.link) errors.push(`${f.name || f.id}: a linked copy has no features of its own.`);
+    else if (part.group) errors.push(`${f.name || f.id}: a group has no features of its own.`);
     const sketch = f.sketch ? doc.features.find((x) => x.id === f.sketch) : null;
     if (sketch && doc.features.indexOf(sketch) > doc.features.indexOf(f))
       errors.push(`${f.name}: the sketch must come before its extrusion.`);

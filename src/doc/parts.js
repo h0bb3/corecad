@@ -1,14 +1,17 @@
 // Parts: the objects of a project. Each part has its own feature history (the features whose
 // `part` is its id, in document order), a placement relative to its parent, and may have
 // children that move with it. A part with `link` has no history: it shows what another part
-// shows, in its own place (a linked copy). A part without features is a group.
+// shows, in its own place (a linked copy). A part with `group` is a group: a container with a
+// place of its own and no shape, for the parts that stand under it.
 //
 // Pure functions of the document, used by the page and by the kernel worker alike.
 import * as Mat from '../core/mat.js';
 
 /** @typedef {{ id: string, name: string, parent: string | null, pos: number[], rot: number[],
- *              hidden?: boolean, link?: string, color?: string, paint?: Paint[] }} Part
- *  color: '#rrggbb', the colour of the whole part. paint: faces that have a colour of their own. */
+ *              hidden?: boolean, link?: string, group?: true, color?: string, paint?: Paint[] }} Part
+ *  group: a container: it has a place and holds parts, and never has features of its own.
+ *  color: '#rrggbb', the colour of the whole part (of a group: of what is in it that has none of its
+ *  own). paint: faces that have a colour of their own. */
 /** A face with a colour of its own: the face by the labels it carried when it was painted, on the body it was on.
  *  @typedef {{ body: string, labels: string[], color: string }} Paint */
 
@@ -107,6 +110,48 @@ export function partDependents(doc, id) {
     links: doc.parts.filter((p) => p.link && gone.has(p.link) && !gone.has(p.id)).map((p) => p.id),
     features: doc.features.filter((f) => f.type === 'combine' && !gone.has(f.part) && (f.tools ?? []).some((t) => gone.has(t))).map((f) => f.id),
   };
+}
+
+/** A new group holding parts that are already there, each staying where it is in space. The group
+ *  stands where the first of them stood in the tree. */
+export function groupParts(doc, ids, data = {}) {
+  const first = partById(doc, ids[0]),
+    made = makePart(doc, { base: 'Group', group: true, parent: first?.parent ?? null, ...data });
+  let next = addPart(made.doc, made.part);
+  if (first && (made.part.parent ?? null) === (first.parent ?? null)) {
+    // in the list too, the group takes the place of the first part it holds
+    const rest = next.parts.filter((p) => p.id !== made.part.id),
+      at = rest.findIndex((p) => p.id === first.id);
+    next = { ...next, parts: [...rest.slice(0, at), made.part, ...rest.slice(at)] };
+  }
+  for (const id of ids) next = setParent(next, id, made.part.id);
+  return { doc: next, id: made.part.id };
+}
+
+/** Takes a group away and leaves what was in it where it is, under what the group stood under. */
+export function ungroup(doc, id) {
+  const g = partById(doc, id);
+  if (!g?.group) throw Error('This is not a group.');
+  // What takes the group as a whole would be left with nothing.
+  const links = doc.parts.filter((p) => p.link === id),
+    combines = doc.features.filter((f) => f.type === 'combine' && (f.tools ?? []).includes(id));
+  if (links.length || combines.length)
+    throw Error(
+      `${[...links.map((p) => `the linked copy ${p.name} (${p.id})`), ...combines.map((f) => `${f.name} (${f.id})`)].join(', ')} ${
+        links.length + combines.length > 1 ? 'use' : 'uses'
+      } ${g.name} as a whole: delete or change ${links.length + combines.length > 1 ? 'them' : 'it'} first.`
+    );
+  let next = doc;
+  for (const child of childrenOf(doc, id)) next = setParent(next, child.id, g.parent ?? null);
+  return { ...next, parts: next.parts.filter((p) => p.id !== id) };
+}
+
+/** The group new parts go into when `id` is what is selected: a selected group itself, the group a
+ *  selected part stands in, else none (the top of the project). */
+export function containerOf(doc, id) {
+  const p = partById(doc, id);
+  if (p?.group) return p.id;
+  return partById(doc, p?.parent)?.group ? p.parent : null;
 }
 
 /** Moves a part under another (or to the top with null). keepWorld: it stays where it is in space. */
@@ -276,7 +321,21 @@ export function appearanceOf(doc, item, faces) {
     });
     for (const i of hits) painted.set(i, p.color);
   }
-  return { color: shown?.color ?? owner?.color ?? null, faces: painted };
+  // A part without a colour takes the colour of what it stands under: a colour given to a group is
+  // the colour of everything in it that has none of its own. In a linked copy the copy's colour goes
+  // first, then the original's own (up to the part that was copied), then what the copy stands under,
+  // and last what the original stands under: a copy looks like its original unless told otherwise.
+  const up = (p, stop) => {
+    for (let q = p, n = 0; q && n < 64; q = partById(doc, q.parent), n++) {
+      if (q.color) return q.color;
+      if (q.id === stop) break;
+    }
+    return null;
+  };
+  return {
+    color: shown?.color ?? (item.instance ? up(owner, shown?.link) : null) ?? up(shown) ?? (item.instance ? up(partById(doc, shown?.link)) : null) ?? null,
+    faces: painted,
+  };
 }
 
 // ------------------------------------------------------------------ copies

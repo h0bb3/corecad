@@ -220,6 +220,33 @@ def run(p, url='index.html?test=1'):
     assert p.js('window.__lastExport.name') == 'Fixture - Post.stl', p.js('window.__lastExport')
     step('only the selected part: by command, by the tick in the dialog, by the part\'s own Export button')
 
+    # ---- a group goes out as the parts in it, each an object of its own; its colour is theirs where they have none
+    untouched = call('get_document')
+    posts = call('add_group', name='Posts', parts=['o3', twin])['part']
+    assert posts['kind'] == 'group' and posts['contains'] == ['o3', twin] and posts['box'] == [[50, -10, 0], [70, 50, 30]], posts
+    grouped = call('export', format='3mf', part='Posts')
+    assert grouped['filename'] == 'Fixture - Posts.3mf'
+    assert [(o['name'], o['color'], box(o['vertices'])) for o in read_3mf(base64.b64decode(grouped['base64']))] == [
+        ('Post', '#D43F3A', [[50, -10, 0], [70, 10, 30]]), ('Post 2', '#58A84A', [[50, 30, 0], [70, 50, 30]])]
+    assert [o['name'] for o in read_3mf(base64.b64decode(call('export', format='3mf')['base64']))] == ['Plate', 'Post', 'Post 2'], 'the group itself is no object'
+    call('set_color', part='o3', color=None)
+    call('set_color', part='Posts', color='blue')
+    call('move_part', part='Posts', by=[0, 0, 5])
+    again = read_3mf(base64.b64decode(call('export', format='3mf', part=posts['id'])['base64']))
+    assert [(o['color'], box(o['vertices'])) for o in again] == [('#2F6FD0', [[50, -10, 5], [70, 10, 35]]), ('#58A84A', [[50, 30, 5], [70, 50, 35]])], \
+        'a part without a colour takes the colour of its group, one with its own keeps it; both moved with the group: %s' % [(o['color'], box(o['vertices'])) for o in again]
+    assert looks('o3')[0]['color'] == '#2f6fd0' and looks(twin)[0]['color'] == '#58a84a'
+    archive = zipfile.ZipFile(io.BytesIO(base64.b64decode(call('export', format='stl', part='Posts', per_part=True)['base64'])))
+    assert archive.namelist() == ['Post.stl', 'Post 2.stl'], archive.namelist()
+    assert call('export', format='step', part='Posts')['text'].count('COLOUR_RGB') >= 2
+    content = lambda d: {k: v for k, v in d.items() if k not in ('seq', 'pseq', 'meta')}     # undo keeps the counters: ids are never used twice
+    for _ in range(10):
+        if content(call('get_document')) == content(untouched):
+            break
+        call('undo')
+    assert content(call('get_document')) == content(untouched)
+    step('a group exports as its parts: named objects where they stand, with the group\'s colour where they have none')
+
     # ---- the Export dialog
     def export(kind):
         p.js('window.__lastExport = null')

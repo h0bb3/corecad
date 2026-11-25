@@ -61,7 +61,16 @@ its own place, and may stand under another part and move with it.
 - **Starting one**: `add_box`, `add_cylinder` and `add_sphere` make a part
   from a solid without a sketch; `add_sketch` puts a sketch into a part (a
   first part is made when there is none; `part: "new"` starts another);
-  `add_part` makes an empty one, for sketches or as a group.
+  `add_part` makes an empty one, for sketches.
+- **Groups**: `add_group` makes a container for parts: a name and a place,
+  and no shape of its own. Give it `parts` to gather parts that are there
+  (they stay where they are in space). What is in a group moves, turns and
+  hides with it, takes its colour where it has none of its own, and is
+  exported with it; `copy_part` copies it whole. A group can hold groups.
+  While a group is the current part, new parts go into it unless they are
+  given a `parent`. `ungroup` takes the group away and leaves its parts
+  where they are; `delete_part` deletes it with everything in it. A group
+  can be a tool of `combine` (everything in it), never the part changed.
 - **The current part** is the one the last command worked on; `get_state`
   names it. Commands that leave `part`, `body` or a face's owner out mean
   it. A part is named by its id (`"o2"`) or its name.
@@ -190,7 +199,9 @@ Arguments in brackets are optional.
 | `add_box` | size, [origin], [position], [rotation], [parent], [name] | A box as a new part, without a sketch. |
 | `add_cylinder` | diameter, height, [origin], [position], [rotation], [parent], [name] | A cylinder along Z as a new part. |
 | `add_sphere` | diameter, [origin], [position], [rotation], [parent], [name] | A sphere as a new part. |
-| `add_part` | [name], [position], [rotation], [parent] | An empty part: for sketches, or a group to put parts under. |
+| `add_part` | [name], [position], [rotation], [parent] | An empty part, for sketches. |
+| `add_group` | [name], [parts], [position], [rotation], [parent] | A group: a container that keeps parts together. |
+| `ungroup` | [part] | Takes a group away; what was in it stays where it is. |
 | `combine` | [part], with, operation, [keep], [name] | Joins other parts to a part, cuts them out of it, or keeps what they share. |
 | `move_part` | [part], [position], [rotation], [by], [turn], [parent] | Places a part: where it stands, how it is turned, what it stands under. |
 | `copy_part` | [part], [linked], [position], [rotation], [by], [parent], [name] | A copy of its own, or a linked copy that follows the original. |

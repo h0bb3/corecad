@@ -26,8 +26,9 @@
  *  relative to its parent, and what stands under it. With `link` it has no history and shows another part.
  *  color: '#rrggbb'. paint: faces with a colour of their own, each by its body and the labels it carried.
  *  @typedef {{ id: string, name: string, parent: string | null, pos: Vec3, rot: Vec3,
- *              hidden?: boolean, link?: string, color?: string,
+ *              hidden?: boolean, link?: string, group?: true, color?: string,
  *              paint?: { body: string, labels: string[], color: string }[] }} Part
+ *  group: a container with a place and no shape; it never has features.
  *  id: 'o' and a number. pos: millimetres. rot: degrees about the fixed X, then Y, then Z axis (core/mat.js). */
 /** @typedef {{ id: string, name: string, created: string, modified: string, app: string }} DocMeta */
 /** @typedef {{ name?: string, hidden?: boolean }} BodyProps */
