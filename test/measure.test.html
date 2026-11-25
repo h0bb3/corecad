@@ -4,7 +4,9 @@ import {createKernel} from '../src/kernel/client.js';
 import {createDocument,makeFeature,addFeature} from '../src/doc/model.js';
 import {makePart,addPart,updatePart,sceneOf} from '../src/doc/parts.js';
 import {edgeRefFrom} from '../src/doc/refs.js';
-import {sizeOf,between,total,boxOf,facePoints} from '../src/api/measure3d.js';
+import {sizeOf,spansOf,between,total,boxOf,facePoints} from '../src/api/measure3d.js';
+import {dimensionsOf} from '../src/api/dimensions.js';
+import {dist} from '../src/core/vec.js';
 const k=createKernel();
 const part=(d,data={})=>{const m=makePart(d,data);return [addPart(m.doc,m.part),m.part.id];};
 const feat=(d,type,p,data={})=>{const m=makeFeature(d,type,{part:p,...data});return [addFeature(m.doc,m.feature),m.feature.id];};
@@ -41,6 +43,36 @@ test('How big an edge is: straight, a rim, an arc',()=>{
  eq(sizeOf(P,'edge',edge(P,e=>e.kind==='line'&&Math.abs(e.length-54)<1e-6)).text,'54 mm');
  const rim=edge(P,e=>e.circle&&e.closed);let s=sizeOf(P,'edge',rim);near(s.diameter,8,1e-6);eq(s.text,'⌀ 8 mm');
  s=sizeOf(P,'edge',edge(P,e=>e.circle&&!e.closed));near(s.radius,3,1e-6);eq(s.text,'R 3 · 4.71 mm long');
+});
+test('Each number lies along the side or the edge it is the length of',()=>{
+ const front={right:[1,0,0],up:[0,0,1],back:[0,-1,0]},above={right:[1,0,0],up:[0,1,0],back:[0,0,1]},texts=(s)=>s.map(x=>x.text),long=(x)=>dist(x.a,x.b);
+ // the top of the plate, seen from the front: 60 along the long side that is nearer, 40 along a short side
+ const top=face(P,x=>x.plane?.n[2]>.99);let s=spansOf(P,'face',top,front);eq(texts(s),['60','40']);near([long(s[0]),long(s[1])],[60,40],1e-9);
+ near([s[0].a[1],s[0].b[1],s[0].a[2]],[-20,-20,12],1e-9);near(Math.abs(s[0].b[0]-s[0].a[0]),60,1e-9);near([s[1].a[0],s[1].b[0]],[-30,-30],1e-9);
+ s=spansOf(P,'face',top,above);near([s[0].a[1],s[0].b[1]],[-20,-20],1e-9,'from above: the side lower on the screen');
+ // a hole: its diameter across a rim, its depth along the wall
+ const wall=face(P,x=>x.cyl&&!x.cyl.convex),cx=P.mesh.faces[wall].cyl.p[0];s=spansOf(P,'face',wall,front);eq(texts(s),['\u2300 8','12']);
+ near([long(s[0]),long(s[1])],[8,12],1e-9);near((s[0].a[0]+s[0].b[0])/2,cx,1e-9);near(Math.abs(s[1].a[0]-cx),4,1e-9);near(Math.abs(s[1].b[2]-s[1].a[2]),12,1e-9);
+ eq(texts(spansOf(P,'face',wall,above)),['\u2300 8'],'looking down a hole, its depth is not a line to be seen');
+ // a fillet: its radius from the axis out to the face, its length along it
+ const fillet=face(P,x=>x.cyl?.convex);s=spansOf(P,'face',fillet,front);eq(texts(s),['R 3','12']);near([long(s[0]),long(s[1])],[3,12],1e-9);near(s[0].a,[...P.mesh.faces[fillet].cyl.p.slice(0,2),6],1e-9);
+ // edges: a straight one from end to end, a rim across, an arc from its centre
+ const straight=edge(P,e=>e.kind==='line'&&Math.abs(e.length-54)<1e-6);s=spansOf(P,'edge',straight,front);eq(texts(s),['54']);near([s[0].a,s[0].b],[P.mesh.edges[straight].a,P.mesh.edges[straight].b],1e-9);
+ eq(texts(spansOf(P,'edge',edge(P,e=>e.circle&&e.closed),front)),['\u2300 8']);
+ const arc=edge(P,e=>e.circle&&!e.closed);s=spansOf(P,'edge',arc,front);eq(texts(s),['R 3']);near(s[0].a,P.mesh.edges[arc].circle.c,1e-9);near(long(s[0]),3,1e-9);
+ // a part that lies on its side: along the way it lies
+ s=spansOf(N,'face',face(N,x=>x.cyl),front);eq(texts(s),['\u2300 10','30']);near(Math.abs(s[1].b[0]-s[1].a[0]),30,1e-9);near(s[1].a[2]-50,-5,1e-9,'along the lower outline');
+ eq(texts(spansOf(N,'face',face(N,x=>x.plane),front)),['\u2300 10']);eq(texts(spansOf(B,'face',0,front)),['\u2300 20']);
+});
+test('An extrusion says how far along an edge it made',()=>{
+ const sketch={id:'f1',type:'sketch',name:'S',part:'o1',plane:{kind:'base',base:'XY'},seq:8,constraints:[],
+  points:[{id:'p1',x:5,y:7},{id:'p2',x:65,y:7},{id:'p3',x:65,y:47},{id:'p4',x:5,y:47},{id:'p5',x:30,y:20}],
+  entities:[{id:'e1',type:'line',a:'p1',b:'p2'},{id:'e2',type:'line',a:'p2',b:'p3'},{id:'e3',type:'line',a:'p3',b:'p4'},{id:'e4',type:'line',a:'p4',b:'p1'},{id:'e5',type:'circle',c:'p5',r:4}]};
+ const frame={o:[0,0,0],x:[1,0,0],y:[0,1,0],n:[0,0,1]},ex={id:'f2',type:'extrude',name:'E',part:'o1',sketch:'f1',profiles:[{loop:['e1','e2','e3','e4'],at:[35,27]}],operation:'new',extent:{type:'oneSide',distance:12},flip:false,targets:null};
+ let d=dimensionsOf(ex,{frame,sketch});eq(d.length,1);near(d[0].line,[[5,7,0],[5,7,12]],1e-9,'from the first corner of the outline, not from the middle of the area');near(d[0].at,[5,7,6],1e-9);eq(d[0].what,'extrusion distance');eq(d[0].edit.args(20),{id:'f2',distance:20});
+ d=dimensionsOf({...ex,profiles:[{loop:['e5'],at:[30,20]}],flip:true},{frame,sketch});near(d[0].line,[[34,20,0],[34,20,-12]],1e-9,'on a circle: down its wall');
+ d=dimensionsOf({...ex,extent:{type:'symmetric',distance:12}},{frame,sketch});near(d[0].line,[[5,7,-6],[5,7,6]],1e-9);
+ near(dimensionsOf(ex,{frame})[0].line,[[35,27,0],[35,27,12]],1e-9,'without the sketch at hand: where the area was picked');
 });
 test('Between two: thickness, hole spacing, a hole from a side, angles',()=>{
  const f=(test)=>pick(P,'face',face(P,test)),e=(test)=>pick(P,'edge',edge(P,test));

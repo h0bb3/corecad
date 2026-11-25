@@ -30,7 +30,8 @@ export function facePoints(body, face) {
   return out;
 }
 
-/** The smallest rectangle round points of a plane, trying the given directions: [longer, shorter]. */
+/** The smallest rectangle round points of a plane, trying the given directions: its two directions in the
+ *  plane (u the longer way) and how far the points reach along each; `size` is [longer, shorter]. */
 function rectangle(points, n, directions) {
   let best = null;
   for (const d of directions) {
@@ -49,12 +50,14 @@ function rectangle(points, n, directions) {
       if (b < v0) v0 = b;
       if (b > v1) v1 = b;
     }
-    const w = u1 - u0,
-      h = v1 - v0;
-    if (!best || w * h < best[0] * best[1] - 1e-9) best = [w, h];
+    if (!best || (u1 - u0) * (v1 - v0) < (best.u1 - best.u0) * (best.v1 - best.v0) - 1e-9) best = { u, v, u0, u1, v0, v1 };
   }
-  return best ? [Math.max(...best), Math.min(...best)] : [0, 0];
+  if (!best) return { size: [0, 0] };
+  if (best.v1 - best.v0 > best.u1 - best.u0) best = { u: best.v, v: best.u, u0: best.v0, u1: best.v1, v0: best.u0, v1: best.u1 };
+  return { ...best, size: [best.u1 - best.u0, best.v1 - best.v0] };
 }
+/** The straight edges of a face as directions, and a direction of the plane to fall back on. */
+const sides = (edges, n) => [...edges.filter((e) => e.kind === 'line').map((e) => sub(e.b, e.a)), perpendicular(n)];
 
 /**
  * How big a face or an edge is.
@@ -82,8 +85,7 @@ export function sizeOf(body, kind, index) {
   if (f.plane) {
     const round = edges.filter((e) => e.circle && e.closed);
     if (edges.length === 1 && round.length === 1) return { ...out, diameter: 2 * round[0].circle.r, text: `⌀ ${fmt(2 * round[0].circle.r)} mm` };
-    const lines = edges.filter((e) => e.kind === 'line').map((e) => sub(e.b, e.a)),
-      size = rectangle(points, f.plane.n, [...lines, perpendicular(f.plane.n)]),
+    const size = rectangle(points, f.plane.n, sides(edges, f.plane.n)).size,
       whole = Math.abs(size[0] * size[1] - f.area) <= 0.005 * f.area;
     return { ...out, size, text: `${fmt(size[0])} × ${fmt(size[1])} mm` + (whole ? '' : ` · ${fmt(f.area)} mm²`) };
   }
@@ -97,6 +99,77 @@ export function sizeOf(body, kind, index) {
   }
   if (f.sphere) return { ...out, diameter: 2 * f.sphere.r, text: `⌀ ${fmt(2 * f.sphere.r)} mm` };
   return { ...out, text: `${fmt(f.area)} mm²` };
+}
+
+/**
+ * Where the numbers of a size lie on the thing itself: for each, the two ends of the line it is the
+ * length of, so that it can be drawn along the edge it is about. A flat face gives its longer and its
+ * shorter side; a hole or a boss its diameter across the rim and its length along the wall; a fillet
+ * its radius and its length; an edge its length, or its diameter or radius.
+ * @param {{ right: number[], up: number[], back: number[] }} cam  the directions of the view: of the
+ *   two sides that a number could be drawn along, the one nearer to the eye is taken
+ * @returns {{ a: number[], b: number[], text: string, value: number }[]}  points in space
+ */
+export function spansOf(body, kind, index, cam = { right: [1, 0, 0], up: [0, 0, 1], back: [0, -1, 0] }) {
+  const topo = placedTopo(body),
+    span = (a, b, value, prefix = '') => ({ a, b, value, text: prefix + fmt(value) }),
+    // a direction square to n that lies as flat across the screen as it can
+    across = (n) => {
+      let e = sub(cam.right, mul(n, dot(cam.right, n)));
+      if (len(e) < 1e-3) e = sub(cam.up, mul(n, dot(cam.up, n)));
+      return unit(e);
+    },
+    diameter = (c, n, r) => {
+      const e = across(n);
+      return span(sub(c, mul(e, r)), add(c, mul(e, r)), 2 * r, '⌀ ');
+    },
+    near = (p) => dot(p, cam.back) - 1e-3 * dot(p, cam.up) - 1e-6 * dot(p, cam.right);
+  if (kind === 'edge') {
+    const e = topo.edges[index];
+    if (e.circle && e.closed) return [diameter(e.circle.c, unit(e.circle.n), e.circle.r)];
+    if (e.circle) return [span(e.circle.c, e.mid, e.circle.r, 'R ')];
+    return e.kind === 'line' ? [span(e.a, e.b, e.length)] : [];
+  }
+  const f = topo.faces[index],
+    edges = topo.edges.filter((e) => e.faces.includes(index)),
+    points = facePoints(body, index);
+  if (f.plane) {
+    const round = edges.filter((e) => e.circle && e.closed);
+    if (edges.length === 1 && round.length === 1) return [diameter(round[0].circle.c, f.plane.n, round[0].circle.r)];
+    const r = rectangle(points, f.plane.n, sides(edges, f.plane.n));
+    if (!r.u) return [];
+    // A point of the plane from its two coordinates; of each pair of opposite sides, the nearer one.
+    const P = (s, t) => add(add(mul(r.u, s), mul(r.v, t)), mul(f.plane.n, f.plane.d)),
+      um = (r.u0 + r.u1) / 2,
+      vm = (r.v0 + r.v1) / 2,
+      t = near(P(um, r.v0)) >= near(P(um, r.v1)) ? r.v0 : r.v1,
+      s = near(P(r.u0, vm)) >= near(P(r.u1, vm)) ? r.u0 : r.u1;
+    return [span(P(r.u0, t), P(r.u1, t), r.size[0]), span(P(s, r.v0), P(s, r.v1), r.size[1])];
+  }
+  if (f.cyl) {
+    const dir = unit(f.cyl.dir),
+      r = f.cyl.r,
+      along = points.map((p) => dot(p, dir)),
+      t0 = Math.min(...along),
+      t1 = Math.max(...along),
+      on = (t) => add(f.cyl.p, mul(dir, t - dot(f.cyl.p, dir)));
+    if (!edges.some((e) => e.circle && e.closed)) {
+      // a fillet: its radius out to the middle of the face, its length along the face
+      const tc = dot(f.center, dir),
+        out = unit(sub(f.center, on(tc)));
+      return [span(on(tc), add(on(tc), mul(out, r)), r, 'R '), span(add(on(t0), mul(out, r)), add(on(t1), mul(out, r)), t1 - t0)];
+    }
+    const spans = [diameter(on(dot(dir, cam.back) >= 0 ? t1 : t0), dir, r)],
+      side = cross(dir, cam.back);
+    if (len(side) > 0.2) {
+      // along the wall, on the side that is the outline as it is seen (the left one)
+      const s = mul(unit(side), dot(side, cam.right) > 0 ? -r : r);
+      spans.push(span(add(on(t0), s), add(on(t1), s), t1 - t0));
+    }
+    return spans;
+  }
+  if (f.sphere) return [span(sub(f.sphere.c, mul(cam.right, f.sphere.r)), add(f.sphere.c, mul(cam.right, f.sphere.r)), 2 * f.sphere.r, '⌀ ')];
+  return [];
 }
 
 /** What a face or an edge is for measuring to: a plane, a line (an edge, or the axis of something round) or a point. */

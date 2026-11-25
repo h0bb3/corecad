@@ -48,11 +48,13 @@ and its own place.
 
 ## Sizes at a glance
 
-- Rest the mouse on a face or an edge: a label says how big it is.
+- Rest the mouse on a face or an edge: its sizes are drawn on it, each
+  number along the side or edge it measures.
 - Click one thing and Shift-click another: the distance between them is
   drawn (hole to hole, face to face, a hole from a side), or their angle.
-- **Dimensions** (D) shows the numbers that drive the selected part, where
-  they are, with its overall size in grey. Click a number, type, Enter.
+- **Dimensions** (D) shows the numbers that drive the selected part, each
+  on the line it measures, with its overall size in grey. A number says what
+  it is when the mouse is on it. Click a number, type, Enter.
 - Click a feature in the history and its own numbers are shown the same way.
 
 Autosave keeps the last committed project in this browser. Download a project

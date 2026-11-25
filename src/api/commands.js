@@ -861,7 +861,7 @@ export function createCommands(app) {
         .filter((f) => !only || f.part === only)
         .flatMap((f) => {
           const sk = f.type === 'sketch' ? f : f.type === 'extrude' ? featureById(d, f.sketch) : null;
-          return dimensionsOf(f, { frame: sk ? resultOf(sk.id)?.frame ?? null : null, matrix: world.get(f.part) ?? Mat.IDENTITY }).map(dimensionRow);
+          return dimensionsOf(f, { frame: sk ? resultOf(sk.id)?.frame ?? null : null, matrix: world.get(f.part) ?? Mat.IDENTITY, sketch: sk }).map(dimensionRow);
         });
     },
     async get_document() {

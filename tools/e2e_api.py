@@ -392,7 +392,11 @@ def run(p, url='index.html?test=1'):
     call('set_view', view='home')
     rest([30, 6, 12])
     shown = p.js('corecad.numbers')
-    assert [n for n in shown if n['kind'] == 'pointed' and n['text'].startswith('60 \u00d7 40 mm')], shown
+    assert [n['text'] for n in shown if n['kind'] == 'pointed'] == ['60', '40'], 'each number along its own side of the face: %s' % shown
+    p.click(*page([30, 0, 12]))
+    edge = p.js('corecad.selection')
+    assert [h['type'] for h in edge] == ['edge'] and [n['text'] for n in p.js('corecad.numbers') if n['kind'] == 'measure'] == ['52'], (edge, p.js('corecad.numbers'))
+    p.key('Escape')
     p.click(*page([15, 24, 12]))
     p.click(*page([45, 24, 12]), modifiers=8)
     time.sleep(.2)
@@ -412,7 +416,7 @@ def run(p, url='index.html?test=1'):
     assert width['change_with'] == 'set_dimension' and width['arguments']['sketch'] == 'f1' and width['feature_name'] == 'Sketch1', width
     assert sorted(d['shown_as'] for d in dims if d['feature'] != 'f1') == ['12', '6', 'R 4', '\u00d8 5'], [d['shown_as'] for d in dims]
     depth = next(d for d in dims if d['is'] == 'extrusion distance')
-    assert depth['change_with'] == 'edit_feature' and depth['arguments'] == {'id': 'f2', 'distance': 12} and depth['at'][2] == 6, depth
+    assert depth['change_with'] == 'edit_feature' and depth['arguments'] == {'id': 'f2', 'distance': 12} and depth['at'] == [0, 0, 6], 'along the edge at the first corner of the outline: %s' % depth
     wider = call(width['change_with'], **{**width['arguments'], 'value': 80})
     assert wider['bodies'][0]['box'][1][0] == 80, wider['bodies']
     step('list_dimensions: %d driving numbers, each with the command that changes it' % len(dims))
@@ -425,6 +429,8 @@ def run(p, url='index.html?test=1'):
     overall = [n['text'] for n in p.js('corecad.numbers') if n['kind'] == 'reference']
     assert overall == ['X 80', 'Y 40', 'Z 12'], overall
     thick = next(l for l in labels if l['feature'] == 'f2')
+    p.move(thick['x'], thick['y'], steps=3)
+    assert [n['text'] for n in p.js('corecad.numbers') if n['kind'] == 'caption'] == ['extrusion distance \u00b7 Extrude1'], 'the number under the mouse says what it is'
     p.click(thick['x'], thick['y'])
     p.wait('!!document.getElementById("dim-input")')
     assert p.js('document.getElementById("dim-input").value') == '12' and p.js('!!document.getElementById("dim-input").title'), p.js('document.getElementById("dim-input").value')

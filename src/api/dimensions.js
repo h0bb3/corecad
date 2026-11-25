@@ -4,11 +4,33 @@
 // model can be clicked and typed over. Pure: the document in, places in space out.
 import { DIMENSIONS } from '../sketch/catalogue.js';
 import { dimensionGeometry, measure } from '../sketch/measure.js';
+import { indexSketch } from '../sketch/model.js';
 import { canonicalFrame, toWorld } from '../core/plane.js';
 import { formatNumber } from '../core/num.js';
 import * as Mat from '../core/mat.js';
 
 const fmt = (v) => formatNumber(v, 3);
+
+/** A point of a profile's outline that an upright edge of its extrusion starts from: the start of its first
+ *  line or arc, or a point of its circle. null when the sketch is not at hand. */
+function cornerOf(sketch, profile) {
+  if (!sketch) return null;
+  const ix = indexSketch(sketch),
+    xy = (id) => {
+      const p = ix.point(id);
+      return p ? [p.x, p.y] : null;
+    };
+  for (const id of profile.loop ?? []) {
+    const e = ix.entity(id);
+    if (!e) continue;
+    if (e.type === 'line' || e.type === 'arc') return xy(e.a);
+    if (e.type === 'circle') {
+      const c = xy(e.c);
+      return c && [c[0] + e.r, c[1]];
+    }
+  }
+  return null;
+}
 
 /**
  * @typedef {object} Dimension
@@ -27,7 +49,8 @@ const fmt = (v) => formatNumber(v, 3);
  * The driving numbers of one feature.
  * @param {object} f        the feature
  * @param {object} context  { frame: the frame of f (a sketch) or of the sketch f uses (an extrusion), in its part;
- *                            matrix: where its part stands (twelve numbers); sketch: the sketch an extrusion uses }
+ *                            matrix: where its part stands (twelve numbers); sketch: the sketch an extrusion uses
+ *                            (its distance is then drawn along an edge the extrusion made, from a corner of the outline) }
  * @returns {Dimension[]}
  */
 export function dimensionsOf(f, { frame = null, matrix = Mat.IDENTITY, sketch = null } = {}) {
@@ -60,7 +83,7 @@ export function dimensionsOf(f, { frame = null, matrix = Mat.IDENTITY, sketch = 
   if (f.type === 'extrude' && frame && f.profiles?.length) {
     const e = f.extent,
       s = f.flip ? -1 : 1,
-      uv = f.profiles[0].at,
+      uv = cornerOf(sketch, f.profiles[0]) ?? f.profiles[0].at,
       out = [];
     if (e.distance !== 'all') {
       const [t0, t1] = e.type === 'symmetric' ? [-e.distance / 2, e.distance / 2] : [0, s * e.distance],

@@ -38,7 +38,7 @@ import {
 } from './doc/parts.js';
 import * as Mat from './core/mat.js';
 import { gizmoArrows, hitArrow, alongAxis, drawArrows } from './view/gizmo.js';
-import { sizeOf, between, total, boxOf } from './api/measure3d.js';
+import { sizeOf, spansOf, between, total, boxOf } from './api/measure3d.js';
 import { dimensionsOf } from './api/dimensions.js';
 import { pill, pillWidth, line as inkLine, inBox, INK } from './view/annotate.js';
 import { faceRefFrom, edgeRefFrom, frameOfSketch, resolveEdgeRef } from './doc/refs.js';
@@ -75,6 +75,7 @@ let editor = null,
   dimEdit = null, // { d, input }: a number being typed over
   selectedDim = null, // { feature, key }: the number that was clicked
   numbersFor = null, // the feature that was clicked in the history: its numbers are shown on the model
+  hotDim = null, // { feature, key }: the number the mouse is on
   quietShown = false; // a change made from the view itself: the camera stays as it is
 // What the view bar's two toggles are set to, kept between visits.
 const PREF = (name) => 'corecad.' + name + (new URLSearchParams(location.search).has('test') ? '.test' : '');
@@ -145,8 +146,13 @@ const view = createViewport(id('viewport'), {
       // A number on the model is clicked, not what lies under it.
       const label = draft ? null : labelAt(p),
         hit = label ? null : view.pick(...p, pickFilter(), e.altKey),
-        cursor = label ? (label.d.edit ? 'pointer' : 'default') : '';
+        cursor = label ? (label.d.edit ? 'pointer' : 'default') : '',
+        hot = label ? { feature: label.d.feature, key: label.d.key } : null;
       if (view.canvas.style.cursor !== cursor) view.canvas.style.cursor = cursor;
+      if (hot?.feature !== hotDim?.feature || hot?.key !== hotDim?.key) {
+        hotDim = hot; // its line is drawn heavier and it says what it is
+        view.dirty();
+      }
       view.hover(hit);
       // What the mouse comes to rest on is what the person points at; what it only passes over
       // on its way out of the view is not.
@@ -218,7 +224,7 @@ function shownDimensions() {
   }
   return features.filter(built).flatMap((f) => {
     const sketch = f.type === 'sketch' ? f : f.type === 'extrude' ? featureById(d, f.sketch) : null;
-    return dimensionsOf(f, { frame: sketch ? sketchFrame(sketch) : null, matrix: placementOf(f.part) });
+    return dimensionsOf(f, { frame: sketch ? sketchFrame(sketch) : null, matrix: placementOf(f.part), sketch });
   });
 }
 const labelAt = (p) => dimLabels.findLast((l) => inBox(l.box, p)) ?? null;
@@ -231,12 +237,21 @@ function drawNumbers(ctx) {
     driving = [],
     measured = [],
     overall = [];
+  const is = (which, d) => which?.feature === d.feature && which.key === d.key;
   for (const d of shownDimensions()) {
-    const picked = selectedDim?.feature === d.feature && selectedDim.key === d.key,
+    const picked = is(selectedDim, d),
+      hot = is(hotDim, d),
       style = d.edit ? INK.driving : INK.reference,
       pts = d.line.map(S);
-    inkLine(ctx, pts, style, { ticks: pts.length === 4 ? [1, 2] : [0, 1] });
-    driving.push({ text: d.text, at: S(d.at), style: picked ? INK.chosen : style, d });
+    // The line a number is the length of; heavier, and named, for the one the mouse is on or that was clicked.
+    inkLine(ctx, pts, picked || hot ? INK.measure : style, { ticks: pts.length === 4 ? [1, 2] : [0, 1], width: picked || hot ? 2.2 : 0.9 });
+    driving.push({
+      text: d.text,
+      at: S(d.at),
+      style: picked ? INK.chosen : style,
+      d,
+      caption: hot || picked ? `${d.what} · ${featureById(store.state.doc, d.feature)?.name ?? ''}` : '',
+    });
   }
   if (dimsOn) drawOverall(ctx, overall);
   if (measureOn) drawMeasured(ctx, measured);
@@ -252,6 +267,10 @@ function drawNumbers(ctx) {
     if (y !== l.at[1]) inkLine(ctx, [l.at, [l.at[0], y]], l.style === INK.chosen ? INK.driving : l.style, { width: 0.5 });
     const box = pill(ctx, l.text, l.at[0], y, l.style);
     placed.push(box);
+    if (l.caption) {
+      placed.push(pill(ctx, l.caption, l.at[0], y + 20, INK.reference));
+      drawnNumbers.push({ text: l.caption, kind: 'caption' });
+    }
     drawnNumbers.push({ text: l.text, kind: Object.keys(INK).find((k) => INK[k] === l.style) });
     if (l.d) dimLabels.push({ box, d: l.d });
   }
@@ -304,10 +323,25 @@ function drawOverall(ctx, labels) {
     labels.push({ text: `${'XYZ'[axis]} ${mm(size)}`, at: off(mid, 24), style: INK.reference });
   }
 }
-/** How big what was clicked is, how far apart two clicked things are, and how big what the mouse rests on is. */
+/** How big what was clicked is, how far apart two clicked things are, and how big what the mouse rests on is.
+ *  A size is drawn where it is: each number along the edge or the side it is the length of. */
 function drawMeasured(ctx, labels) {
   const S = (p) => view.project(p),
+    cam = VM.basis(view.view),
     sel = selection.filter(stillThere).map(asPick);
+  /** The numbers of one thing, along its own edges; as one label at `at` when none of them can be seen as a line. */
+  const sized = (p, style, at) => {
+    let drawn = 0;
+    for (const span of spansOf(p.body, p.kind, p.index, cam)) {
+      const a = S(span.a),
+        b = S(span.b);
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 14) continue; // seen end-on
+      inkLine(ctx, [a, b], style, { width: 1.8, ticks: [0, 1] });
+      labels.push({ text: span.text, at: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], style });
+      drawn++;
+    }
+    if (!drawn) labels.push({ text: sizeOf(p.body, p.kind, p.index).text, at, style });
+  };
   if (sel.length === 2) {
     const m = between(sel[0], sel[1]),
       real = m.from && m.distance > 1e-7,
@@ -315,18 +349,20 @@ function drawMeasured(ctx, labels) {
       b = S(real ? m.to : sel[1].point);
     inkLine(ctx, [a, b], INK.measure, real ? { width: 1.6, ticks: [0, 1] } : { width: 1, dash: [4, 3] });
     labels.push({ text: m.text, at: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], style: INK.measure });
-  }
-  if (sel.length <= 2)
     for (const p of sel) {
       const s = S(p.point);
       labels.push({ text: sizeOf(p.body, p.kind, p.index).text, at: [s[0], s[1] - 20], style: INK.measure });
     }
+  } else if (sel.length === 1) {
+    const s = S(sel[0].point);
+    sized(sel[0], INK.measure, [s[0], s[1] - 20]);
+  }
   const at = stillThere(pointed),
     same = (h) => h.body === at.body && h.type === at.type && (h.face ?? h.edge) === (at.face ?? at.edge);
   if (at && (mouse || bridgeOn()) && !selection.some(same)) {
     const p = asPick(at),
       s = S(p.point);
-    labels.push({ text: sizeOf(p.body, p.kind, p.index).text, at: [s[0], s[1] - 22], style: INK.pointed });
+    sized(p, INK.pointed, [s[0], s[1] - 22]);
   }
 }
 /** What the line under the view bar says about the selection: its size, or what lies between two. */
@@ -2900,7 +2936,8 @@ window.corecad = {
   get measured() {
     return selectionNote();
   },
-  /** Every value drawn on the model right now: [{ text, kind }], kind 'driving', 'reference', 'measure', 'pointed' or 'chosen'. */
+  /** Every value drawn on the model right now: [{ text, kind }], kind 'driving', 'reference', 'measure', 'pointed' or
+   *  'chosen'; and 'caption': what the number under the mouse is. */
   get numbers() {
     view.snapshot();
     return structuredClone(drawnNumbers);
