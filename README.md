@@ -54,6 +54,8 @@ and its own place.
 - For printing, export **3MF**: each part arrives in the slicer as its own
   object, named, coloured and where you placed it. An STL file is only one
   mesh, so several parts as STL come as a .zip with one file for each.
+- To export one part alone, select it and use its **Export** button (under
+  the list), or tick "Only the selected part" in the Export dialog.
 
 ## Sizes at a glance
 

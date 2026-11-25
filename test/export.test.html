@@ -2,7 +2,7 @@
 import {test,eq,ok,near,throws,run} from './harness.js';
 import {createKernel} from '../src/kernel/client.js';
 import {createDocument,makeFeature,addFeature} from '../src/doc/model.js';
-import {makePart,addPart,updatePart,copyPart,setPartColor,paintFaces,appearanceOf,sceneOf} from '../src/doc/parts.js';
+import {makePart,addPart,updatePart,copyPart,setPartColor,paintFaces,appearanceOf,sceneOf,setParent} from '../src/doc/parts.js';
 import {validateDocument} from '../src/doc/schema.js';
 import {zip,unzip,crc32} from '../src/core/zip.js';
 import {weld,isClosed,modelXml,package3mf} from '../src/kernel/threemf.js';
@@ -82,6 +82,15 @@ test('3MF: every part an object of its own, named, coloured, closed, where it st
  ok(b.painted.every(x=>x===null));
  // a part with painted faces but no colour of its own gets the plain one for the rest
  const plain=read3mf(new Uint8Array(await (await k.export(setPartColor(doc,plate,null),{format:'3mf'})).arrayBuffer()));eq(plain.objects[0].color,'#BAC8CA');
+});
+test('Only one part: it, and what stands under it',async()=>{
+ const names=async(d,o)=>read3mf(new Uint8Array(await (await k.export(d,{format:'3mf',...o})).arrayBuffer())).objects.map(x=>x.name);
+ eq(await names(doc,{parts:[pin]}),['Pin']);eq(await names(doc,{parts:[plate]}),['Plate'],'its used-up tool stands under it, but is no object');eq(await names(doc,{parts:[twin]}),['Plate']);
+ eq(await names(doc,{parts:[pin,twin]}),['Pin','Plate']);
+ let [g,group]=part(doc,{name:'Kit'});g=setParent(setParent(g,pin,group),twin,group);eq(await names(g,{parts:[group]}),['Pin','Plate'],'a group is what stands under it');
+ await throws(()=>k.export(doc,{format:'3mf',parts:[tool]}),/Bore shows no solid.*used up as a tool/);await throws(()=>k.export(doc,{format:'stl',parts:[hidden]}),/Spare shows no solid/);
+ const one=new Uint8Array(await (await k.export(doc,{format:'stl',split:true,parts:[plate]})).arrayBuffer());near(readStl(one).box,[[-30,-20,0],[30,20,12]],1e-4,'one part as STL is a plain file, not a zip');
+ ok(!text(new Uint8Array(await (await k.export(doc,{format:'step',parts:[pin]})).arrayBuffer())).includes("'Plate'"));
 });
 test('STL: one file for each part when there are several; STEP carries names and colours',async()=>{
  const bytes=async(o)=>new Uint8Array(await (await k.export(doc,o)).arrayBuffer());

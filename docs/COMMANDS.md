@@ -93,8 +93,8 @@ bigger". The page keeps track of what they mean, and the commands can use it.
   the history.
 - **Pointed**: the face or edge their mouse last came to rest on (about a
   third of a second without moving). It stays that after the mouse has left
-  for another window, until they rest on something else, click empty space
-  or press Esc. While an MCP client is connected it is marked with a ring.
+  for another window, until they rest on something else, click empty space,
+  click a part or a feature in the list, or press Esc. While an MCP client is connected it is marked with a ring.
   What the mouse only passed over on its way out is not it.
 - `get_selection` tells both: for each face or edge its part, where it is in
   space, the `point` that was clicked and, on a flat face, the same point as
@@ -155,6 +155,9 @@ between two clicked things, and the Dimensions view). An agent gets the same:
   cannot tell objects apart; `per_part: true` gives a zip with one STL for
   each part instead.
 - `export { format: "step" }` has exact solids, named and coloured.
+- `export { part: "Plate" }` (with any of these formats) exports only that
+  part and what stands under it; `part: "this"` the part the person has
+  selected.
 
 ## The commands
 
@@ -197,7 +200,7 @@ Arguments in brackets are optional.
 | `delete_part` | [part], [with_dependents] | Deletes a part with its history and what is under it. |
 | `undo`, `redo` | - | As the buttons. |
 | `cancel_edit` | - | Closes a sketch or dialog that is open in the page, discarding. |
-| `export` | [format], [per_part], [download] | 3MF (an object for each part, named and coloured), STL, STEP or the project. |
+| `export` | [format], [part], [per_part], [download] | 3MF (an object for each part, named and coloured), STL, STEP or the project. |
 | `screenshot` | [view], [fit], [max], [dimensions] | The 3D view as a PNG data URL, with the driving numbers on it if asked. |
 | `set_view` | view, [fit] | Turns the camera to a standard view. |
 

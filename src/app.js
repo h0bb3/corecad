@@ -589,6 +589,8 @@ function selectPart(pid) {
   selectedPart = pid;
   selectedFeature = null;
   selection = [];
+  pointed = null; // a click in the list is newer than what the mouse rested on in the view: "this" is this part now
+  view.hover(null);
   view.select([]);
   refreshScene();
   renderBrowser();
@@ -853,7 +855,7 @@ function renderFeatureActions() {
       p.link
         ? '<button data-action="unlink-part" title="Make this linked copy a part of its own, with its own history">Unlink</button>'
         : ''
-    }<button data-action="rename-part" title="Rename this part">Rename</button><button data-action="delete-part" title="Delete this part, its history and the parts under it">Delete</button>`);
+    }<button data-action="rename-part" title="Rename this part">Rename</button><button data-action="export-part" title="Export this part alone, with what stands under it: 3MF, STL or STEP">Export</button><button data-action="delete-part" title="Delete this part, its history and the parts under it">Delete</button>`);
     return;
   }
   setHTML('browser-actions', f
@@ -1990,17 +1992,20 @@ function editFeature() {
   if (f.type === 'sketch') enterSketch(f.plane, f);
   else beginFeature(f.type, f);
 }
-async function exportFile(format) {
+/** only: the id of the one part to export (with what stands under it), or nothing for everything. */
+async function exportFile(format, only = null) {
   if (editor || draft || mover) {
     toast('Finish the current edit before exporting.');
     return;
   }
   try {
     toast('Preparing ' + format.toUpperCase() + '…');
-    const blob = await store.kernel.export(store.state.doc, { format, split: true }),
+    const d = store.state.doc,
+      part = only ? partById(d, only) : null,
+      blob = await store.kernel.export(d, { format, split: true, ...(part ? { parts: [part.id] } : {}) }),
       // several parts as STL come as a zip of one file each
       zipped = format === 'stl' && new Uint8Array(await blob.slice(0, 2).arrayBuffer()).join() === '80,75',
-      name = filename(store.state.doc) + (zipped ? ' STL.zip' : '.' + format);
+      name = filename(part ? { meta: { name: `${d.meta.name} - ${part.name}` } } : d) + (zipped ? ' STL.zip' : '.' + format);
     download(blob, name);
     toast(zipped ? 'One STL for each part, in a .zip. For one file with every part as its own object, use 3MF.' : format.toUpperCase() + ' exported.');
     window.__lastExport = { format, size: blob.size, name };
@@ -2377,17 +2382,29 @@ const actions = {
     toast('Project downloaded.');
   },
   open: () => id('file-input').click(),
-  'export-menu': () =>
+  'export-part': () => actions['export-menu'](true),
+  'export-menu': (onlySelected = false) => {
     showModal(
       'Export solids',
       '<p><b>3MF</b> is for printing: every part is an object of its own, with its name and its colours, where it stands. Bambu Studio, OrcaSlicer, PrusaSlicer and Cura open it.</p><p><b>STL</b> is a plain triangle mesh. An STL file cannot tell one object from another, so with several parts you get a .zip with one STL for each. <b>STEP</b> keeps exact solids, named and coloured, for other CAD programs.</p><p>Hidden parts are left out.</p>',
       cancelButton +
         '<button data-modal="stl" title="A binary STL mesh; with several parts, one for each in a .zip">STL</button><button data-modal="step" title="Exact solids as STEP, named and coloured">STEP</button><button class="primary" data-modal="3mf" title="For slicers: every part an object of its own, with its name and colours">3MF</button>',
       (a) => {
+        const only = id('export-only')?.checked ? id('export-only').value : null;
         closeModal();
-        if (a !== 'cancel') exportFile(a);
+        if (a !== 'cancel') exportFile(a, only);
       }
-    ),
+    );
+    // One part only, when one is selected: asked for here, or beforehand with the part's own Export button.
+    const p = partById(store.state.doc, selectedPart);
+    if (p) {
+      $('#modal-root .panel-body').insertAdjacentHTML(
+        'beforeend',
+        check('export-only', `Only the selected part: ${p.name}`, onlySelected, 'Export this part and what stands under it, and nothing else.')
+      );
+      id('export-only').value = p.id;
+    }
+  },
   fit: () => (editor ? view.fitSketch(editor.box()) : view.fit()),
   projection: () => {
     id('projection').textContent = view.toggleProjection() ? 'Ortho' : 'Perspective';
@@ -2600,6 +2617,7 @@ document.addEventListener('click', (e) => {
         'unlink-part',
         'rename-part',
         'delete-part',
+        'export-part',
         'colour',
       ].includes(d.action)
     ) {
@@ -2632,6 +2650,8 @@ document.addEventListener('click', (e) => {
     numbersFor = d.feature;
     selectedPart = featureById(store.state.doc, d.feature)?.part ?? selectedPart;
     selection = [];
+    pointed = null;
+    view.hover(null);
     view.select([]);
     refreshScene();
     renderBrowser();

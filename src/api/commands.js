@@ -248,6 +248,7 @@ export const TOOLS = [
     'The model as a file. "3mf": for slicers (Bambu Studio, OrcaSlicer, PrusaSlicer, Cura): every part an object of its own, with its name, its colour and its painted faces, where it stands. "stl": a plain mesh; an STL file cannot tell objects apart, so everything is one mesh unless per_part is asked for. "step": exact geometry for other CAD, parts named and coloured. "corecad": the project. Hidden parts are left out. Returned as text (step, corecad) or base64 (3mf, stl), or sent to the browser\'s downloads.',
     {
       format: str('Default "step".', { enum: ['3mf', 'step', 'stl', 'corecad'] }),
+      part: str('Only this part and what stands under it: an id, a name, or "this" (the part the person has selected). Left out: everything that is to be seen.'),
       per_part: bool('For "stl" with several parts: a .zip with one STL file for each part, named after it.'),
       download: bool('true: save it through the browser instead of returning its content.'),
     }
@@ -1296,10 +1297,14 @@ export function createCommands(app) {
       const format = a.format ?? 'step';
       if (!['3mf', 'step', 'stl', 'corecad'].includes(format)) throw Error('"format" is "3mf", "step", "stl" or "corecad".');
       if (format !== 'corecad' && !bodies().length) throw Error('There is no body to export yet.');
-      const blob = format === 'corecad' ? new Blob([serialize(doc())], { type: 'application/json' }) : await store.kernel.export(doc(), { format, split: !!a.per_part }),
+      const only = a.part !== undefined && format !== 'corecad' ? partOf(a.part) : null,
+        blob =
+          format === 'corecad'
+            ? new Blob([serialize(doc())], { type: 'application/json' })
+            : await store.kernel.export(doc(), { format, split: !!a.per_part, ...(only ? { parts: [only.id] } : {}) }),
         // several parts as STL, one file each, come as a zip
         zipped = format === 'stl' && !!a.per_part && new Uint8Array(await blob.slice(0, 2).arrayBuffer()).join() === '80,75',
-        name = app.filename(doc()) + (zipped ? ' STL.zip' : '.' + format);
+        name = app.filename(only ? { meta: { name: `${doc().meta.name} - ${only.name}` } } : doc()) + (zipped ? ' STL.zip' : '.' + format);
       if (a.download) {
         app.download(blob, name);
         return { format, filename: name, bytes: blob.size, downloaded: true };

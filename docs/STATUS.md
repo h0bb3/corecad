@@ -276,3 +276,10 @@ transparency. A part with several bodies is one object. In STEP only the
 part's colour is written, not painted faces. The kernel writes STEP colours
 after converting them, so the conversion is undone first; a colour comes back
 within about 1/255 of what was chosen.
+
+**One part alone.** The selected part can be exported by itself, with what
+stands under it: its own Export button under the list, a tick in the Export
+dialog, or `export { part }`. The file is named after the project and the
+part. A part that shows nothing (empty, hidden, or used up as a tool) is
+refused with that reason. Verified in `test/export.test.html` (6 tests now)
+and `tools/e2e_export.py`.

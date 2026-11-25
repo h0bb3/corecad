@@ -191,6 +191,35 @@ def run(p, url='index.html?test=1'):
     assert "'Plate'" in text and "'Post'" in text and "'Post 2'" in text and text.count('COLOUR_RGB') >= 3
     step('STL: a zip of one file for each part, or one mesh; STEP with names and colours')
 
+    # ---- only the selected part
+    one = call('export', format='3mf', part='Plate')
+    assert one['filename'] == 'Fixture - Plate.3mf' and [o['name'] for o in read_3mf(base64.b64decode(one['base64']))] == ['Plate']
+    p.click(f'[data-part="{twin}"]')
+    this = read_3mf(base64.b64decode(call('export', format='3mf', part='this')['base64']))
+    assert [(o['name'], o['color'], box(o['vertices'])) for o in this] == [('Post', '#58A84A', [[50, 30, 0], [70, 50, 30]])], this
+    fails('export', 'use the id', format='stl', part='Post')      # two parts have that name
+    solo = call('export', format='stl', part='o3', per_part=True)
+    assert 'zip' not in solo and solo['filename'] == 'Fixture - Post.stl' and read_stl(base64.b64decode(solo['base64']))[1] == [[50, -10, 0], [70, 10, 30]]
+    fails('export', 'shows no solid', format='stl', part='Bore')
+    fails('export', 'shows no solid', format='3mf', part='Ball')
+    # in the dialog: a tick for the selected part; the part's own Export button comes with it ticked
+    p.click('[data-part="o3"]')
+    p.js('window.__lastExport = null')
+    p.click('[data-action="export-menu"]')
+    assert p.js('document.getElementById("export-only").checked') is False and 'Only the selected part: Post' in p.js('document.querySelector("#modal-root .panel-body").textContent')
+    p.click('#export-only')
+    p.click('[data-modal="3mf"]')
+    p.wait('window.__lastExport?.format === "3mf"', timeout=60)
+    assert p.js('window.__lastExport.name') == 'Fixture - Post.3mf', p.js('window.__lastExport')
+    p.js('window.__lastExport = null')
+    p.click('[data-action="export-part"]')
+    assert p.js('document.getElementById("export-only").checked') is True
+    assert all(p.js('[...document.querySelectorAll("#modal-root button, #modal-root input")].map(e => !!e.closest("[title]"))'))
+    p.click('[data-modal="stl"]')
+    p.wait('window.__lastExport?.format === "stl"', timeout=60)
+    assert p.js('window.__lastExport.name') == 'Fixture - Post.stl', p.js('window.__lastExport')
+    step('only the selected part: by command, by the tick in the dialog, by the part\'s own Export button')
+
     # ---- the Export dialog
     def export(kind):
         p.js('window.__lastExport = null')

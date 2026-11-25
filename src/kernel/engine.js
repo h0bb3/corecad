@@ -1,7 +1,7 @@
 import { hash64, geometryKey } from '../core/hash.js';
 import * as Mat from '../core/mat.js';
 import { upgrade } from '../doc/schema.js';
-import { partById, worldOf, contentOf, consumedIn, buildOrder, sceneOf, appearanceOf } from '../doc/parts.js';
+import { partById, worldOf, contentOf, consumedIn, buildOrder, sceneOf, appearanceOf, descendantsOf } from '../doc/parts.js';
 import { evaluate, emptyState } from './features.js';
 import { packBody, topoOf } from './topo.js';
 import { weld, package3mf } from './threemf.js';
@@ -262,16 +262,23 @@ export function createEngine(post) {
      *   'step' exact solids, named and coloured
      *   'stl'  a mesh; with job.split and more than one part, a zip of one STL for each part
      *          (an STL file cannot tell one object from another)
+     * job.parts: only these parts and what stands under them, instead of everything.
      */
     async export(job) {
       const { doc, features, bodies, used } = await rebuild({ ...job, count: undefined, roll: null }, true),
         { r } = kernel();
       if (features.some((f) => f.status === 'error'))
         throw Error('Resolve failed features before exporting the part.');
-      const items = sceneOf(doc, bodies.map(({ body, part }) => ({ id: body.id, part, body })), used).filter(
-        (it) => !job.bodies || job.bodies.includes(it.id) || job.bodies.includes(it.source)
-      );
-      if (!items.length) throw Error('There are no visible solids to export.');
+      const only = job.parts ? new Set(job.parts.flatMap((id) => [id, ...descendantsOf(doc, id)])) : null,
+        items = sceneOf(doc, bodies.map(({ body, part }) => ({ id: body.id, part, body })), used).filter(
+          (it) => (!job.bodies || job.bodies.includes(it.id) || job.bodies.includes(it.source)) && (!only || only.has(it.part))
+        );
+      if (!items.length)
+        throw Error(
+          only
+            ? `${job.parts.map((id) => partById(doc, id)?.name ?? id).join(', ')} shows no solid to export: it is empty, hidden, or was used up as a tool.`
+            : 'There are no visible solids to export.'
+        );
       if (!['3mf', 'step', 'stl'].includes(job.format)) throw Error('Choose 3MF, STL or STEP.');
       // The parts, in the order of the document, each with what it shows and a name of its own.
       const objects = [],
