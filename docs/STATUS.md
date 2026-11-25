@@ -144,7 +144,12 @@ Verification, all run on this state:
   expected volumes and boxes in space.
 - `tools/e2e.py`, `tools/e2e_more.py` and `tools/e2e_bridge.py` pass (the
   second with body visibility replaced by part visibility; the third with
-  the tool count taken from the page).
+  the tool count taken from the page). The first two now begin with a new
+  project instead of assuming an empty browser.
+- On the public site, after the deploy of `4736b29`: `tools/e2e_parts.py`
+  and `tools/e2e.py` passed against <https://h0bb3.github.io/corecad/>, and
+  `tools/e2e_bridge.py --live` passed through the relay at vibedit.app with
+  the 36 tools.
 
 Limits of this version:
 

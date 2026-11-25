@@ -43,6 +43,9 @@ def run(p, url='index.html?test=1'):
 
     p.goto(url)
     wait('window.corecadReady && !corecad.busy', 45)
+    p.click('[data-action="new"]')      # the test autosave of an earlier run at this address, if any, is left behind
+    p.click('[data-modal="new"]')
+    wait()
     p.click('[data-plane="XY"]')
     p.key('r')
     at([0, 0])

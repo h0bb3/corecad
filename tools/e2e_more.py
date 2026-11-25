@@ -25,6 +25,7 @@ def run(p):
 
     p.goto('index.html?test=1')
     wait('window.corecadReady && !corecad.busy', 40)
+    fresh()
     p.click('[data-plane="XZ"]')
     p.key('l'); at([0, 0]); at([20, 0]); p.key('Escape'); p.key('Escape')
     start = p.js('corecad.screen([20,0])'); end = p.js('corecad.screen([30,8])')
