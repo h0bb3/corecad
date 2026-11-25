@@ -101,9 +101,11 @@ placement and children, and never features (a file in which a feature names a
 group is refused). It is not a new kind of node: everything that walks the
 tree (placement, visibility, what a combine or a linked copy takes, export of
 one part, copies) treats it as a part that happens to have no solids. What it
-adds is in the page and the command set: what is made while it is selected is
-made in it, it folds away in the list, and it can be taken away again
-(`ungroup`) with its children left where they stand. Groups are not scaled:
+adds is in the page: what is made there while it is selected is made in it, it
+folds away in the list, and it can be taken away again (Ungroup) with its
+children left where they stand. By command a group is made empty
+(`add_group`), filled and emptied with `move_part`, and deleted with
+`delete_part`. Groups are not scaled:
 placements stay rigid.
 
 A part may have `color` ('#rrggbb') and `paint`: faces with a colour of their

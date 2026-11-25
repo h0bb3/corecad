@@ -2,16 +2,27 @@
 
 Run with: python tools/e2e_api.py. Every edit here goes through commands, the way a
 script or an agent would drive the page; tools/e2e.py covers the mouse and the keys.
+
+There is one way to do each thing, so what a test needs often takes several commands:
+`sketch`, `block`, `rod` and `ball` below put them together, as an agent would.
 """
 import base64
 import json
 import math
+import re
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from browser import Browser, ROOT  # noqa: E402
+
+COMMANDS = ('get_state get_selection measure get_document load_document new_document get_sketch list_faces list_edges '
+            'add_sketch add_to_sketch set_dimension add_dimension add_constraint remove_from_sketch '
+            'extrude revolve fillet chamfer edit_feature '
+            'add_part add_group combine move_part copy_part set_color edit_part unlink_part delete_part delete_feature '
+            'undo redo reload_app cancel_edit export screenshot set_view').split()
+GONE = ['add_box', 'add_cylinder', 'add_sphere', 'hole', 'ungroup', 'list_dimensions']
 
 
 def run(p, url='index.html?test=1'):
@@ -40,9 +51,64 @@ def run(p, url='index.html?test=1'):
     def step(text):
         print('PASS ' + text)
 
-    # ---- a plate, from a rectangle with its dimensions
+    # ---- what a solid takes: a part, a sketch, shapes in it, an extrusion or a turn
+    def sketch(shapes, plane='XY', part=None):
+        """A sketch with shapes in it: add_sketch makes it, add_to_sketch fills it."""
+        s = call('add_sketch', plane=plane, **({'part': part} if part else {}))
+        return call('add_to_sketch', sketch=s['id'], shapes=shapes)
+
+    def part(name):
+        pid = call('add_part')['part']['id']
+        call('edit_part', part=pid, name=name)
+        return pid
+
+    def block(name, size, position=None):
+        """A box that stands on the ground with its middle over the part's origin."""
+        pid = part(name)
+        s = sketch([{'type': 'rectangle', 'center': [0, 0], 'width': size[0], 'height': size[1]}], part=pid)
+        call('extrude', sketch=s['id'], distance=size[2])
+        if position:
+            call('move_part', part=pid, position=position)
+        return pid
+
+    def rod(name, diameter, height, position=None):
+        """A cylinder along Z, standing on the part's origin."""
+        pid = part(name)
+        s = sketch([{'type': 'circle', 'center': [0, 0], 'diameter': diameter}], part=pid)
+        call('extrude', sketch=s['id'], distance=height)
+        if position:
+            call('move_part', part=pid, position=position)
+        return pid
+
+    def ball(name, diameter):
+        """A sphere round the part's origin: a half disc on XZ, turned about its straight side."""
+        r = diameter / 2
+        pid = part(name)
+        s = sketch([{'type': 'arc', 'center': [0, 0], 'from': [0, -r], 'to': [0, r]}, {'type': 'line', 'from': [0, r], 'to': [0, -r]}], plane='XZ', part=pid)
+        call('revolve', sketch=s['id'], axis=next(e['id'] for e in s['sketch']['entities'] if e['type'] == 'line'))
+        return pid
+
+    def feature(fid):
+        return next(f for f in call('get_state')['features'] if f['id'] == fid)
+
+    content = lambda d: {k: v for k, v in d.items() if k not in ('seq', 'pseq', 'meta')}     # undo keeps the counters: ids are never used twice
+
+    def undo_to(doc, most=80):
+        for _ in range(most):
+            if content(call('get_document')) == content(doc):
+                return
+            call('undo')
+        assert content(call('get_document')) == content(doc), 'undo did not come back to where it started'
+
+    # ---- a plate: a part, an empty sketch, a rectangle with its dimensions, an extrusion
     call('new_document', name='Command test')
-    s = call('add_sketch', plane='XY', shapes=[{'type': 'rectangle', 'corner': [0, 0], 'width': 60, 'height': 40}])
+    fails('add_sketch', 'make one with add_part')
+    first = call('add_part')['part']
+    assert first == {'id': 'o1', 'name': 'Part 1', 'kind': 'empty', 'parent': None, 'position': [0, 0, 0], 'rotation': [0, 0, 0], 'features': [], 'bodies': []}, first
+    s = call('add_sketch', plane='XY')
+    assert s['status'] == 'ok' and s['part'] == 'o1' and s['sketch']['entities'] == [] and s['sketch']['regions'] == [], s
+    fails('extrude', 'no closed region', distance=5)
+    s = call('add_to_sketch', shapes=[{'type': 'rectangle', 'corner': [0, 0], 'width': 60, 'height': 40}])
     assert s['sketch']['degrees_of_freedom'] == 0 and len(s['sketch']['regions']) == 1, s['sketch']
     sketch1 = s['id']
     r = call('extrude', distance=10)
@@ -50,7 +116,7 @@ def run(p, url='index.html?test=1'):
     near(volume(r), 24000, what='plate')
     body = r['bodies'][0]['id']
     assert r['bodies'][0]['box'] == [[0, 0, 0], [60, 40, 10]], r['bodies']
-    step('sketch with dimensions and a 10 mm extrusion: 24,000 mm3')
+    step('a part, a sketch, a rectangle with its dimensions and a 10 mm extrusion: 24,000 mm3')
 
     # ---- faces and edges by description
     faces = call('list_faces')[0]['faces']
@@ -61,8 +127,8 @@ def run(p, url='index.html?test=1'):
     assert len(call('list_edges')[0]['edges']) == 12
     step('faces and edges listed and chosen by description')
 
-    # ---- a hole through, from a circle sketched on the top face
-    s = call('add_sketch', plane='top', shapes=[{'type': 'circle', 'center': [20, 20], 'diameter': 8}])
+    # ---- a hole through: a circle sketched on the top face, cut
+    s = sketch([{'type': 'circle', 'center': [20, 20], 'diameter': 8}], plane='top')
     assert s['sketch']['plane'] == {'face_of_body': body} and s['sketch']['degrees_of_freedom'] == 0, s['sketch']
     r = call('extrude', operation='cut', through_all=True)
     near(volume(r), 24000 - math.pi * 16 * 10, what='through cut')
@@ -84,13 +150,14 @@ def run(p, url='index.html?test=1'):
     assert not r['problems'], r['problems']
     step('width 60 -> 80 rebuilds hole and fillets with their references')
 
-    # ---- a blind hole and a chamfer
-    r = call('hole', face='top', at=[60, 20], diameter=6, depth=5)
+    # ---- a blind hole (a cut on a face goes into the body) and a chamfer
+    sketch([{'type': 'circle', 'center': [60, 20], 'diameter': 6}], plane='top')
+    r = call('extrude', operation='cut', distance=5)
     near(volume(r), wide - math.pi * 9 * 5, what='blind hole')
     before = volume(r)
     r = call('chamfer', edges={'on': 'bottom', 'kind': 'line'}, distance=1)
     assert r['status'] == 'ok' and volume(r) < before - 1, (r['status'], volume(r), before)
-    step('blind hole by position and a chamfer on the bottom edges')
+    step('a blind hole as a circle cut 5 deep, and a chamfer on the bottom edges')
 
     # ---- a command that cannot be built changes nothing
     doc_before = p.js('JSON.stringify(corecad.doc.features)')
@@ -98,12 +165,14 @@ def run(p, url='index.html?test=1'):
     err = fails('edit_feature', '', id=fillet, radius=500)
     assert p.js('JSON.stringify(corecad.doc.features)') == doc_before
     near(volume(), after_chamfer, what='after the refused edit')
-    loose = call('add_sketch', plane='XY', shapes=[{'type': 'line', 'from': [100, 0], 'to': [120, 0]}])['id']
+    loose = sketch([{'type': 'line', 'from': [100, 0], 'to': [120, 0]}])['id']
     fails('extrude', 'no closed region', sketch=loose, distance=5)
     call('undo')
+    call('undo')
     fails('fillet', 'No edge', edges={'parallel': 'x', 'length': 123}, radius=1)
-    fails('add_sketch', 'unknown type', shapes=[{'type': 'hexagon'}])
+    fails('add_to_sketch', 'unknown type', shapes=[{'type': 'hexagon'}])
     fails('extrude', 'no argument "distanse"', distanse=5)
+    fails('extrude', '"flip" reverses', sketch=sketch1, distance=-5)
     fails('nonsense', 'Unknown command')
     fails('delete_feature', 'built on', id=sketch1)
     fails('edit_feature', 'it has no radius', id=sketch1, radius=3)
@@ -120,7 +189,7 @@ def run(p, url='index.html?test=1'):
     r = call('edit_feature', id=fillet, suppressed=True)
     assert r['status'] == 'suppressed', r
     call('edit_feature', id=fillet, suppressed=False, name='Round corners')
-    assert next(f for f in call('get_state')['features'] if f['id'] == fillet)['name'] == 'Round corners'
+    assert feature(fillet)['name'] == 'Round corners'
     step('edit, suppress, rename, undo and redo')
 
     # ---- a dialog open in the page: the commands wait their turn, and can close it
@@ -138,15 +207,19 @@ def run(p, url='index.html?test=1'):
     assert step_file['text'].startswith('ISO-10303-21') and step_file['bytes'] > 5000, step_file['text'][:40]
     stl = base64.b64decode(call('export', format='stl')['base64'])
     assert len(stl) == 84 + 50 * int.from_bytes(stl[80:84], 'little') and len(stl) > 5000
-    project = json.loads(call('export', format='corecad')['text'])
+    project = call('get_document')
     assert project['format'] == 'corecad' and len(project['features']) == len(call('get_state')['features'])
-    shot = call('screenshot', view='home', max=900)
+    fails('export', 'get_document', format='corecad')
+    assert call('set_view', view='home') == {'view': 'home', 'fitted': True} and call('set_view') == {'fitted': True}
+    fails('set_view', 'nothing to do', fit=False)
+    shot = call('screenshot', max=900)
     png = base64.b64decode(shot['png'].split(',', 1)[1])
     assert png[:8] == b'\x89PNG\r\n\x1a\n' and max(shot['width'], shot['height']) <= 900
+    fails('screenshot', 'no argument "view"', view='home')
     out = ROOT / '.scratch' / 'e2e_api.png'
     out.parent.mkdir(exist_ok=True)
     out.write_bytes(png)
-    step('STEP, STL, project and a %dx%d screenshot' % (shot['width'], shot['height']))
+    step('STEP, STL, the project and a %dx%d picture of the view as set_view left it' % (shot['width'], shot['height']))
 
     # ---- the document round trip, and the page shows what the commands did
     call('new_document')
@@ -159,7 +232,7 @@ def run(p, url='index.html?test=1'):
     assert p.js('corecad.tools.every(t => t.description.length > 20 && t.input.type === "object")')
     step('project reloaded to the same volume; %d tools described' % len(tools))
 
-    # ---- parts: primitives without sketches, each a part with its own history and place
+    # ---- parts: each with a history and a place of its own
     def vol(result, part):
         return sum(b['volume'] for b in result['bodies'] if b['part'] == part)
 
@@ -174,17 +247,17 @@ def run(p, url='index.html?test=1'):
         return [[round(min(q[i] for q in pts), 2) for i in range(3)], [round(max(q[i] for q in pts), 2) for i in range(3)]]
 
     call('new_document', name='Parts')
-    plate = call('add_box', size=[60, 40, 12], name='Plate')
-    assert plate['part']['id'] == 'o1' and plate['part']['kind'] == 'part' and plate['part']['box'] == [[-30, -20, 0], [30, 20, 12]], plate['part']
-    near(vol(plate, 'o1'), 28800, what='the box')
-    pin = call('add_cylinder', diameter=10, height=30, position=[15, 0, -5], name='Pin')
-    assert pin['part']['box'] == [[10, -5, -5], [20, 5, 25]] and pin['part']['position'] == [15, 0, -5], pin['part']
+    assert block('Plate', [60, 40, 12]) == 'o1'
     st = call('get_state')
-    assert st['current_part'] == 'o2' and [x['name'] for x in st['parts']] == ['Plate', 'Pin'] and [f['part'] for f in st['features']] == ['o1', 'o2'], st
-    fails('add_box', 'three numbers', size=[60, 40])
-    fails('add_cylinder', 'positive', diameter=0, height=5)
-    fails('add_sphere', 'origin', diameter=5, origin='corner')
-    step('a box and a cylinder as parts, each placed and with a history of its own')
+    assert row(st, 'Plate')['kind'] == 'part' and row(st, 'Plate')['box'] == [[-30, -20, 0], [30, 20, 12]], row(st, 'Plate')
+    near(vol(st, 'o1'), 28800, what='the block')
+    assert rod('Pin', 10, 30, position=[15, 0, -5]) == 'o2'
+    st = call('get_state')
+    assert row(st, 'Pin')['box'] == [[10, -5, -5], [20, 5, 25]] and row(st, 'Pin')['position'] == [15, 0, -5], row(st, 'Pin')
+    assert st['current_part'] == 'o2' and [x['name'] for x in st['parts']] == ['Plate', 'Pin'] and [f['part'] for f in st['features']] == ['o1', 'o1', 'o2', 'o2'], st
+    fails('add_part', 'no argument "name"', name='Plate')
+    fails('add_part', 'no argument "position"', position=[1, 2, 3])
+    step('a block and a rod as parts: each made empty, named, drawn, extruded and placed by a command of its own')
 
     # ---- combine: where the parts stand; the tool is kept under the part it changed
     cut = call('combine', part='Plate', operation='cut', **{'with': ['Pin']})
@@ -193,15 +266,15 @@ def run(p, url='index.html?test=1'):
     assert [b.get('shown', True) for b in cut['bodies']] == [True, False]
     assert [f['part'] for f in call('list_faces')] == ['o1'], 'a tool that was used up is not listed unless asked for'
     assert len(call('list_faces', part='Pin')[0]['faces']) == 3
-    moved = call('move_part', part='Pin', by=[-20, 0, 0])
+    moved = call('move_part', part='Pin', position=[-5, 0, -5])
     assert moved['part']['position'] == [-5, 0, -5]
     near(vol(moved, 'o1'), 28800 - math.pi * 25 * 12, what='the hole moved')
     wall = next(f for f in call('list_faces', part='Plate')[0]['faces'] if f['kind'] == 'cylinder')
     near(wall['center'][0], -5, 1e-4, 'the hole is where the tool is')
     step('combine cuts one part out of another; moving the tool moves the hole')
 
-    # ---- a part turned on the spot: its tools turn with it, and it is described where it stands
-    turned = call('move_part', part='Plate', turn={'axis': 'z', 'angle': 90})
+    # ---- a part turned: its tools turn with it, and it is described where it stands
+    turned = call('move_part', part='Plate', rotation=[0, 0, 90])
     assert turned['part']['rotation'] == [0, 0, 90] and turned['part']['position'] == [0, 0, 0] and turned['part']['box'] == [[-20, -30, 0], [20, 30, 12]], turned['part']
     near(vol(turned, 'o1'), 28800 - math.pi * 25 * 12, what='turned plate')
     faces = call('list_faces', part='Plate')[0]['faces']
@@ -210,53 +283,65 @@ def run(p, url='index.html?test=1'):
     right = next(f for f in faces if f.get('side') == 'right')
     assert right['center'] == [20, 0, 6] and right['normal'] == [1, 0, 0], right
     assert len(call('list_edges', part='Plate', edges={'parallel': 'x'})[0]['edges']) == 4, 'directions are those of space'
-    # a hole given by a point in space, a sketch given in the part's own coordinates
-    hole = call('hole', face={'part': 'Plate', 'side': 'top'}, position=[10, 20, 50], diameter=4, depth=5)
-    assert call('get_state')['features'][-1]['at'] == [20, -10], call('get_state')['features'][-1]
+    # a sketch on its top face is drawn in the part's own coordinates: (20, -10) there is (10, 20) in space
+    blind = sketch([{'type': 'circle', 'center': [20, -10], 'diameter': 4}], plane={'part': 'Plate', 'side': 'top'})
+    assert blind['part'] == 'o1' and blind['sketch']['part'] == 'o1'
+    hole = call('extrude', sketch=blind['id'], operation='cut', distance=5)
     near(vol(hole, 'o1'), 28800 - math.pi * 25 * 12 - math.pi * 4 * 5, what='blind hole on the turned plate')
-    sk = call('add_sketch', plane={'part': 'Plate', 'side': 'top'}, shapes=[{'type': 'circle', 'center': [-20, 10], 'diameter': 6}])
-    assert sk['part'] == 'o1' and sk['sketch']['part'] == 'o1'
-    through = call('extrude', operation='cut', through_all=True)
+    bore = next(f for f in call('list_faces', part='Plate')[0]['faces'] if f['kind'] == 'cylinder' and f.get('radius') == 2)
+    assert [round(v, 4) for v in bore['center']] == [10, 20, 9.5], bore
+    sk = sketch([{'type': 'circle', 'center': [-20, 10], 'diameter': 6}], plane={'part': 'Plate', 'side': 'top'})
+    through = call('extrude', sketch=sk['id'], operation='cut', through_all=True)
     solid = 28800 - math.pi * 25 * 12 - math.pi * 4 * 5 - math.pi * 9 * 12
     near(vol(through, 'o1'), solid, what='a second hole from a sketch')
-    step('a turned part: faces and edges in space, a hole by a point in space, a sketch in its own frame')
+    step('a turned part: faces and edges in space, sketches on it in its own frame')
 
-    # ---- a copy of its own and a linked copy
-    copy = call('copy_part', part='Plate', by=[0, 80, 0])
-    assert copy['part']['id'] == 'o3' and copy['part']['kind'] == 'part' and copy['copy_of'] == 'o1' and copy['part']['box'] == [[-20, 50, 0], [20, 110, 12]], copy['part']
+    # ---- a copy of its own and a linked copy: made where the original stands, then placed
+    copy = call('copy_part', part='Plate')
+    assert copy['part']['id'] == 'o3' and copy['part']['kind'] == 'part' and copy['copy_of'] == 'o1' and copy['part']['name'] == 'Plate copy' and copy['part']['box'] == [[-20, -30, 0], [20, 30, 12]], copy['part']
+    copy = call('move_part', part='o3', position=[0, 80, 0])
+    assert copy['part']['box'] == [[-20, 50, 0], [20, 110, 12]], copy['part']
     near(vol(copy, 'o3'), solid, what='the copy builds the same')
-    twin = call('copy_part', part='Plate', linked=True, position=[0, 0, 40], name='Twin')
-    assert twin['part']['kind'] == 'linked copy' and twin['part']['copy_of'] == 'o1' and twin['part']['box'] == [[-20, -30, 40], [20, 30, 52]] and twin['part']['bodies'] == [], twin['part']
-    call('edit_feature', id='f1', size=[60, 40, 20])
+    twin = call('copy_part', part='Plate', linked=True)
+    tid = twin['part']['id']
+    assert twin['part']['kind'] == 'linked copy' and twin['part']['copy_of'] == 'o1' and twin['part']['bodies'] == [] and twin['part']['box'] == [[-20, -30, 0], [20, 30, 12]], twin['part']
+    call('edit_part', part=tid, name='Twin')
+    twin = call('move_part', part=tid, position=[0, 0, 40])
+    assert twin['part']['name'] == 'Twin' and twin['part']['box'] == [[-20, -30, 40], [20, 30, 52]], twin['part']
+    call('edit_feature', id='f2', distance=20)
     st = call('get_state')
     assert row(st, 'Twin')['box'][1][2] == 60 and row(st, 'Plate copy')['box'][1][2] == 12, (row(st, 'Twin'), row(st, 'Plate copy'))
     assert st['current_part'] == 'o1'
     fails('add_sketch', 'linked copy', part='Twin')
     fails('delete_part', 'with_dependents', part='Plate')
+    fails('copy_part', 'no argument "position"', part='Plate', position=[0, 0, 1])
     step('a copy of its own keeps its shape; a linked copy follows the original')
 
     # ---- what is refused changes nothing
-    call('add_box', size=[10, 10, 10], name='Block')
-    call('add_sphere', diameter=20, origin='center', name='Ball')
+    block('Block', [10, 10, 10])
+    ball('Ball', 20)
+    assert row(call('get_state'), 'Ball')['box'] == [[-10, -10, -10], [10, 10, 10]], row(call('get_state'), 'Ball')
     both = call('combine', part='Block', operation='intersect', **{'with': ['Ball']})
     assert 0 < vol(both, row(both, 'Block')['id']) < 1000
     before = call('get_document')
     assert 'would break' in fails('move_part', 'Combine', part='Ball', position=[100, 0, 0])
     fails('combine', 'with itself', part='Block', operation='cut', **{'with': ['Block']})
     fails('combine', 'stands under', part='Ball', operation='cut', **{'with': ['Block']})
-    fails('move_part', 'no part', part='Nobody', by=[1, 0, 0])
-    fails('move_part', 'not both', part='Block', position=[0, 0, 0], by=[1, 0, 0])
+    fails('move_part', 'no part', part='Nobody', position=[1, 0, 0])
+    fails('move_part', 'Say where', part='Block')
+    fails('move_part', 'no argument "by"', part='Block', by=[1, 0, 0])
+    fails('move_part', 'no argument "turn"', part='Block', turn={'axis': 'z', 'angle': 90})
     fails('move_part', 'under itself', part='Block', parent='Ball')
     assert call('get_document') == before
     step('a move that would empty an intersection, and other mistakes, are refused and change nothing')
 
-    # ---- a group moves and hides what is under it; export has what is to be seen, where it stands
-    assert call('add_part', name='Empty')['part']['kind'] == 'empty'
-    call('undo')
-    group = call('add_group', name='Group', parent=None)
-    assert group['part']['kind'] == 'group' and group['part']['contains'] == [] and 'box' not in group['part'], group['part']
+    # ---- a group moves and hides what is in it; export has what is to be seen, where it stands
+    group = call('add_group')['part']
+    assert group['kind'] == 'group' and group['name'] == 'Group 1' and group['contains'] == [] and group['parent'] is None and 'box' not in group, group
+    fails('add_group', 'no argument "parts"', parts=['Block'])
+    call('edit_part', part=group['id'], name='Group')
     call('move_part', part='Block', parent='Group')
-    lifted = call('move_part', part='Group', by=[0, 0, 100])
+    lifted = call('move_part', part='Group', position=[0, 0, 100])
     assert lifted['part']['kind'] == 'group' and lifted['part']['contains'] == [row(lifted_state := call('get_state'), 'Block')['id']], lifted['part']
     assert row(lifted_state, 'Block')['box'] == [[-5, -5, 100], [5, 5, 110]] and lifted['part']['box'] == [[-5, -5, 100], [5, 5, 110]]
     assert stl_box() == [[-20, -30, 0], [20, 110, 110]]
@@ -264,66 +349,65 @@ def run(p, url='index.html?test=1'):
     assert [b.get('shown', True) for b in hidden['bodies'] if b['part'] == row(call('get_state'), 'Block')['id']] == [False]
     assert stl_box() == [[-20, -30, 0], [20, 110, 60]], stl_box()
     gone = call('delete_part', part='Plate', with_dependents=True)
-    assert set(gone['deleted']['parts']) == {'o1', 'o2', twin['part']['id']} and 'Twin' not in [x['name'] for x in gone['parts']], gone['deleted']
+    assert set(gone['deleted']['parts']) == {'o1', 'o2', tid} and 'Twin' not in [x['name'] for x in gone['parts']], gone['deleted']
     call('undo')
     own = call('unlink_part', part='Twin')
-    assert own['part']['kind'] == 'part' and own['part']['name'] == 'Twin' and len(own['part']['features']) == 5 and own['part']['box'] == [[-20, -30, 40], [20, 30, 60]], own['part']
+    assert own['part']['kind'] == 'part' and own['part']['name'] == 'Twin' and len(own['part']['features']) == 7 and own['part']['box'] == [[-20, -30, 40], [20, 30, 60]], own['part']
     assert p.js('document.querySelectorAll("[data-part]").length') == len(call('get_state')['parts']), 'the page lists every part'
-    step('groups, hiding, export in place, delete with dependents, undo, unlink')
+    step('a group, hiding, export in place, delete with dependents, undo, unlink')
 
-    # ---- groups: parts gathered where they stand; what is made next goes into the group; combine takes a group whole
+    # ---- groups: parts are put in and taken out with move_part, and stay where they are; combine takes a group whole
     untouched = call('get_document')
-    a = call('add_box', size=[10, 10, 10], position=[200, 0, 0], name='Foot A', parent=None)
-    b = call('add_box', size=[10, 10, 10], position=[230, 0, 0], name='Foot B', parent=None)
-    feet = call('add_group', name='Feet', parts=['Foot A', 'Foot B'], position=[200, 0, 0])
-    fid = feet['part']['id']
-    assert feet['part']['kind'] == 'group' and feet['part']['contains'] == [a['part']['id'], b['part']['id']] and feet['part']['position'] == [200, 0, 0], feet['part']
-    assert feet['part']['box'] == [[195, -5, 0], [235, 5, 10]] and feet['part']['features'] == [] and feet['part']['bodies'] == []
+    a = block('Foot A', [10, 10, 10], position=[200, 0, 0])
+    b = block('Foot B', [10, 10, 10], position=[230, 0, 0])
+    fid = call('add_group')['part']['id']
+    call('edit_part', part=fid, name='Feet')
+    call('move_part', part=fid, position=[200, 0, 0])
+    call('move_part', part='Foot A', parent='Feet')
+    inside = call('move_part', part='Foot B', parent='Feet')['part']
+    assert inside['parent'] == fid and inside['position'] == [30, 0, 0] and inside['box'] == [[225, -5, 0], [235, 5, 10]], 'put into a group, a part stays where it is in space: %s' % inside
     state = call('get_state')
-    assert state['current_part'] == fid
-    assert row(state, 'Foot B')['parent'] == fid and row(state, 'Foot B')['position'] == [30, 0, 0] and row(state, 'Foot B')['box'] == [[225, -5, 0], [235, 5, 10]], row(state, 'Foot B')
-    names = [x['name'] for x in state['parts']]
-    assert names.index('Feet') < names.index('Foot A') < names.index('Foot B'), 'in the list the group stands where its first part stood'
-    c = call('add_box', size=[10, 10, 10], position=[60, 0, 0], name='Foot C')      # no parent given: into the group that is current
-    assert c['part']['parent'] == fid and c['part']['box'] == [[255, -5, 0], [265, 5, 10]], c['part']
-    d = call('add_box', size=[10, 10, 10], position=[90, 0, 0], name='Foot D')      # the current part stands in the group: so does the next
-    assert d['part']['parent'] == fid
+    feet = row(state, 'Feet')
+    assert feet['kind'] == 'group' and feet['contains'] == [a, b] and feet['position'] == [200, 0, 0] and feet['box'] == [[195, -5, 0], [235, 5, 10]] and feet['features'] == [] and feet['bodies'] == [], feet
+    assert state['current_part'] == b, 'the part that was moved is the current one, and it stands in the group'
+    fresh = call('add_part')['part']
+    assert fresh['parent'] is None and fresh['position'] == [0, 0, 0], 'a new part stands at the origin under nothing, whatever is current: %s' % fresh
     call('undo')
-    loose = call('add_box', size=[10, 10, 10], position=[0, 300, 0], name='Loose', parent=None)
-    assert loose['part']['parent'] is None
-    sk = call('add_sketch', plane='XY', part='Feet', shapes=[{'type': 'rectangle', 'corner': [0, 20], 'width': 5, 'height': 5}])
-    made = next(x for x in call('get_state')['parts'] if x['id'] == sk['part'])
-    assert made['parent'] == fid and made['kind'] == 'part' and sk['part'] not in (fid, loose['part']['id']), 'a sketch "in" a group starts a part of its own there: %s' % made
+    c = block('Foot C', [10, 10, 10])
+    third = call('move_part', part='Foot C', parent='Feet', position=[60, 0, 0])['part']
+    assert third['parent'] == fid and third['box'] == [[255, -5, 0], [265, 5, 10]], 'with a parent and a position: there, in the parent\'s frame: %s' % third
+    loose = block('Loose', [10, 10, 10], position=[0, 300, 0])
+    fails('add_sketch', 'is a group', part='Feet')
+    call('edit_part', part='Feet', hidden=False)        # the group is the current part now
+    fails('add_sketch', 'current part is a group')
     assert len(call('list_faces', part='Feet')) == 3, 'a listing of a group is of everything in it'
     fails('combine', 'is a group', part='Feet', operation='join', **{'with': ['Loose']})
-    fails('add_group', 'already stands under', parts=['Feet', 'Foot A'])
-    fails('add_group', 'under one of the parts', parts=['Feet'], parent='Foot A')
-    slab = call('add_box', size=[100, 20, 4], position=[230, 0, 3], name='Slab', parent=None)
+    fails('move_part', 'under itself', part='Feet', parent='Foot A')
+    slab = block('Slab', [100, 20, 4], position=[230, 0, 3])
     cut = call('combine', part='Slab', operation='cut', **{'with': ['Feet']})
-    near(vol(cut, slab['part']['id']), 100 * 20 * 4 - 3 * 10 * 10 * 4, 1e-6, 'a group as a tool: everything in it is cut out')
-    assert row(cut, 'Feet')['tool_of'] == slab['part']['id'] and row(cut, 'Feet')['parent'] == slab['part']['id']
-    fails('ungroup', 'as a whole', part='Feet')
-    fails('ungroup', 'not a group', part='Loose')
+    near(vol(cut, slab), 100 * 20 * 4 - 3 * 10 * 10 * 4, 1e-6, 'a group as a tool: everything in it is cut out')
+    assert row(cut, 'Feet')['tool_of'] == slab and row(cut, 'Feet')['parent'] == slab
+    fails('delete_part', 'with_dependents', part='Feet')
     call('undo')
     blue = call('set_color', part='Feet', color='blue')
     assert blue['part']['color'] == '#2f6fd0' and 'color' not in row(call('get_state'), 'Foot A')
     assert set(p.js('corecad.scene.filter(b => ["Foot A", "Foot B", "Foot C"].includes(corecad.parts.find(x => x.id === b.part).name)).map(b => b.color)')) == {'#2f6fd0'}, 'the colour of the group is the colour of what is in it'
-    turned = call('move_part', part='Feet', turn={'axis': 'z', 'angle': 90})
-    assert turned['part']['rotation'] == [0, 0, 90] and turned['part']['box'] == [[225, -35, 0], [235, 35, 10]], turned['part']
-    whole = call('copy_part', part='Feet', by=[0, 100, 0])
-    assert whole['part']['kind'] == 'group' and whole['part']['name'] == 'Feet copy' and len(whole['part']['contains']) == 4 and whole['part']['box'] == [[225, 65, 0], [235, 135, 10]], whole['part']
+    turned = call('move_part', part='Feet', rotation=[0, 0, 90])
+    assert turned['part']['rotation'] == [0, 0, 90] and turned['part']['box'] == [[195, -5, 0], [205, 65, 10]], turned['part']
+    whole = call('copy_part', part='Feet')
+    assert whole['part']['kind'] == 'group' and whole['part']['name'] == 'Feet copy' and len(whole['part']['contains']) == 3 and whole['part']['box'] == [[195, -5, 0], [205, 65, 10]], whole['part']
     call('undo')
-    out = call('ungroup', part='Feet')
-    assert out['ungrouped'] == fid and len(out['freed']) == 4 and 'Feet' not in [x['name'] for x in out['parts']], out
-    assert row(out, 'Foot B')['parent'] is None and row(out, 'Foot B')['rotation'] == [0, 0, 90] and row(out, 'Foot B')['box'] == [[225, -5, 0], [235, 5, 10]], row(out, 'Foot B')
-    assert p.js('document.querySelectorAll("[data-part]").length') == len(out['parts'])
-    content = lambda d: {k: v for k, v in d.items() if k not in ('seq', 'pseq', 'meta')}     # undo keeps the counters: ids are never used twice
-    for _ in range(20):
-        if content(call('get_document')) == content(untouched):
-            break
-        call('undo')
-    assert content(call('get_document')) == content(untouched)
-    step('add_group gathers parts where they stand; new parts go into the current group; a group as a tool; colour, turn, copy, ungroup')
+    # a group is taken away by moving out what is in it and deleting what is left
+    for child in row(call('get_state'), 'Feet')['contains']:
+        call('move_part', part=child, parent=None)
+    freed = row(call('get_state'), 'Foot B')
+    assert freed['parent'] is None and freed['rotation'] == [0, 0, 90] and freed['box'] == [[195, 25, 0], [205, 35, 10]], freed
+    gone = call('delete_part', part='Feet')
+    assert gone['deleted'] == {'parts': [fid], 'features': []} and 'Feet' not in [x['name'] for x in gone['parts']], gone['deleted']
+    assert {x['name'] for x in gone['parts']} >= {'Foot A', 'Foot B', 'Foot C'}, 'what was in it is still there'
+    assert p.js('document.querySelectorAll("[data-part]").length') == len(gone['parts'])
+    undo_to(untouched)
+    step('add_group makes a container; move_part fills and empties it; a group as a tool; colour, turn, copy')
 
     # ---- "this": what the person has clicked, and what their mouse rests on
     def page(point):
@@ -338,59 +422,71 @@ def run(p, url='index.html?test=1'):
         time.sleep(.45)
 
     call('new_document', name='Pointing')
-    call('add_box', size=[60, 40, 12], name='Plate')
-    call('add_cylinder', diameter=10, height=30, position=[15, 0, -5], name='Pin')
+    block('Plate', [60, 40, 12])                             # o1: its sketch f1, its body f2
+    rod('Pin', 10, 30, position=[15, 0, -5])
     call('combine', part='Plate', operation='cut', **{'with': ['Pin']})
-    call('add_box', size=[20, 20, 20], position=[60, 0, 0], name='Block')
-    twin = call('copy_part', part='Block', linked=True, by=[0, 40, 0], name='Twin')['part']['id']
+    block('Block', [20, 20, 20], position=[60, 0, 0])        # o3
+    twin = call('copy_part', part='Block', linked=True)['part']['id']
+    call('edit_part', part=twin, name='Twin')
+    call('move_part', part=twin, position=[60, 40, 0])
     call('set_view', view='top')
     none = call('get_selection')
     assert none['selected'] == [] and none['pointed'] is None and none['part']['id'] == twin, none
-    assert 'click or point' in fails('hole', 'No face is selected', face='this', diameter=3)
+    assert 'click or point' in fails('add_sketch', 'No face is selected', plane='this')
     fails('fillet', 'No edge is selected', edges='selected', radius=1)
     fails('edit_feature', 'No feature is selected', id='this', name='x')
-    fails('move_part', 'has not come to rest', part='pointed', by=[1, 0, 0])
+    fails('move_part', 'has not come to rest', part='pointed', position=[1, 0, 0])
 
     p.click(*page([-20, 10, 12]))
     sel = call('get_selection')
     face = sel['selected'][0]
-    assert len(sel['selected']) == 1 and face['kind'] == 'face' and face['part'] == 'o1' and face['part_name'] == 'Plate' and face['body'] == 'f1', face
+    assert len(sel['selected']) == 1 and face['kind'] == 'face' and face['part'] == 'o1' and face['part_name'] == 'Plate' and face['body'] == 'f2', face
     assert face['surface'] == 'plane' and face['side'] == 'top' and face['normal'] == [0, 0, 1] and close(face['point'], [-20, 10, 12]) and close(face['at'], [-20, 10]), face
-    assert [(m['id'], m['type'], m['as']) for m in face['made_by']] == [('f1', 'box', 'top')] and sel['part'] == {'id': 'o1', 'name': 'Plate'}, sel
-    assert call('get_state')['selection']['selected'] == sel['selected']
-    here = call('hole', face='this', diameter=4, depth=5)
-    made = call('get_state')['features'][-1]
-    assert made['type'] == 'hole' and close(made['at'], [-20, 10]), made
+    assert [(m['id'], m['type'], m['as']) for m in face['made_by']] == [('f2', 'extrude', 'end')] and sel['part'] == {'id': 'o1', 'name': 'Plate'}, sel
+    assert 'selection' not in call('get_state') and 'between' not in sel, 'what is selected is asked for in one place'
+    here = call('add_sketch', plane='this')
+    assert here['part'] == 'o1' and here['sketch']['plane'] == {'face_of_body': 'f2'}, here
+    call('add_to_sketch', sketch=here['id'], shapes=[{'type': 'circle', 'center': face['at'], 'diameter': 4}])
+    cut = call('extrude', sketch=here['id'], operation='cut', distance=5)
+    made = feature(cut['id'])
+    assert made['type'] == 'extrude' and made['sketch'] == here['id'] and made['distance'] == 5, made
     solid = 28800 - math.pi * 25 * 12 - math.pi * 4 * 5
-    near(vol(here, 'o1'), solid, what='a hole where the person clicked')
+    near(vol(cut, 'o1'), solid, what='a hole where the person clicked')
     assert call('get_selection')['selected'] == [], 'what was selected is used up by the change'
-    step('"a hole on this face": the face that was clicked, at the point that was clicked')
+    step('"a hole here": a sketch on the face that was clicked, a circle at the point that was clicked, cut')
 
     # the mouse resting on something is pointing at it; the next "this" is that
     rest([20, -12, 12])
     at = call('get_selection')['pointed']
     assert at and at['kind'] == 'face' and at['side'] == 'top' and close(at['at'], [20, -12]) and at['mouse_in_view'] and at['seconds_ago'] < 5, at
-    mid = call('hole', face='pointed', at='center', diameter=3, depth=2)
-    # the middle of a face is the middle of its area: the two holes already in it pull it a little
-    area = 2400 - 25 * math.pi - 4 * math.pi
-    centre = [(-15 * 25 * math.pi + 20 * 4 * math.pi) / area, -10 * 4 * math.pi / area]
-    assert close(call('get_state')['features'][-1]['at'], centre, 1e-3), (call('get_state')['features'][-1], centre)
-    again = call('hole', face='this', diameter=3, depth=2)       # the mouse has not moved: it still points there, on the rebuilt body
-    assert close(call('get_state')['features'][-1]['at'], [20, -12]), call('get_state')['features'][-1]
+    there = call('add_sketch', plane='pointed')
+    call('add_to_sketch', sketch=there['id'], shapes=[{'type': 'circle', 'center': [25, 15], 'diameter': 3}])
+    call('extrude', sketch=there['id'], operation='cut', distance=2)
+    time.sleep(.45)
+    still = call('get_selection')['pointed']
+    assert still and still['side'] == 'top' and close(still['at'], [20, -12]), 'the mouse has not moved: it still points there, on the rebuilt body: %s' % still
+    again = call('add_sketch', plane='this')        # nothing is selected: "this" is what is pointed at
+    call('add_to_sketch', sketch=again['id'], shapes=[{'type': 'circle', 'center': still['at'], 'diameter': 3}])
+    again = call('extrude', sketch=again['id'], operation='cut', distance=2)
     solid -= 2 * math.pi * 2.25 * 2
     near(vol(again, 'o1'), solid, what='holes by pointing')
     step('holding the mouse on a face is pointing at it, and it still is after the model is rebuilt')
 
-    # "make this hole bigger": the feature that made the face
+    # "make this hole deeper, and wider": the feature that made the face, and the sketch behind it
     p.click(*page([-20, 10, 7]))
     floor = call('get_selection')['selected'][0]
-    assert [(m['id'], m['type']) for m in floor['made_by']] == [(made['id'], 'hole')] and abs(floor['center'][2] - 7) < 1e-6, floor
-    fails('get_sketch', 'not made from a sketch', sketch='this')
-    bigger = call('edit_feature', id='this', diameter=6)
-    assert bigger['id'] == made['id'] and bigger['type'] == 'hole'
-    solid += math.pi * 4 * 5 - math.pi * 9 * 5
-    near(vol(bigger, 'o1'), solid, what='the hole that was clicked, made wider')
-    step('"this" as a feature: the one that made the face that was clicked')
+    assert [(m['id'], m['type']) for m in floor['made_by']] == [(made['id'], 'extrude')] and abs(floor['center'][2] - 7) < 1e-6, floor
+    drawn = call('get_sketch', sketch='this')
+    assert drawn['id'] == here['id'], 'the sketch behind the cut that was clicked'
+    deeper = call('edit_feature', id='this', distance=6)
+    assert deeper['id'] == made['id'] and deeper['type'] == 'extrude'
+    solid += math.pi * 4 * 5 - math.pi * 4 * 6
+    near(vol(deeper, 'o1'), solid, what='the hole that was clicked, made deeper')
+    across = next(d for d in drawn['dimensions'] if d['type'] == 'diameter')
+    wider = call('set_dimension', sketch=drawn['id'], dimension=across['id'], value=6)
+    solid += math.pi * 4 * 6 - math.pi * 9 * 6
+    near(vol(wider, 'o1'), solid, what='and wider, by the dimension of its circle')
+    step('"this" as a feature and as a sketch: the ones that made the face that was clicked')
 
     # edges that were clicked, and a part that was clicked
     call('set_view', view='home')
@@ -411,32 +507,33 @@ def run(p, url='index.html?test=1'):
     chosen = call('get_selection')
     assert chosen['part'] == {'id': twin, 'name': 'Twin'} and chosen['selected'][0]['linked_copy'] and chosen['selected'][0]['part'] == twin, chosen
     assert close(chosen['selected'][0]['point'], [60, 45, 20]), chosen['selected'][0]
-    fails('hole', 'linked copy', face='this', diameter=2)
     fails('add_sketch', 'linked copy', plane='this')
-    moved = call('move_part', part='this', by=[0, 10, 0])
+    moved = call('move_part', part='this', position=[60, 50, 0])
     assert moved['part']['id'] == twin and moved['part']['position'] == [60, 50, 0], moved['part']
     time.sleep(.45)
     assert call('get_selection')['pointed']['part'] == twin, 'the mouse still rests on the copy, where it now stands'
-    assert call('move_part', part='pointed', by=[0, -10, 0])['part']['position'] == [60, 40, 0]
+    assert call('move_part', part='pointed', position=[60, 40, 0])['part']['position'] == [60, 40, 0]
     p.key('Escape')
     assert call('get_selection')['pointed'] is None and p.js('corecad.pointed') is None
     step('edges and parts that were clicked or pointed at; a linked copy says what it is; Escape lets go')
 
     # ---- measuring, and the numbers that drive the model
     call('new_document', name='Measuring')
-    call('add_sketch', plane='XY', shapes=[{'type': 'rectangle', 'corner': [0, 0], 'width': 60, 'height': 40},
-                                           {'type': 'circle', 'center': [15, 20], 'diameter': 8},
-                                           {'type': 'circle', 'center': [45, 20], 'diameter': 8}])
-    call('extrude', distance=12)
-    call('fillet', edges={'parallel': 'z', 'kind': 'line'}, radius=4)
-    call('hole', face='top', at=[30, 32], diameter=5, depth=6)
+    call('add_part')
+    sketch([{'type': 'rectangle', 'corner': [0, 0], 'width': 60, 'height': 40},
+            {'type': 'circle', 'center': [15, 20], 'diameter': 8},
+            {'type': 'circle', 'center': [45, 20], 'diameter': 8}])                   # f1
+    call('extrude', distance=12)                                                        # f2
+    call('fillet', edges={'parallel': 'z', 'kind': 'line'}, radius=4)                   # f3
+    sketch([{'type': 'circle', 'center': [30, 32], 'diameter': 5}], plane='top')        # f4
+    call('extrude', operation='cut', distance=6)                                        # f5
     faces = call('list_faces')[0]['faces']
     walls = [f['face'] for f in faces if f.get('hole') and f.get('radius') == 4]
     assert len(walls) == 2 and sum(1 for f in faces if f.get('radius') == 4 and not f.get('hole')) == 4, 'holes and fillets are told apart'
     m = call('measure', **{'from': 'top', 'to': 'bottom'})
     assert m['between']['distance'] == 12 and m['between']['what'] == 'between parallel faces' and m['of'][0]['size'] == [60, 40], m
     m = call('measure', **{'from': {'face': walls[0]}, 'to': {'face': walls[1]}})
-    assert m['between']['distance'] == 30 and m['between']['what'] == 'between centres' and m['of'][0]['measures'] == 'Hole \u2300 8 \u00d7 12 mm', m
+    assert m['between']['distance'] == 30 and m['between']['what'] == 'between centres' and m['of'][0]['measures'] == 'Hole ⌀ 8 × 12 mm', m
     m = call('measure', **{'from': {'face': walls[0]}, 'to': 'left'})
     assert m['between']['distance'] in (15, 45) and m['between']['what'] == 'hole axis to face', m
     one = call('measure', **{'from': 'front'})
@@ -458,36 +555,34 @@ def run(p, url='index.html?test=1'):
     p.click(*page([45, 24, 12]), modifiers=8)
     time.sleep(.2)
     sel = call('get_selection')
-    assert [e['kind'] for e in sel['selected']] == ['edge', 'edge'] and sel['selected'][0]['diameter'] == 8, sel['selected']
-    assert sel['between']['distance'] == 30 and sel['between']['what'] == 'between centres' and [abs(v) for v in sel['between']['delta']] == [30, 0, 0], sel['between']
-    assert call('measure')['between'] == sel['between']
+    assert [e['kind'] for e in sel['selected']] == ['edge', 'edge'] and sel['selected'][0]['diameter'] == 8 and 'between' not in sel, sel['selected']
+    m = call('measure')
+    assert m['between']['distance'] == 30 and m['between']['what'] == 'between centres' and [abs(v) for v in m['between']['delta']] == [30, 0, 0], m['between']
     assert p.js('corecad.measured').startswith('Between them: 30 mm (between centres)')
     shown = [n['text'] for n in p.js('corecad.numbers') if n['kind'] == 'measure']
-    assert '30 mm' in shown and shown.count('\u2300 8 mm') == 2, shown
+    assert '30 mm' in shown and shown.count('⌀ 8 mm') == 2, shown
     p.key('Escape')
-    step('the size where the mouse rests; 30 mm between two clicked holes, for the person and for the agent')
+    step('the size where the mouse rests; 30 mm between two clicked holes, for the person and (measure) for the agent')
 
-    # every driving number, with the command that changes it
-    dims = call('list_dimensions')
-    width = next(d for d in dims if d['is'] == 'horizontal distance' and d['value'] == 60)
-    assert width['change_with'] == 'set_dimension' and width['arguments']['sketch'] == 'f1' and width['feature_name'] == 'Sketch1', width
-    assert sorted(d['shown_as'] for d in dims if d['feature'] != 'f1') == ['12', '6', 'R 4', '\u00d8 5'], [d['shown_as'] for d in dims]
-    depth = next(d for d in dims if d['is'] == 'extrusion distance')
-    assert depth['change_with'] == 'edit_feature' and depth['arguments'] == {'id': 'f2', 'distance': 12} and depth['at'] == [0, 0, 6], 'along the edge at the first corner of the outline: %s' % depth
-    wider = call(width['change_with'], **{**width['arguments'], 'value': 80})
+    # the driving numbers: those of the features in get_state, those of a sketch in get_sketch
+    numbers = {f['id']: f for f in call('get_state')['features']}
+    assert numbers['f2']['distance'] == 12 and numbers['f3']['radius'] == 4 and numbers['f5']['distance'] == 6, numbers
+    drawn = call('get_sketch', sketch='f1')
+    width = next(d for d in drawn['dimensions'] if d['type'] == 'horizontal distance' and d['value'] == 60)
+    wider = call('set_dimension', sketch='f1', dimension=width['id'], value=80)
     assert wider['bodies'][0]['box'][1][0] == 80, wider['bodies']
-    step('list_dimensions: %d driving numbers, each with the command that changes it' % len(dims))
+    step('the driving numbers: read in get_state and get_sketch, changed with edit_feature and set_dimension')
 
     # the same numbers on the model: Dimensions (D), click one, type
     p.click('[data-part="o1"]')
     p.key('d')
     labels = p.js('corecad.dimensions')
-    assert sorted(l['text'] for l in labels if l['feature'] != 'f1') == ['12', '6', 'R 4', '\u00d8 5'] and all(l['editable'] for l in labels), labels
+    assert sorted(l['text'] for l in labels if l['feature'] != 'f1') == sorted(['12', 'R 4', 'Ø 5', '30', '32', '6']) and all(l['editable'] for l in labels), [l['text'] for l in labels]
     overall = [n['text'] for n in p.js('corecad.numbers') if n['kind'] == 'reference']
     assert overall == ['X 80', 'Y 40', 'Z 12'], overall
     thick = next(l for l in labels if l['feature'] == 'f2')
     p.move(thick['x'], thick['y'], steps=3)
-    assert [n['text'] for n in p.js('corecad.numbers') if n['kind'] == 'caption'] == ['extrusion distance \u00b7 Extrude1'], 'the number under the mouse says what it is'
+    assert [n['text'] for n in p.js('corecad.numbers') if n['kind'] == 'caption'] == ['extrusion distance · Extrude1'], 'the number under the mouse says what it is'
     p.click(thick['x'], thick['y'])
     p.wait('!!document.getElementById("dim-input")')
     assert p.js('document.getElementById("dim-input").value') == '12' and p.js('!!document.getElementById("dim-input").title'), p.js('document.getElementById("dim-input").value')
@@ -528,21 +623,69 @@ def run(p, url='index.html?test=1'):
     assert p.js('corecad.dimensions') == [], p.js('corecad.dimensions')
     step('Dimensions: click a number and type; a number that cannot be built is refused; the clicked number is "this"')
 
+    # ---- what a person makes with the page's own Box and Hole tools is changed with edit_feature
+    def fill(selector, value):
+        p.click(selector)
+        p.key('a', modifiers=2)
+        p.type(str(value))
+
+    def accept():
+        p.wait('!document.getElementById("apply-feature").disabled')
+        p.click('#apply-feature')
+        p.wait('!corecad.busy && !corecad.draft', timeout=30)
+
+    call('new_document', name='By hand')
+    p.key('b')
+    p.wait('corecad.draft && corecad.draft.type === "box"')
+    fill('#box-x', 60)
+    fill('#box-y', 40)
+    fill('#box-z', 12)
+    accept()
+    box = call('get_state')['features'][0]
+    assert box['type'] == 'box' and box['size'] == [60, 40, 12] and box['part'] == 'o1', box
+    taller = call('edit_feature', id=box['id'], size=[60, 40, 20])
+    assert taller['bodies'][0]['box'] == [[-30, -20, 0], [30, 20, 20]], taller['bodies']
+    call('set_view', view='top')
+    p.click(*page([20, 10, 20]))
+    p.key('h')
+    p.wait('corecad.draft && corecad.draft.type === "hole"')
+    fill('#hole-diameter', 6)
+    accept()
+    drilled = call('get_state')['features'][-1]
+    assert drilled['type'] == 'hole' and drilled['through_all'] is True and drilled['diameter'] == 6 and close(drilled['at'], [20, 10]), drilled
+    blind = call('edit_feature', id=drilled['id'], diameter=8, depth=5)
+    near(volume(blind), 48000 - math.pi * 16 * 5, what='the hole a person drilled, made wider and blind by command')
+    assert call('edit_feature', id=box['id'], origin='corner')['bodies'][0]['box'] == [[0, 0, 0], [60, 40, 20]]
+    # an extrusion: the other way too, and not; half to each side is something a person chooses in the page
+    pid = call('add_part')['part']['id']
+    s = sketch([{'type': 'rectangle', 'corner': [100, 0], 'width': 10, 'height': 10}], part=pid)
+    e = call('extrude', sketch=s['id'], distance=10)['id']
+    zs = lambda result: [next(b for b in result['bodies'] if b['part'] == pid)['box'][i][2] for i in (0, 1)]
+    assert zs(call('edit_feature', id=e, distance2=4)) == [-4, 10] and feature(e)['distance2'] == 4
+    assert zs(call('edit_feature', id=e, distance2=0)) == [0, 10] and 'distance2' not in feature(e)
+    fails('edit_feature', 'no argument "symmetric"', id=e, symmetric=True)
+    fails('extrude', 'no argument "symmetric"', sketch=s['id'], distance=5, symmetric=True)
+    by_hand = call('get_document')
+    next(f for f in by_hand['features'] if f['id'] == e)['extent'] = {'type': 'symmetric', 'distance': 10}
+    call('load_document', document=by_hand)
+    assert feature(e).get('symmetric') is True
+    assert zs(call('edit_feature', id=e, distance=20)) == [-10, 10], 'it stays half to each side when its distance is changed'
+    assert zs(call('edit_feature', id=e, distance2=5)) == [-5, 20] and 'symmetric' not in feature(e), 'until it is given a second distance'
+    step('a box and a hole made in the page are changed with edit_feature; an extrusion goes two ways, or one')
+
     # ---- revolve: closed regions of a sketch turned about one of its lines
     untouched = call('get_document')
-    s = call('add_sketch', plane='XZ', part='new', shapes=[{'type': 'rectangle', 'corner': [8, 0], 'width': 6, 'height': 10},
-                                                           {'type': 'line', 'from': [0, 0], 'to': [0, 5], 'construction': True}])
+    pid = call('add_part')['part']['id']
+    s = sketch([{'type': 'rectangle', 'corner': [8, 0], 'width': 6, 'height': 10},
+                {'type': 'line', 'from': [0, 0], 'to': [0, 5], 'construction': True}], plane='XZ', part=pid)
     lines = [e for e in s['sketch']['entities'] if e['type'] == 'line']
     axis = next(e['id'] for e in lines if e.get('construction'))
     ring = call('revolve', axis=axis)
-    rid, pid = ring['id'], ring['part']
-    assert ring['type'] == 'revolve' and ring['status'] == 'ok' and ring['name'] == 'Revolve1' and pid == s['part'], ring
+    rid = ring['id']
+    assert ring['type'] == 'revolve' and ring['status'] == 'ok' and ring['name'] == 'Revolve1' and ring['part'] == pid == s['part'], ring
     near(vol(ring, pid), math.pi * (14 ** 2 - 8 ** 2) * 10, 1e-2, 'a ring')
     assert next(b for b in ring['bodies'] if b['part'] == pid)['box'] == [[-14, -14, 0], [14, 14, 10]], 'drawn on XZ about its upright line: it stands on Z'
-    row_of = lambda r: next(f for f in call('get_state')['features'] if f['id'] == r)
-    assert {k: row_of(rid)[k] for k in ('sketch', 'axis', 'angle', 'operation', 'profiles')} == {'sketch': s['id'], 'axis': axis, 'angle': 360, 'operation': 'new', 'profiles': 1}
-    angle = next(x for x in call('list_dimensions', part=pid) if x['feature'] == rid)
-    assert angle['value'] == 360 and angle['unit'] == '\u00b0' and angle['change_with'] == 'edit_feature' and angle['arguments'] == {'id': rid, 'angle': 360}, angle
+    assert {k: feature(rid)[k] for k in ('sketch', 'axis', 'angle', 'operation', 'profiles')} == {'sketch': s['id'], 'axis': axis, 'angle': 360, 'operation': 'new', 'profiles': 1}
     quarter = call('edit_feature', id=rid, angle=90)
     near(vol(quarter, pid), math.pi * 132 * 10 / 4, 1e-2, 'a quarter of it')
     assert next(b for b in quarter['bodies'] if b['part'] == pid)['box'] == [[0, -14, 0], [14, 0, 10]], 'XZ faces -Y: the turn goes that way'
@@ -553,8 +696,8 @@ def run(p, url='index.html?test=1'):
     solid = call('edit_feature', id=rid, axis=side, angle=360)
     near(vol(solid, pid), math.pi * 36 * 10, 1e-2, 'a cylinder of radius 6 about x = 14')
     # a groove cut into it, in the same part: the default is to join, a cut is said
-    g = call('add_sketch', plane='XZ', part=pid, shapes=[{'type': 'rectangle', 'corner': [18, 4], 'width': 4, 'height': 2},
-                                                         {'type': 'line', 'from': [14, 0], 'to': [14, 3], 'construction': True}])
+    g = sketch([{'type': 'rectangle', 'corner': [18, 4], 'width': 4, 'height': 2},
+                {'type': 'line', 'from': [14, 0], 'to': [14, 3], 'construction': True}], plane='XZ', part=pid)
     gaxis = next(e['id'] for e in g['sketch']['entities'] if e.get('construction'))
     cut = call('revolve', axis=gaxis, operation='cut')
     near(vol(cut, pid), math.pi * 36 * 10 - math.pi * (36 - 16) * 2, 1e-2, 'a groove 2 deep and 2 high')
@@ -572,7 +715,7 @@ def run(p, url='index.html?test=1'):
     # in the page: a row in the history, its number on the model, typed over there; no dialog
     p.click(f'[data-feature="{rid}"]')
     label = next(l for l in p.js('corecad.dimensions') if l['feature'] == rid)
-    assert label['key'] == 'angle' and label['text'] == '360\u00b0' and label['editable'], label
+    assert label['key'] == 'angle' and label['text'] == '360°' and label['editable'], label
     p.click(label['x'], label['y'])
     p.wait('!!document.querySelector(".dim-input")')
     p.key('a', modifiers=2)
@@ -583,19 +726,23 @@ def run(p, url='index.html?test=1'):
     p.js('document.querySelector(' + json.dumps(f'[data-feature="{rid}"]') + ').dispatchEvent(new MouseEvent("dblclick", {bubbles: true}))')
     assert 'has no dialog' in p.js('document.getElementById("toast").textContent') and not p.js('!!corecad.draft')
     p.screenshot(ROOT / '.scratch' / 'e2e_api_revolve.png')
-    for _ in range(20):
-        if content(call('get_document')) == content(untouched):
-            break
-        call('undo')
-    assert content(call('get_document')) == content(untouched)
+    undo_to(untouched)
     step('revolve: a ring, part of a turn and the other way, about a side of the outline, a groove cut; its angle on the model')
 
-    # ---- one command, one tool: nothing that lists or runs the others by name
-    import re
+    # ---- one way to do each thing: these commands and no others; making takes neither a name, a place nor contents
+    names = p.js('corecad.tools.map(t => t.name)')
+    assert names == COMMANDS, sorted(set(names) ^ set(COMMANDS))
+    takes = p.js('Object.fromEntries(corecad.tools.map(t => [t.name, Object.keys(t.input.properties)]))')
+    assert takes['add_part'] == [] and takes['add_group'] == [] and takes['copy_part'] == ['part', 'linked'] and takes['add_sketch'] == ['plane', 'part'], takes
+    assert takes['move_part'] == ['part', 'position', 'rotation', 'parent'] and takes['screenshot'] == ['max', 'dimensions'] and takes['export'] == ['format', 'part', 'per_part', 'download'], takes
+    assert [t for t in names if 'name' in takes[t]] == ['new_document', 'edit_feature', 'edit_part'], 'a name is given in one place'
+    assert [t for t in names if 'position' in takes[t]] == ['move_part'] and [t for t in names if 'shapes' in takes[t]] == ['add_to_sketch']
+    for gone in GONE:
+        fails(gone, 'Unknown command "%s"' % gone)
     st = call('get_state')
     build = st['app']['build']
     assert re.fullmatch(r'[0-9a-f]{10}', build) and st['app'] == {'build': build, 'update_available': False} and p.js('corecad.version') == build, st['app']
-    assert not {'list_commands', 'run_command'} & set(p.js('corecad.tools.map(t => t.name)'))
+    step('%d commands, each the only way to do what it does' % len(names))
 
     # ---- a tab older than what is published: it says so, and a command (or the person) reloads it
     update = 'document.getElementById("update-button")'

@@ -101,13 +101,28 @@ def run(p, url='index.html?test=1'):
 
     p.goto(url)
     wait('window.corecadReady && !corecad.busy', 60)
+    # ---- the fixture, by commands: each solid is a part, a sketch, shapes in it, and an extrusion or a turn
+    def solid(name, shapes, plane='XY', position=None, **how):
+        pid = call('add_part')['part']['id']
+        call('edit_part', part=pid, name=name)
+        s = call('add_to_sketch', sketch=call('add_sketch', plane=plane, part=pid)['id'], shapes=shapes)
+        if 'distance' in how:
+            call('extrude', sketch=s['id'], **how)
+        else:
+            call('revolve', sketch=s['id'], axis=next(e['id'] for e in s['sketch']['entities'] if e['type'] == 'line'))
+        if position:
+            call('move_part', part=pid, position=position)
+        return pid
+
     call('new_document', name='Fixture')
-    call('add_box', size=[60, 40, 12], name='Plate')
-    call('add_cylinder', diameter=10, height=30, position=[15, 0, -5], name='Bore')
+    solid('Plate', [{'type': 'rectangle', 'center': [0, 0], 'width': 60, 'height': 40}], distance=12)
+    solid('Bore', [{'type': 'circle', 'center': [0, 0], 'diameter': 10}], distance=30, position=[15, 0, -5])
     call('combine', part='Plate', operation='cut', **{'with': ['Bore']})
-    call('add_box', size=[20, 20, 30], position=[60, 0, 0], name='Post')
-    twin = call('copy_part', part='Post', linked=True, by=[0, 40, 0], name='Post')['part']['id']
-    ball = call('add_sphere', diameter=20, position=[0, 100, 0], name='Ball')['part']['id']
+    solid('Post', [{'type': 'rectangle', 'center': [0, 0], 'width': 20, 'height': 20}], distance=30, position=[60, 0, 0])
+    twin = call('copy_part', part='Post', linked=True)['part']['id']
+    call('edit_part', part=twin, name='Post')
+    call('move_part', part=twin, position=[60, 40, 0])
+    ball = solid('Ball', [{'type': 'arc', 'center': [0, 10], 'from': [0, 0], 'to': [0, 20]}, {'type': 'line', 'from': [0, 20], 'to': [0, 0]}], plane='XZ', position=[0, 100, 0])
     call('edit_part', part='Ball', hidden=True)
     call('set_view', view='home')
 
@@ -222,7 +237,11 @@ def run(p, url='index.html?test=1'):
 
     # ---- a group goes out as the parts in it, each an object of its own; its colour is theirs where they have none
     untouched = call('get_document')
-    posts = call('add_group', name='Posts', parts=['o3', twin])['part']
+    gid = call('add_group')['part']['id']
+    call('edit_part', part=gid, name='Posts')
+    call('move_part', part='o3', parent=gid)
+    call('move_part', part=twin, parent=gid)
+    posts = next(x for x in call('get_state')['parts'] if x['id'] == gid)
     assert posts['kind'] == 'group' and posts['contains'] == ['o3', twin] and posts['box'] == [[50, -10, 0], [70, 50, 30]], posts
     grouped = call('export', format='3mf', part='Posts')
     assert grouped['filename'] == 'Fixture - Posts.3mf'
@@ -231,7 +250,7 @@ def run(p, url='index.html?test=1'):
     assert [o['name'] for o in read_3mf(base64.b64decode(call('export', format='3mf')['base64']))] == ['Plate', 'Post', 'Post 2'], 'the group itself is no object'
     call('set_color', part='o3', color=None)
     call('set_color', part='Posts', color='blue')
-    call('move_part', part='Posts', by=[0, 0, 5])
+    call('move_part', part='Posts', position=[0, 0, 5])
     again = read_3mf(base64.b64decode(call('export', format='3mf', part=posts['id'])['base64']))
     assert [(o['color'], box(o['vertices'])) for o in again] == [('#2F6FD0', [[50, -10, 5], [70, 10, 35]]), ('#58A84A', [[50, 30, 5], [70, 50, 35]])], \
         'a part without a colour takes the colour of its group, one with its own keeps it; both moved with the group: %s' % [(o['color'], box(o['vertices'])) for o in again]

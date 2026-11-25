@@ -399,14 +399,8 @@ thing; an agent is given primitives, not conveniences.
   list of tools is old reads it again (reconnect the server); `reload_app`
   and `get_state` under `app` stay, as the only way to see and to load a
   newer CoreCAD from a command.
-- Overlaps that are older and still there, for a decision: a place given to
-  `add_box`, `add_cylinder`, `add_sphere`, `add_part`, `add_group` and
-  `copy_part` (also `move_part`); `by` beside `position` and `turn` beside
-  `rotation` in `move_part`; `parts` of `add_group` (also `move_part` with a
-  parent); `ungroup` (also `move_part` and `delete_part`); `add_part` (also
-  `add_sketch` with `part: "new"`); `hole` (also a circle and `extrude` as a
-  cut), and its `position` beside `at`; `name` when making something (also
-  `edit_part`, `edit_feature`); `origin` of the three solids.
+- The older overlaps were listed here for a decision. The decision was to
+  take out everything that can go: see "The command set, cut down" below.
 
 ## Revolve (2026-11-25)
 
@@ -418,7 +412,7 @@ a sketch turned about a line of that sketch.
   sketch, by its id; the angle is positive and at most 360; `flip` is the
   only way to turn the other way; a name is given with `edit_feature`.
 - Command: `revolve`; `edit_feature` changes angle, axis, operation, flip;
-  `get_state` and `list_dimensions` show it.
+  `get_state` shows it.
 - Page: a row in the history; its angle on the model (click it and type). No
   dialog and no toolbar button: it is made by command.
 
@@ -434,3 +428,75 @@ body, not an axis of the part). Cones and tori that a revolve makes are
 measured as plain faces: `measure` does not give their radii.
 
 Next of the same kind, not started: shell, mirror, sweep, loft.
+
+## The command set, cut down (2026-11-25)
+
+The owner's answer to the list of overlaps: trim everything that can go.
+43 commands became 37, and what is left takes fewer arguments. The rule, as
+it is now written at the top of `src/api/commands.js` and in
+`docs/COMMANDS.md`: a command does one thing, and nothing that another
+command does is also an argument of it; making something takes only what the
+thing cannot be without.
+
+Commands taken out, and what does their work:
+
+- `add_box`, `add_cylinder`, `add_sphere`: `add_part`, `add_sketch`,
+  `add_to_sketch`, then `extrude` or `revolve`.
+- `hole`: a circle in a sketch on the face, `extrude` as a cut.
+- `ungroup`: `move_part` with a parent for each part, then `delete_part`.
+- `list_dimensions`: `get_state` has the numbers of the features,
+  `get_sketch` those of a sketch.
+
+Arguments taken out:
+
+- `name` wherever something is made (`extrude`, `fillet`, `chamfer`,
+  `combine`, `add_sketch`, `add_part`, `add_group`, `copy_part`): a name is
+  given with `edit_part` or `edit_feature`. (`new_document` keeps its name:
+  nothing else names a project.)
+- `position`, `rotation`, `parent` of `add_part`, `add_group`, `copy_part`,
+  and `by`: a part is placed with `move_part`. A new part or group stands at
+  the origin under nothing, whatever is selected in the page; a copy stands
+  where its original stands.
+- `by` and `turn` of `move_part`: it takes `position`, `rotation`, `parent`.
+- `parts` of `add_group`: `move_part` with a parent.
+- `shapes` of `add_sketch`, and its `part: "new"`: `add_sketch` makes an
+  empty sketch in a part that is there; `add_to_sketch` fills it; `add_part`
+  makes a part. A first part is no longer made by the way.
+- `symmetric` of `extrude` and `edit_feature`, and a negative `distance`:
+  `distance2` is the other way (0 for none), `flip` reverses.
+- `view` and `fit` of `screenshot`: `set_view` (whose `view` may now be left
+  out, to fit only).
+- The format `corecad` of `export`: `get_document`.
+- `selection` in what `get_state` answers, and `between` in what
+  `get_selection` answers: `get_selection` and `measure`.
+
+What was left, and why:
+
+- The page. Box, Cylinder, Sphere, Hole, Ungroup, the symmetric tick of the
+  extrude dialog and making things inside the selected group are a person's
+  tools, and the document still has the features `box`, `cylinder`, `sphere`
+  and `hole`: files that have them open as before, and `edit_feature`
+  changes them (test: a box and a hole made in the page, changed by
+  command).
+- Ways of saying which thing is meant: a part by id or by name, a face by
+  side, index or "this", edges by index or by description, regions as
+  "outer", "all", indices or points. They are how something is pointed at,
+  not ways of doing something.
+- The shapes of `add_to_sketch`: `rectangle` and `polyline` are made of
+  lines, and a `line` is a polyline of two points. A rectangle and a circle
+  come with the dimensions a person changes them by, which lines would need
+  about eight more commands for. Open for a decision.
+- `add_dimension` keeps `value` (it is what the dimension is), and
+  `list_edges` its `edges` (what a description means, before it is used).
+
+A note for a client that still holds the older list of tools: the relay
+answers for a tool it was not told of (`CoreCAD has no tool "add_box"`)
+before the tab is asked, so a sentence in the tab about what replaced a
+command would not reach it; none is kept. The client reads the list again
+when the server is reconnected in it.
+
+Verification: `tools/e2e_api.py` was rewritten for the smaller set (the list
+of commands is asserted exactly, and that only `new_document`,
+`edit_feature` and `edit_part` take a name, only `move_part` a position,
+only `add_to_sketch` shapes); `tools/e2e_export.py` and `tools/e2e_bridge.py`
+build their models from the primitives.

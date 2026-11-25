@@ -3,6 +3,10 @@
 // `tools` list (name, description, JSON Schema of the arguments) is made to be
 // handed to an MCP server or to WebMCP unchanged.
 //
+// One way to do each thing: a command does one thing, and nothing that another
+// command does is also an argument here. Making takes what the thing cannot be
+// without; its name, its place and what goes into it have commands of their own.
+//
 // Commands do what the page's own controls do, through the same store: a change
 // is one undo step, is autosaved, shows in the history and in the view. A solid
 // feature is tried as a preview first, as the dialogs do, and is only made part
@@ -16,12 +20,11 @@ import { DIMENSIONS, CONSTRAINTS } from '../sketch/catalogue.js';
 import { findRegions, profileRefFrom, regionAt, pointInRegion, pointInLoop } from '../sketch/profiles.js';
 import { createDocument, makeFeature, addFeature, updateFeature, removeFeature, featureById, dependents } from '../doc/model.js';
 import { validateFeature } from '../doc/features.js';
-import { validateDocument, serialize, upgrade } from '../doc/schema.js';
-import { partById, featuresOf, worldOf, makePart, addPart, updatePart, removePart, partDependents, setParent, copyPart, unlinkPart, sceneOf, contentOf, descendantsOf, ancestorsOf, childrenOf, groupParts, ungroup, setPartColor, paintFaces, appearanceOf } from '../doc/parts.js';
+import { validateDocument, upgrade } from '../doc/schema.js';
+import { partById, featuresOf, worldOf, makePart, addPart, updatePart, removePart, partDependents, setParent, copyPart, unlinkPart, sceneOf, contentOf, descendantsOf, ancestorsOf, childrenOf, setPartColor, paintFaces, appearanceOf } from '../doc/parts.js';
 import { PALETTE, colorFrom } from './colors.js';
 import * as Mat from '../core/mat.js';
 import { sizeOf, between, total } from './measure3d.js';
-import { dimensionsOf } from './dimensions.js';
 import { faceRefFrom, edgeRefFrom, topoOfBody } from '../doc/refs.js';
 import { canonicalFrame, toLocal } from '../core/plane.js';
 import { STANDARD } from '../view/camera-math.js';
@@ -49,10 +52,6 @@ const EDGES_ARG = {
   description: 'Which edges: "this" (the edges the person has selected in the page, or else the one their mouse rests on; also "selected", "pointed"); or "all"; or an array of indices from list_edges; or an object whose conditions must all hold: { "part": id or name, "body": id, "indices": [..], "kind": "line" | "circle", "parallel": "x" | "y" | "z", "on": a face (as for sketching), "length": mm }. Example: { "parallel": "z" } is every straight vertical edge.',
 };
 const VEC = (description) => ({ type: 'array', items: { type: 'number' }, description });
-const POSITION_ARG = VEC('Where the part\'s origin is: [x, y, z] in mm, in its parent\'s frame (in space when it has no parent). Default [0, 0, 0].');
-const ROTATION_ARG = VEC('How it is turned: [rx, ry, rz] in degrees, about the fixed X axis first, then Y, then Z, round the part\'s origin. Default [0, 0, 0].');
-const PARENT_ARG = { description: 'The part it stands under and moves with: an id or a name; null for none.' };
-const ORIGIN_ARG = (kinds) => str(`Which point of the solid is the part's origin (what "position" places): ${kinds}. Default "base".`);
 const SHAPES_ARG = {
   type: 'array',
   description:
@@ -83,11 +82,6 @@ export const TOOLS = [
       to: { description: 'The other one, given the same way.' },
     }
   ),
-  tool(
-    'list_dimensions',
-    'The numbers that drive the model, as the Dimensions view shows them to the person on the model: every dimension of every sketch, how far each extrusion goes, hole diameters and depths, fillet radii, box and cylinder sizes. Each with what it is, where it is in space, and the command and arguments that change it.',
-    { part: str('Only those of one part, by id or name. Left out: of every part.') }
-  ),
   tool('get_document', 'The whole project as JSON: exactly what Save writes to a .corecad file.'),
   tool('load_document', 'Replaces the open project with a document in the .corecad format (as get_document returns). The history of undo steps starts over.', { document: { type: 'object', description: 'The project.' } }, ['document']),
   tool('new_document', 'Starts an empty project. The open one is replaced (it stays in the browser only if it was saved).', { name: str('The project\'s name.') }),
@@ -96,15 +90,13 @@ export const TOOLS = [
   tool('list_edges', 'The edges of a body (or of every body) that can be filleted or chamfered: index, kind, end points, middle, length, the two faces it lies between. Optionally only those matching a description. Coordinates are in space.', { body: BODY_ARG, part: PART_ARG, edges: EDGES_ARG }),
   tool(
     'add_sketch',
-    'Makes a sketch on an origin plane of a part or on a flat face of a body, optionally with shapes in it. It becomes the next step of that part\'s history. Sketch coordinates are millimetres in the plane; on XY and on top faces they are the part\'s x and y (the world\'s, when the part has not been moved or turned). Returns the sketch as get_sketch does.',
+    'Makes an empty sketch on an origin plane of a part or on a flat face of a body; add_to_sketch puts shapes into it. It becomes the next step of that part\'s history. Sketch coordinates are millimetres in the plane; on XY and on top faces they are the part\'s x and y (the world\'s, when the part has not been moved or turned). Returns the sketch as get_sketch does.',
     {
       plane: { description: `"XY" (the ground; default), "XZ", "YZ", or a flat face: ${FACE_ARG.description}` },
-      part: str('For an origin plane: the part the sketch goes into, by id or name, or "new" to start a new part. Left out: the current part (a first part is made when there is none).'),
-      shapes: SHAPES_ARG,
-      name: str('A name for the history.'),
+      part: str('For an origin plane: the part the sketch goes into, by id or name (add_part makes one). Left out: the current part.'),
     }
   ),
-  tool('add_to_sketch', 'Adds shapes to an existing sketch. Features built on the sketch are rebuilt.', { sketch: SKETCH_ARG, shapes: SHAPES_ARG }, ['shapes']),
+  tool('add_to_sketch', 'Adds shapes to a sketch. Features built on the sketch are rebuilt.', { sketch: SKETCH_ARG, shapes: SHAPES_ARG }, ['shapes']),
   tool(
     'set_dimension',
     'Changes the value of a driving dimension of a sketch; the sketch follows and everything built on it is rebuilt. Ids are in get_sketch.',
@@ -131,17 +123,15 @@ export const TOOLS = [
   tool('remove_from_sketch', 'Removes entities, dimensions or constraints from a sketch by id.', { sketch: SKETCH_ARG, ids: { type: 'array', items: { type: 'string' }, description: 'Ids from get_sketch.' } }, ['ids']),
   tool(
     'extrude',
-    'Extrudes closed regions of a sketch into a solid: a new body, joined to the bodies it touches, cut out of them, or their intersection.',
+    'Extrudes closed regions of a sketch into a solid: a new body, joined to the bodies it touches, cut out of them, or their intersection. (A hole is a circle in a sketch on the face, extruded as a cut.)',
     {
       sketch: SKETCH_ARG,
       profiles: { description: 'Which regions: "outer" (default: every outline with its holes left open), "all" (holes filled too), or an array of region indices from get_sketch or of points [x, y] inside the regions meant.' },
-      distance: numb('How far, in mm, along the sketch plane\'s normal (a cut on a face goes into the body). Negative: the other way.'),
+      distance: numb('How far, in mm, along the sketch plane\'s normal (a cut on a face goes into the body).'),
       through_all: bool('For cut and intersect: through everything, instead of a distance.'),
       operation: str('Default: "new" when the sketch\'s part has no body yet, otherwise "join". Only the bodies of that part are joined or cut: other parts are combined with combine.', { enum: ['new', 'join', 'cut', 'intersect'] }),
-      symmetric: bool('The distance is the total, half to each side of the sketch plane.'),
       distance2: numb('A second distance, against the direction (two-sided extrusion).'),
       flip: bool('Reverse the direction.'),
-      name: str('A name for the history.'),
     }
   ),
   tool(
@@ -157,29 +147,16 @@ export const TOOLS = [
     },
     ['axis']
   ),
-  tool(
-    'hole',
-    'Drills a round hole into a flat face, straight in.',
-    {
-      face: FACE_ARG,
-      at: { description: 'Where: [x, y] in the face\'s sketch coordinates (on a top face: the part\'s x and y), or "center". Left out: where the person clicked or points when the face is theirs ("this"); otherwise the middle of the face.' },
-      position: { type: 'array', items: { type: 'number' }, description: 'Instead of "at": a point [x, y, z] in space; the hole goes where it drops onto the face.' },
-      diameter: numb('Millimetres.'),
-      depth: numb('Millimetres. Left out: through everything.'),
-      name: str('A name for the history.'),
-    },
-    ['diameter']
-  ),
-  tool('fillet', 'Rounds edges of a body with a radius.', { edges: EDGES_ARG, radius: numb('Millimetres.'), name: str('A name for the history.') }, ['edges', 'radius']),
-  tool('chamfer', 'Bevels edges of a body by a distance.', { edges: EDGES_ARG, distance: numb('Millimetres.'), name: str('A name for the history.') }, ['edges', 'distance']),
+  tool('fillet', 'Rounds edges of a body with a radius.', { edges: EDGES_ARG, radius: numb('Millimetres.') }, ['edges', 'radius']),
+  tool('chamfer', 'Bevels edges of a body by a distance.', { edges: EDGES_ARG, distance: numb('Millimetres.') }, ['edges', 'distance']),
   tool(
     'edit_feature',
-    'Changes a feature\'s parameters, name or suppression; the features after it are rebuilt. Extrude: distance, through_all, symmetric, distance2, operation, flip. Revolve: angle, axis, operation, flip. Hole: diameter, depth, through_all, at. Fillet: radius. Chamfer: distance. Box: size, origin. Cylinder: diameter, height, origin. Sphere: diameter, origin. Combine: operation, with, keep. (A sketch is changed with set_dimension, add_to_sketch and remove_from_sketch; where a part stands with move_part.)',
+    'Changes a feature\'s parameters, name or suppression; the features after it are rebuilt. Extrude: distance, through_all, distance2, operation, flip. Revolve: angle, axis, operation, flip. Fillet: radius. Chamfer: distance. Combine: operation, with, keep. What a person made with the page\'s own tools is changed here too: a hole (diameter, depth, through_all, at), a box (size, origin), a cylinder (diameter, height, origin), a sphere (diameter, origin). (A sketch is changed with set_dimension, add_to_sketch and remove_from_sketch; where a part stands with move_part.)',
     {
       id: str('The feature\'s id, such as "f3"; or "this": the feature the person has selected in the history, or the one that made the face or edge they have selected or point at (the wall or the rim of a hole, say).'),
       name: str('A new name.'),
       suppressed: bool('true: leave the feature out of the model without deleting it.'),
-      distance: numb('mm'), through_all: bool('through everything'), symmetric: bool('half to each side'), distance2: numb('mm, the other way'),
+      distance: numb('mm'), through_all: bool('through everything'), distance2: numb('mm, the other way; 0: none'),
       operation: str('new, join, cut or intersect', { enum: ['new', 'join', 'cut', 'intersect'] }), flip: bool('reverse the direction'),
       angle: numb('a revolve: degrees, up to 360'), axis: str('a revolve: the id of a line of its sketch'),
       diameter: numb('mm'), depth: numb('mm'), at: { type: 'array', items: { type: 'number' }, description: '[x, y] on the face' }, radius: numb('mm'),
@@ -188,41 +165,11 @@ export const TOOLS = [
     },
     ['id']
   ),
-  tool(
-    'add_box',
-    'A box as a new part, without a sketch: the first step of that part\'s history. Place it with position and rotation here, or later with move_part; join it to another part or cut it out of one with combine. The new part becomes the current part.',
-    { size: VEC('[x, y, z]: width along X, depth along Y, height along Z, in mm.'), origin: ORIGIN_ARG('"base" (the middle of its bottom face), "center", or "corner" (its lowest corner)'), position: POSITION_ARG, rotation: ROTATION_ARG, parent: PARENT_ARG, name: str('A name for the part.') },
-    ['size']
-  ),
-  tool(
-    'add_cylinder',
-    'A cylinder along Z as a new part, without a sketch. Turn it with rotation ([90, 0, 0] lays it along -Y, [0, 90, 0] along X). The new part becomes the current part.',
-    { diameter: numb('Millimetres.'), height: numb('Millimetres.'), origin: ORIGIN_ARG('"base" (the middle of its bottom face) or "center"'), position: POSITION_ARG, rotation: ROTATION_ARG, parent: PARENT_ARG, name: str('A name for the part.') },
-    ['diameter', 'height']
-  ),
-  tool(
-    'add_sphere',
-    'A sphere as a new part, without a sketch. The new part becomes the current part.',
-    { diameter: numb('Millimetres.'), origin: ORIGIN_ARG('"base" (its lowest point) or "center"'), position: POSITION_ARG, rotation: ROTATION_ARG, parent: PARENT_ARG, name: str('A name for the part.') },
-    ['diameter']
-  ),
-  tool(
-    'add_part',
-    'A new, empty part: a place for sketches (give it to add_sketch as "part", or leave that out: it is now the current part). To keep parts together, use add_group.',
-    { name: str('A name for the part.'), position: POSITION_ARG, rotation: ROTATION_ARG, parent: PARENT_ARG }
-  ),
+  tool('add_part', 'A new, empty part: a place for sketches. It stands at the origin, under nothing, and becomes the current part. edit_part names it; move_part places it or puts it into a group.'),
   tool(
     'add_group',
-    'A group: a container for parts. It has a name and a place and no shape of its own; what is in it moves, turns and hides with it, takes its colour where it has none, and is exported with it. Give "parts" to put parts that are there into it (they stay where they are in space); a group can hold groups. The group becomes the current part: parts made next go into it unless they are given a "parent".',
-    {
-      name: str('A name for the group, such as what the parts make up together.'),
-      parts: { type: 'array', items: { type: 'string' }, description: 'Parts to put into it, by id or name; "this" for the part the person has selected.' },
-      position: POSITION_ARG,
-      rotation: ROTATION_ARG,
-      parent: PARENT_ARG,
-    }
+    'A new, empty group: a container for parts. It has a name and a place and no shape of its own; what is in it moves, turns and hides with it, takes its colour where it has none, and is exported with it. It stands at the origin, under nothing. move_part puts a part into it ("parent") and takes one out; a group can hold groups. (delete_part deletes a group with everything in it: move out first what is to stay.)'
   ),
-  tool('ungroup', 'Takes a group away and leaves what was in it where it is, under what the group stood under. (delete_part deletes a group with everything in it.)', { part: str('The group, by id or name; or "this". Left out: the current part.') }),
   tool(
     'combine',
     'Joins other parts to a part, cuts them out of it, or keeps only what it shares with them, where they stand. It is a step in the history of the part that is changed. The other parts become its tools: hidden, placed under it, and still there to edit or move (the result follows). A group or a linked copy can be taken too.',
@@ -231,7 +178,6 @@ export const TOOLS = [
       with: { type: 'array', items: { type: 'string' }, description: 'The other parts, by id or name.' },
       operation: str('"join" (add them), "cut" (take them away) or "intersect" (keep the common volume).', { enum: ['join', 'cut', 'intersect'] }),
       keep: bool('true: the other parts stay as they are, visible and where they are in the tree.'),
-      name: str('A name for the history.'),
     },
     ['with', 'operation']
   ),
@@ -240,17 +186,15 @@ export const TOOLS = [
     'Places a part: where it stands, how it is turned, what it stands under. Nothing is rebuilt unless a combine depends on it. What is left out stays as it is.',
     {
       part: PART_ARG,
-      position: POSITION_ARG,
-      rotation: ROTATION_ARG,
-      by: VEC('Instead of position: move it by [dx, dy, dz] mm from where it is (along its parent\'s axes).'),
-      turn: { type: 'object', description: 'Instead of rotation: turn it from where it is, { "axis": "x" | "y" | "z", "angle": degrees, "about": "center" (the middle of what it shows; default), "origin" (its own origin) or a point [x, y, z] in its parent\'s frame }.' },
-      parent: { description: 'Put it under another part (id or name), or null for none. It stays where it is in space unless position or rotation are given too.' },
+      position: VEC('Where the part\'s origin is: [x, y, z] in mm, in its parent\'s frame (in space when it has no parent).'),
+      rotation: VEC('How it is turned: [rx, ry, rz] in degrees, about the fixed X axis first, then Y, then Z, round the part\'s origin.'),
+      parent: { description: 'Put it under another part or into a group (id or name), or null for none. It stays where it is in space unless position or rotation are given too.' },
     }
   ),
   tool(
     'copy_part',
-    'Copies a part with everything under it. A copy of its own has its own history, free to change. linked: true makes a linked copy instead: it shows the original in another place and changes with it (make as many as needed; unlink_part makes one independent). The copy stands where the original stands unless told otherwise, and becomes the current part.',
-    { part: PART_ARG, linked: bool('A linked copy.'), position: POSITION_ARG, rotation: ROTATION_ARG, by: VEC('Move the copy by [dx, dy, dz] mm from where the original stands.'), parent: PARENT_ARG, name: str('A name for the copy.') }
+    'Copies a part with everything under it. A copy of its own has its own history, free to change. linked: true makes a linked copy instead: it shows the original in another place and changes with it (make as many as needed; unlink_part makes one independent). The copy stands where the original stands, under what it stands under, and becomes the current part: move_part places it.',
+    { part: PART_ARG, linked: bool('A linked copy.') }
   ),
   tool(
     'set_color',
@@ -275,9 +219,9 @@ export const TOOLS = [
   tool('cancel_edit', 'Closes a sketch or a feature dialog that is open in the page without keeping its changes. The commands that change the model need this to be closed.'),
   tool(
     'export',
-    'The model as a file. "3mf": for slicers (Bambu Studio, OrcaSlicer, PrusaSlicer, Cura): every part an object of its own, with its name, its colour and its painted faces, where it stands. "stl": a plain mesh; an STL file cannot tell objects apart, so everything is one mesh unless per_part is asked for. "step": exact geometry for other CAD, parts named and coloured. "corecad": the project. Hidden parts are left out. Returned as text (step, corecad) or base64 (3mf, stl), or sent to the browser\'s downloads.',
+    'The model as a file. "3mf": for slicers (Bambu Studio, OrcaSlicer, PrusaSlicer, Cura): every part an object of its own, with its name, its colour and its painted faces, where it stands. "stl": a plain mesh; an STL file cannot tell objects apart, so everything is one mesh unless per_part is asked for. "step": exact geometry for other CAD, parts named and coloured. Hidden parts are left out. Returned as text (step) or base64 (3mf, stl), or sent to the browser\'s downloads. (The project itself is get_document.)',
     {
-      format: str('Default "step".', { enum: ['3mf', 'step', 'stl', 'corecad'] }),
+      format: str('Default "step".', { enum: ['3mf', 'step', 'stl'] }),
       part: str('Only this part and what stands under it: an id, a name, or "this" (the part the person has selected). Left out: everything that is to be seen.'),
       per_part: bool('For "stl" with several parts: a .zip with one STL file for each part, named after it.'),
       download: bool('true: save it through the browser instead of returning its content.'),
@@ -285,10 +229,10 @@ export const TOOLS = [
   ),
   tool(
     'screenshot',
-    'A picture of the 3D view as a PNG data URL, to see what the model looks like.',
-    { view: str('Turn the camera first.', { enum: VIEWS }), fit: bool('Fit the model in the view first (default true).'), max: numb('The longer side in pixels at most (default 1200).'), dimensions: bool('true: with the numbers that drive the model drawn on it, as the Dimensions view shows them.') }
+    'A picture of the 3D view as it stands, as a PNG data URL, to see what the model looks like. (set_view turns the camera and fits the model.)',
+    { max: numb('The longer side in pixels at most (default 1200).'), dimensions: bool('true: with the numbers that drive the model drawn on it, as the Dimensions view shows them.') }
   ),
-  tool('set_view', 'Turns the camera to a standard view and fits the model.', { view: str('The view.', { enum: VIEWS }), fit: bool('Fit the model (default true).') }, ['view']),
+  tool('set_view', 'Turns the camera to a standard view and fits the model in the picture.', { view: str('The view. Left out: the camera stays turned as it is.', { enum: VIEWS }), fit: bool('Fit the model (default true).') }),
 ];
 
 // ------------------------------------------------------------------ the commands
@@ -302,7 +246,6 @@ export const TOOLS = [
  * @param {(featureId: string | null, partId?: string | null) => void} app.shown   a command made or changed this: select it, fit the view
  * @param {() => string | null} app.currentPart   the part being worked on
  * @param {() => string | null} app.homePart      the part a new sketch goes into (never a linked copy or a group)
- * @param {() => string | null} [app.container]  the group a new part goes into: the one the person has selected, or the one their part is in
  * @param {string} [app.build]                    this tab's build (src/version.js)
  * @param {() => string | null} [app.newest]      the published build, when it is not this one (as last looked)
  * @param {() => Promise<string | null>} [app.checkUpdate]  looks what is published (at most once a minute)
@@ -333,7 +276,7 @@ export function createCommands(app) {
     const d = doc();
     if (ref === undefined || ref === null) {
       const p = partById(d, app.currentPart());
-      if (!p) throw Error('There is no part yet: make one with add_sketch, add_box, add_cylinder, add_sphere or add_part.');
+      if (!p) throw Error('There is no part yet: make one with add_part.');
       return p;
     }
     const word = theirWord(ref);
@@ -526,7 +469,6 @@ export function createCommands(app) {
       f = featureById(doc(), c.feature);
     return {
       selected: c.selected.map(hitRow),
-      ...(c.selected.length === 2 ? { between: betweenRow(between(asPick(c.selected[0]), asPick(c.selected[1]))) } : {}),
       pointed: c.pointed ? { ...hitRow(c.pointed), seconds_ago: round(c.pointed.ms / 1000, 1), mouse_in_view: c.pointed.over } : null,
       part: part ? { id: part.id, name: part.name } : null,
       feature: f ? { id: f.id, type: f.type, name: f.name, part: f.part } : null,
@@ -610,9 +552,10 @@ export function createCommands(app) {
       ...(doc().bodies[b.id]?.hidden ? { hidden: true } : {}),
       ...(b.away ? { shown: false } : {}),
     }));
-  /** The box in space round what a part shows (its own bodies and those under it), or null. `local`: its placement, when it is being changed. */
-  function boxOf(d, pid, list = bodies(), frame = worldOf(d).get(pid)) {
-    const boxes = contentOf(d, pid).flatMap((item) => list.filter((b) => b.part === item.from).map((b) => Mat.box(Mat.mul(frame, item.rel), b.bbox)));
+  /** The box in space round what a part shows (its own bodies and those under it), or null. */
+  function boxOf(d, pid, list = bodies()) {
+    const frame = worldOf(d).get(pid),
+      boxes = contentOf(d, pid).flatMap((item) => list.filter((b) => b.part === item.from).map((b) => Mat.box(Mat.mul(frame, item.rel), b.bbox)));
     if (!boxes.length) return null;
     return [[0, 1, 2].map((i) => Math.min(...boxes.map((b) => b[0][i]))), [0, 1, 2].map((i) => Math.max(...boxes.map((b) => b[1][i])))];
   }
@@ -732,7 +675,6 @@ export function createCommands(app) {
       units: 'mm',
       parts: partRows(),
       current_part: app.currentPart() ?? null,
-      selection: selectionInfo(),
       features: st.doc.features.map((f) => {
         const r = resultOf(f.id);
         return { id: f.id, part: f.part, type: f.type, name: f.name, status: r?.status ?? 'unknown', ...(r?.message ? { message: r.message } : {}), ...summary(f) };
@@ -804,22 +746,6 @@ export function createCommands(app) {
     if (!feature.keep) for (const t of feature.tools) if (!ancestorsOf(next, t).includes(feature.part)) next = setParent(next, t, feature.part);
     return next;
   }
-  /** The placement a new part is given. */
-  const placementFrom = (a) => ({
-    parent: a.parent === undefined ? app.container?.() ?? null : parentFrom(a.parent),
-    pos: vec3(a.position, 'position', [0, 0, 0]),
-    rot: vec3(a.rotation, 'rotation', [0, 0, 0]),
-  });
-  async function primitive(type, a, data) {
-    free();
-    await settled();
-    if (a.origin !== undefined && !(type === 'box' ? ['base', 'center', 'corner'] : ['base', 'center']).includes(a.origin))
-      throw Error(`"origin" is "base"${type === 'box' ? ', "center" or "corner"' : ' or "center"'}.`);
-    const made = makePart(doc(), { base: type[0].toUpperCase() + type.slice(1), ...(a.name ? { name: String(a.name) } : {}), ...placementFrom(a) }),
-      f = makeFeature(made.doc, type, { part: made.part.id, ...data, ...(a.origin !== undefined ? { origin: a.origin } : {}) });
-    const out = await apply(addFeature(addPart(f.doc, made.part), f.feature), f.feature, 'Add ' + made.part.name);
-    return { ...out, part: partRows().find((x) => x.id === made.part.id) };
-  }
 
   /** Tries `next` (in which `feature` is new or changed) as a preview, and commits it only if that feature builds. */
   async function apply(next, feature, label) {
@@ -872,15 +798,17 @@ export function createCommands(app) {
     if (a.through_all ?? (a.distance === undefined && wasAll)) {
       if (!['cut', 'intersect'].includes(operation)) throw Error('through_all is for cut and intersect; new and join need a distance.');
       // A new cut through everything with no direction asked for goes both ways, so it cannot miss the body.
-      if (!base) return { type: a.flip === undefined && !(a.distance < 0) ? 'symmetric' : 'oneSide', distance: 'all' };
+      if (!base) return { type: a.flip === undefined ? 'symmetric' : 'oneSide', distance: 'all' };
       return { type: base.type === 'symmetric' ? 'symmetric' : 'oneSide', distance: 'all' };
     }
     const d = a.distance ?? (wasAll ? undefined : base?.distance);
     if (d === undefined) throw Error('Give a distance.');
-    const distance = positive(Math.abs(d), 'The distance');
+    if (d < 0) throw Error('The distance is a positive number of millimetres: "flip" reverses the direction.');
+    const distance = positive(d, 'The distance');
+    // Half to each side is something a person chooses in the page: it stays so until a second distance is given.
+    if (base?.type === 'symmetric' && a.distance2 === undefined) return { type: 'symmetric', distance };
     const distance2 = a.distance2 ?? (base?.type === 'twoSides' ? base.distance2 : undefined);
-    if (a.symmetric ?? base?.type === 'symmetric') return { type: 'symmetric', distance };
-    if (distance2 !== undefined) return { type: 'twoSides', distance, distance2: distance2 === 'all' ? 'all' : positive(distance2, 'The second distance') };
+    if (distance2 !== undefined && distance2 !== 0) return { type: 'twoSides', distance, distance2: distance2 === 'all' ? 'all' : positive(distance2, 'The second distance') };
     return { type: 'oneSide', distance };
   }
 
@@ -890,7 +818,7 @@ export function createCommands(app) {
     const key = type === 'fillet' ? 'radius' : 'distance';
     positive(a[key], type === 'fillet' ? 'The radius' : 'The distance');
     const hits = edgesFrom(a.edges);
-    const made = makeFeature(doc(), type, { part: hits[0].body.part, [key]: a[key], ...(a.name ? { name: String(a.name) } : {}) });
+    const made = makeFeature(doc(), type, { part: hits[0].body.part, [key]: a[key] });
     made.feature.edges = hits.map((h, i) => edgeRefFrom(h.body, h.edge, 'k' + (i + 1)));
     made.feature.kseq = hits.length;
     return apply(addFeature(made.doc, made.feature), made.feature, 'Apply ' + made.feature.name);
@@ -912,7 +840,7 @@ export function createCommands(app) {
       await settled();
       return {
         ...selectionInfo(),
-        how: 'Give "this" (or "selected", "pointed") wherever a command takes a face, edges, a part or a feature id. A hole on "this" face goes to "point" unless told otherwise; to draw there, use "at" as sketch coordinates on that face.',
+        how: 'Give "this" (or "selected", "pointed") wherever a command takes a face, edges, a part or a feature id. To draw where they clicked: add_sketch with "plane": "this", then shapes at "at", which is that point in the sketch\'s coordinates.',
       };
     },
     async measure(a) {
@@ -925,18 +853,6 @@ export function createCommands(app) {
         of: picks.map(row),
         ...(picks.length === 2 ? { between: betweenRow(between(picks[0], picks[1])) } : picks.length > 2 ? { together: total(picks).text } : {}),
       };
-    },
-    async list_dimensions(a) {
-      await settled();
-      const d = doc(),
-        world = worldOf(d),
-        only = a.part !== undefined ? partOf(a.part).id : null;
-      return d.features
-        .filter((f) => !only || f.part === only)
-        .flatMap((f) => {
-          const sk = f.type === 'sketch' ? f : ['extrude', 'revolve'].includes(f.type) ? featureById(d, f.sketch) : null;
-          return dimensionsOf(f, { frame: sk ? resultOf(sk.id)?.frame ?? null : null, matrix: world.get(f.part) ?? Mat.IDENTITY, sketch: sk }).map(dimensionRow);
-        });
     },
     async reload_app() {
       app.ready();
@@ -995,35 +911,23 @@ export function createCommands(app) {
       free();
       await settled();
       const where = a.plane ?? 'XY';
-      let plane,
-        base = doc(),
-        partId,
-        newPart = null;
+      let plane, partId;
       if (typeof where === 'string' && PLANES.includes(where.toUpperCase())) {
         plane = { kind: 'base', base: where.toUpperCase() };
-        // The part it goes into: the one named, the current one, or a new one ("new", or when there is none).
-        // A group has no history: named, it gets a new part for the sketch; so does the group the person has selected.
-        const named = a.part === undefined ? partById(base, app.homePart()) : a.part === 'new' ? null : partOf(a.part),
-          home = named?.group ? null : named,
-          into = named?.group ? named.id : app.container?.() ?? null;
-        if (home?.link) throw Error(`${home.name} is a linked copy and has no history of its own: sketch in the original (${home.link}), or unlink_part first.`);
-        if (home) partId = home.id;
-        else {
-          const made = makePart(base, { parent: into });
-          base = made.doc;
-          newPart = made.part;
-          partId = newPart.id;
-        }
+        const home = a.part === undefined ? partById(doc(), app.homePart()) : partOf(a.part);
+        if (!home) throw Error(doc().parts.some((x) => !x.group && !x.link) ? 'The current part is a group: say with "part" which part the sketch goes into.' : 'There is no part to sketch in yet: make one with add_part.');
+        if (home.group) throw Error(`${home.name} is a group and has no history of its own: sketch in a part (add_part makes one, move_part puts it into the group).`);
+        if (home.link) throw Error(`${home.name} is a linked copy and has no history of its own: sketch in the original (${home.link}), or unlink_part first.`);
+        partId = home.id;
       } else {
         const { body, face } = faceFrom(where);
         plane = { kind: 'face', ref: faceRefFrom(body, face) };
         partId = body.part;
-        if (a.part !== undefined && a.part !== 'new' && partOf(a.part).id !== partId) throw Error(`That face belongs to part ${partId}: a sketch on a face is part of that part's history.`);
+        if (a.part !== undefined && partOf(a.part).id !== partId) throw Error(`That face belongs to part ${partId}: a sketch on a face is part of that part's history.`);
       }
-      const made = makeFeature(base, 'sketch', { plane, part: partId, ...(a.name ? { name: String(a.name) } : {}) });
-      const feature = a.shapes?.length ? addShapes(made.feature, a.shapes).sketch : made.feature;
-      await commit(addFeature(newPart ? addPart(made.doc, newPart) : made.doc, feature), 'Create ' + feature.name, feature.id);
-      return outcome(feature.id, { sketch: sketchInfo(featureById(doc(), feature.id)) });
+      const made = makeFeature(doc(), 'sketch', { plane, part: partId });
+      await commit(addFeature(made.doc, made.feature), 'Create ' + made.feature.name, made.feature.id);
+      return outcome(made.feature.id, { sketch: sketchInfo(featureById(doc(), made.feature.id)) });
     },
     async add_to_sketch(a) {
       free();
@@ -1094,17 +998,8 @@ export function createCommands(app) {
       if (!a.through_all && a.distance === undefined) throw Error('Give a distance (or through_all for a cut).');
       const extent = extentFrom(a, operation);
       // A cut drawn on a face goes into the body, against the face's outward normal, unless told otherwise.
-      let flip = a.flip ?? (operation === 'cut' && sk.plane.kind === 'face');
-      if (a.distance < 0) flip = !flip;
-      const made = makeFeature(doc(), 'extrude', {
-        part: sk.part,
-        sketch: sk.id,
-        profiles: regions.map(profileRefFrom),
-        operation,
-        extent,
-        flip,
-        ...(a.name ? { name: String(a.name) } : {}),
-      });
+      const flip = a.flip ?? (operation === 'cut' && sk.plane.kind === 'face');
+      const made = makeFeature(doc(), 'extrude', { part: sk.part, sketch: sk.id, profiles: regions.map(profileRefFrom), operation, extent, flip });
       return apply(addFeature(made.doc, made.feature), made.feature, 'Apply ' + made.feature.name);
     },
     async revolve(a) {
@@ -1124,34 +1019,6 @@ export function createCommands(app) {
       });
       return apply(addFeature(made.doc, made.feature), made.feature, 'Apply ' + made.feature.name);
     },
-    async hole(a) {
-      free();
-      await settled();
-      positive(a.diameter, 'The diameter');
-      const { body, face, hit } = faceFrom(a.face ?? 'top'),
-        ref = faceRefFrom(body, face),
-        frame = canonicalFrame(ref.hint.n, ref.hint.d),
-        centred = typeof a.at === 'string' && ['center', 'centre'].includes(a.at.toLowerCase());
-      // "position" is a point in space; the face's own coordinates are those of its part. On a face
-      // the person chose, a hole goes where they clicked or point unless it is told where.
-      const at =
-        a.at !== undefined && !centred
-          ? a.at
-          : toLocal(
-              frame,
-              centred ? ref.hint.center : a.position !== undefined ? Mat.point(Mat.invert(body.matrix), vec3(a.position, 'position')) : hit ? hit.point : ref.hint.center
-            ).slice(0, 2);
-      if (!Array.isArray(at) || at.length !== 2 || !at.every(Number.isFinite)) throw Error('"at" must be [x, y] on the face.');
-      const made = makeFeature(doc(), 'hole', {
-        part: body.part,
-        face: ref,
-        at,
-        diameter: a.diameter,
-        depth: a.depth === undefined ? 'all' : positive(a.depth, 'The depth'),
-        ...(a.name ? { name: String(a.name) } : {}),
-      });
-      return apply(addFeature(made.doc, made.feature), made.feature, 'Apply ' + made.feature.name);
-    },
     fillet: (a) => blend('fillet', a),
     chamfer: (a) => blend('chamfer', a),
     async edit_feature(a) {
@@ -1161,7 +1028,7 @@ export function createCommands(app) {
       const allowed =
         {
           sketch: [],
-          extrude: ['distance', 'through_all', 'symmetric', 'distance2', 'operation', 'flip'],
+          extrude: ['distance', 'through_all', 'distance2', 'operation', 'flip'],
           revolve: ['angle', 'axis', 'operation', 'flip'],
           hole: ['diameter', 'depth', 'through_all', 'at'],
           fillet: ['radius'],
@@ -1182,10 +1049,7 @@ export function createCommands(app) {
       if (f.type === 'extrude') {
         if (a.operation !== undefined) next.operation = a.operation;
         if (a.flip !== undefined) next.flip = !!a.flip;
-        if (given.some((k) => ['distance', 'through_all', 'symmetric', 'distance2'].includes(k))) {
-          next.extent = extentFrom(a, next.operation, f.extent);
-          if (a.distance < 0) next.flip = !next.flip;
-        }
+        if (given.some((k) => ['distance', 'through_all', 'distance2'].includes(k))) next.extent = extentFrom(a, next.operation, f.extent);
       }
       if (f.type === 'revolve') {
         if (a.angle !== undefined) next.angle = a.angle;
@@ -1213,53 +1077,19 @@ export function createCommands(app) {
       }
       return apply(updateFeature(doc(), f.id, () => next), next, 'Edit ' + next.name);
     },
-    async add_box(a) {
-      const size = vec3(a.size, 'size');
-      size.forEach((v, i) => positive(v, ['The width', 'The depth', 'The height'][i]));
-      return primitive('box', a, { size });
-    },
-    async add_cylinder(a) {
-      return primitive('cylinder', a, { diameter: positive(a.diameter, 'The diameter'), height: positive(a.height, 'The height') });
-    },
-    async add_sphere(a) {
-      return primitive('sphere', a, { diameter: positive(a.diameter, 'The diameter') });
-    },
-    async add_part(a) {
+    async add_part() {
       free();
       await settled();
-      const made = makePart(doc(), { ...(a.name ? { name: String(a.name) } : {}), ...placementFrom(a) });
+      const made = makePart(doc());
       await commit(addPart(made.doc, made.part), 'New part', null, made.part.id);
       return partOutcome(made.part.id);
     },
-    async add_group(a) {
+    async add_group() {
       free();
       await settled();
-      const members = a.parts === undefined ? [] : Array.isArray(a.parts) ? [...new Set(a.parts.map((ref) => partOf(ref).id))] : null;
-      if (!members) throw Error('"parts" lists the parts to put into the group, by id or name.');
-      const d = doc(),
-        inside = members.filter((id) => ancestorsOf(d, id).some((x) => members.includes(x)));
-      if (inside.length) throw Error(`${partById(d, inside[0]).name} already stands under another of these parts: name only the part it stands under.`);
-      const data = {
-        ...(a.name ? { name: String(a.name) } : {}),
-        pos: vec3(a.position, 'position', [0, 0, 0]),
-        rot: vec3(a.rotation, 'rotation', [0, 0, 0]),
-        // where it stands in the tree: as told; else where the first of its parts stands; else in the group that is selected
-        ...(a.parent !== undefined ? { parent: parentFrom(a.parent) } : members.length ? {} : { parent: app.container?.() ?? null }),
-      };
-      if (data.parent && members.some((id) => id === data.parent || descendantsOf(d, id).includes(data.parent)))
-        throw Error('A group cannot stand under one of the parts it is to hold.');
-      const made = groupParts(d, members, data);
-      return partChange(made.doc, 'New group', made.id);
-    },
-    async ungroup(a) {
-      free();
-      await settled();
-      const g = partOf(a.part);
-      if (!g.group) throw Error(`${g.name} (${g.id}) is not a group.`);
-      const d = doc(),
-        freed = childrenOf(d, g.id).map((x) => x.id);
-      await commit(ungroup(d, g.id), 'Ungroup ' + g.name, null, g.parent ?? null);
-      return { ungrouped: g.id, freed, parts: partRows(), problems: problems(), bodies: bodyRows() };
+      const made = makePart(doc(), { base: 'Group', group: true });
+      await commit(addPart(made.doc, made.part), 'New group', null, made.part.id);
+      return partOutcome(made.part.id);
     },
     async combine(a) {
       free();
@@ -1268,7 +1098,7 @@ export function createCommands(app) {
       if (target.group) throw Error(`${target.name} is a group and has no shape of its own: name the part that is to be changed. (A group can be given in "with": everything in it is then joined or cut.)`);
       if (target.link) throw Error(`${target.name} is a linked copy: combine changes a part with a history. Use the original (${target.link}), or unlink_part first.`);
       if (!['join', 'cut', 'intersect'].includes(a.operation)) throw Error('"operation" is "join", "cut" or "intersect".');
-      const made = makeFeature(doc(), 'combine', { part: target.id, operation: a.operation, tools: toolsFrom(a.with, target), keep: !!a.keep, ...(a.name ? { name: String(a.name) } : {}) });
+      const made = makeFeature(doc(), 'combine', { part: target.id, operation: a.operation, tools: toolsFrom(a.with, target), keep: !!a.keep });
       const out = await apply(adopt(addFeature(made.doc, made.feature), made.feature), made.feature, 'Apply ' + made.feature.name);
       return { ...out, parts: partRows() };
     },
@@ -1276,34 +1106,11 @@ export function createCommands(app) {
       free();
       await settled();
       const p = partOf(a.part);
+      if (a.parent === undefined && a.position === undefined && a.rotation === undefined) throw Error('Say where: give position, rotation or parent.');
       let next = doc();
-      if (a.parent !== undefined) next = setParent(next, p.id, parentFrom(a.parent));
-      const cur = partById(next, p.id),
-        rot = vec3(a.rotation, 'rotation', null);
-      let pos = vec3(a.position, 'position', null);
-      if (a.by !== undefined) {
-        if (pos) throw Error('Give "position" or "by", not both.');
-        const by = vec3(a.by, 'by');
-        pos = cur.pos.map((v, i) => v + by[i]);
-      }
-      let placed = { pos: pos ?? cur.pos, rot: rot ?? cur.rot };
-      if (a.turn !== undefined) {
-        if (rot) throw Error('Give "rotation" or "turn", not both.');
-        const axis = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }[String(a.turn?.axis).toLowerCase()];
-        if (!axis || !Number.isFinite(a.turn.angle)) throw Error('"turn" is { "axis": "x", "y" or "z", "angle": degrees, "about": "center", "origin" or [x, y, z] }.');
-        const local = Mat.fromPlacement(placed.pos, placed.rot),
-          about = a.turn.about ?? 'center';
-        let pivot = placed.pos;
-        if (Array.isArray(about)) pivot = vec3(about, 'about');
-        else if (about === 'center') {
-          // the middle of what the part shows, in its parent's frame
-          const box = boxOf(next, p.id, bodies(), local);
-          if (box) pivot = [0, 1, 2].map((i) => (box[0][i] + box[1][i]) / 2);
-        } else if (about !== 'origin') throw Error('"about" is "center", "origin" or a point [x, y, z].');
-        placed = Mat.toPlacement(Mat.mul(Mat.turn(axis, a.turn.angle, pivot), local));
-      }
-      next = updatePart(next, p.id, placed);
-      if (a.parent === undefined && pos === null && rot === null && a.turn === undefined) throw Error('Say where: give position, rotation, by, turn or parent.');
+      if (a.parent !== undefined) next = setParent(next, p.id, parentFrom(a.parent)); // it stays where it is in space
+      const cur = partById(next, p.id);
+      next = updatePart(next, p.id, { pos: vec3(a.position, 'position', cur.pos), rot: vec3(a.rotation, 'rotation', cur.rot) });
       return partChange(next, 'Move ' + p.name, p.id);
     },
     async copy_part(a) {
@@ -1311,18 +1118,7 @@ export function createCommands(app) {
       await settled();
       const p = partOf(a.part),
         c = copyPart(doc(), p.id, { linked: !!a.linked });
-      let next = c.doc;
-      if (a.parent !== undefined) next = setParent(next, c.id, parentFrom(a.parent));
-      const cur = partById(next, c.id),
-        rot = vec3(a.rotation, 'rotation', null);
-      let pos = vec3(a.position, 'position', null);
-      if (a.by !== undefined) {
-        if (pos) throw Error('Give "position" or "by", not both.');
-        const by = vec3(a.by, 'by');
-        pos = cur.pos.map((v, i) => v + by[i]);
-      }
-      next = updatePart(next, c.id, { ...(a.name ? { name: String(a.name) } : {}), pos: pos ?? cur.pos, rot: rot ?? cur.rot });
-      return partChange(next, (a.linked ? 'Linked copy of ' : 'Copy of ') + p.name, c.id, { copy_of: p.id });
+      return partChange(c.doc, (a.linked ? 'Linked copy of ' : 'Copy of ') + p.name, c.id, { copy_of: p.id });
     },
     async set_color(a) {
       free();
@@ -1424,13 +1220,10 @@ export function createCommands(app) {
     async export(a) {
       await settled();
       const format = a.format ?? 'step';
-      if (!['3mf', 'step', 'stl', 'corecad'].includes(format)) throw Error('"format" is "3mf", "step", "stl" or "corecad".');
-      if (format !== 'corecad' && !bodies().length) throw Error('There is no body to export yet.');
-      const only = a.part !== undefined && format !== 'corecad' ? partOf(a.part) : null,
-        blob =
-          format === 'corecad'
-            ? new Blob([serialize(doc())], { type: 'application/json' })
-            : await store.kernel.export(doc(), { format, split: !!a.per_part, ...(only ? { parts: [only.id] } : {}) }),
+      if (!['3mf', 'step', 'stl'].includes(format)) throw Error('"format" is "3mf", "step" or "stl". (The project itself is get_document.)');
+      if (!bodies().length) throw Error('There is no body to export yet.');
+      const only = a.part !== undefined ? partOf(a.part) : null,
+        blob = await store.kernel.export(doc(), { format, split: !!a.per_part, ...(only ? { parts: [only.id] } : {}) }),
         // several parts as STL, one file each, come as a zip
         zipped = format === 'stl' && !!a.per_part && new Uint8Array(await blob.slice(0, 2).arrayBuffer()).join() === '80,75',
         name = app.filename(only ? { meta: { name: `${doc().meta.name} - ${only.name}` } } : doc()) + (zipped ? ' STL.zip' : '.' + format);
@@ -1445,11 +1238,6 @@ export function createCommands(app) {
     },
     async screenshot(a) {
       await settled();
-      if (a.view !== undefined) {
-        if (!STANDARD[a.view]) throw Error(`Unknown view "${a.view}". Views: ${VIEWS.join(', ')}.`);
-        view.standard(a.view);
-      }
-      if (a.fit !== false) view.fit();
       const numbers = a.dimensions === undefined ? null : app.showDimensions(a.dimensions),
         shot = view.snapshot();
       if (numbers !== null) app.showDimensions(numbers);
@@ -1466,10 +1254,11 @@ export function createCommands(app) {
       return { png: out.toDataURL('image/png'), width: out.width, height: out.height };
     },
     async set_view(a) {
-      if (!STANDARD[a.view]) throw Error(`Unknown view "${a.view}". Views: ${VIEWS.join(', ')}.`);
-      view.standard(a.view);
+      if (a.view !== undefined && !STANDARD[a.view]) throw Error(`Unknown view "${a.view}". Views: ${VIEWS.join(', ')}.`);
+      if (a.view === undefined && a.fit === false) throw Error('Give a view, or leave "fit" on: otherwise there is nothing to do.');
+      if (a.view !== undefined) view.standard(a.view);
       if (a.fit !== false) view.fit();
-      return { view: a.view };
+      return { ...(a.view !== undefined ? { view: a.view } : {}), fitted: a.fit !== false };
     },
   };
 

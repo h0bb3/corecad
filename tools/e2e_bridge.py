@@ -117,15 +117,18 @@ def run(p, relay_port=None):
     assert hello['serverInfo']['name'] == 'corecad' and 'get_state' in hello['instructions'], hello
     tools = mcp.request('tools/list')['tools']
     names = [t['name'] for t in tools]
-    assert names[0] == 'corecad_status' and {'get_state', 'add_sketch', 'extrude', 'fillet', 'screenshot', 'add_box', 'combine', 'move_part'} <= set(names) and len(names) == 1 + p.js('corecad.tools.length'), names
+    assert names[0] == 'corecad_status' and {'get_state', 'add_sketch', 'extrude', 'fillet', 'screenshot', 'add_part', 'combine', 'move_part'} <= set(names) and not {'add_box', 'hole'} & set(names) and len(names) == 1 + p.js('corecad.tools.length'), names
     assert all(t['inputSchema']['type'] == 'object' and len(t['description']) > 20 for t in tools)
     step('initialize and tools/list: %d tools' % len(names))
 
-    s = ok(mcp.call('add_sketch', plane='XY', shapes=[{'type': 'rectangle', 'corner': [0, 0], 'width': 60, 'height': 40}]))
+    assert ok(mcp.call('add_part'))['part']['kind'] == 'empty'
+    assert ok(mcp.call('add_sketch', plane='XY'))['sketch']['entities'] == []
+    s = ok(mcp.call('add_to_sketch', shapes=[{'type': 'rectangle', 'corner': [0, 0], 'width': 60, 'height': 40}]))
     assert s['sketch']['degrees_of_freedom'] == 0
     r = ok(mcp.call('extrude', distance=10))
     assert abs(r['bodies'][0]['volume'] - 24000) < 0.01, r
-    ok(mcp.call('add_sketch', plane='top', shapes=[{'type': 'circle', 'center': [20, 20], 'diameter': 8}]))
+    ok(mcp.call('add_sketch', plane='top'))
+    ok(mcp.call('add_to_sketch', shapes=[{'type': 'circle', 'center': [20, 20], 'diameter': 8}]))
     ok(mcp.call('extrude', operation='cut', through_all=True))
     r = ok(mcp.call('fillet', edges={'parallel': 'z'}, radius=4))
     assert abs(r['bodies'][0]['volume'] - 23360) < 0.01, r
@@ -137,6 +140,8 @@ def run(p, relay_port=None):
     assert abs(ok(mcp.call('get_state'))['bodies'][0]['volume'] - 23360) < 0.01
     wrong = mcp.call('extrude', distanse=3)
     assert wrong['isError'] and 'no argument "distanse"' in wrong['content'][0]['text'], wrong
+    gone = mcp.call('add_box', size=[1, 2, 3])
+    assert gone['isError'] and 'has no tool "add_box"' in gone['content'][0]['text'], 'a client that still holds an older list of tools is told that the tool is not there: %s' % gone
     shot = mcp.call('screenshot', max=600)
     assert shot['content'][0]['type'] == 'image' and shot['content'][0]['mimeType'] == 'image/png'
     png = base64.b64decode(shot['content'][0]['data'])
@@ -154,18 +159,20 @@ def run(p, relay_port=None):
     sel = ok(mcp.call('get_selection'))
     face = sel['selected'][0]
     assert face['side'] == 'top' and abs(face['at'][0] - 45) < .5 and abs(face['at'][1] - 20) < .5 and face['made_by'][0]['type'] == 'extrude', face
-    r = ok(mcp.call('hole', face='this', diameter=3, depth=4))
+    ok(mcp.call('add_sketch', plane='this'))
+    ok(mcp.call('add_to_sketch', shapes=[{'type': 'circle', 'center': face['at'], 'diameter': 3}]))
+    r = ok(mcp.call('extrude', operation='cut', distance=4))
     assert abs(r['bodies'][0]['volume'] - (23360 - math.pi * 2.25 * 4)) < 0.01, r
     time.sleep(.45)
     assert p.js('corecad.pointed && corecad.pointed.type') in ('face', 'edge'), 'the mouse rests on the new hole: that is what it points at now'
     p.screenshot(ROOT / '.scratch' / 'e2e_bridge_pointing.png')
-    wider = ok(mcp.call('edit_feature', id='pointed', diameter=5))
-    assert wider['type'] == 'hole' and abs(wider['bodies'][0]['volume'] - (23360 - math.pi * 6.25 * 4)) < 0.01, wider
+    deeper = ok(mcp.call('edit_feature', id='pointed', distance=6))
+    assert deeper['type'] == 'extrude' and abs(deeper['bodies'][0]['volume'] - (23360 - math.pi * 2.25 * 6)) < 0.01, deeper
     ok(mcp.call('undo'))
     assert abs(ok(mcp.call('undo'))['bodies'][0]['volume'] - 23360) < 0.01, 'both are undo steps'
     p.click('#connect-button')
     p.wait('!!document.getElementById("bridge-address")')
-    step('"a hole on this face" over MCP, where it was clicked; then "this hole" wider, by pointing at it')
+    step('"a hole here" over MCP: a circle on the face that was clicked, where it was clicked, cut; then "this hole" deeper, by pointing at it')
 
     # ---- the agent reloads the tab itself
     volume_before = ok(mcp.call('get_state'))['bodies'][0]['volume']

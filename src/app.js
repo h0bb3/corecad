@@ -3065,8 +3065,6 @@ const api = createCommands({
   newest: () => updateReady,
   checkUpdate: () => checkUpdate(),
   reload: () => setTimeout(reloadApp, 400), // after the answer to the command has gone out
-  /** The group a new part would go into, as the page has it: the selected group, or the one the selected part is in. */
-  container: () => container(),
   cancelEdit: () => {
     if (editor) finishSketch(true);
     if (draft) endFeature(false);

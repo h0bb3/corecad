@@ -114,15 +114,19 @@ out, from the browser console or by an agent that can run JavaScript in the
 tab:
 
 ```js
-await corecad.run('add_sketch', { plane: 'XY', shapes: [{ type: 'rectangle', corner: [0, 0], width: 60, height: 40 }] });
+await corecad.run('add_part');
+await corecad.run('add_sketch', { plane: 'XY' });
+await corecad.run('add_to_sketch', { shapes: [{ type: 'rectangle', corner: [0, 0], width: 60, height: 40 }] });
 await corecad.run('extrude', { distance: 10 });
 await corecad.run('fillet', { edges: { parallel: 'z' }, radius: 4 });
 ```
 
 A command is one undo step, is shown in the history and the view, and
-changes nothing if the kernel cannot build what was asked. `corecad.tools`
-lists the commands with their arguments; [docs/COMMANDS.md](docs/COMMANDS.md)
-explains them.
+changes nothing if the kernel cannot build what was asked. The commands are
+a toolbox of primitives with one way to do each thing: a box is a part, a
+sketch, a rectangle and an extrusion, and there is no command that does the
+four at once. `corecad.tools` lists the commands with their arguments;
+[docs/COMMANDS.md](docs/COMMANDS.md) explains them.
 
 **With Claude, over MCP.** The **Connect** dialog pairs the tab with a small
 relay: the tab names a code, you give Claude the address that ends in that

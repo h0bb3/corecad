@@ -13,15 +13,16 @@ const DEFAULT_URL = 'wss://vibedit.app/CoreCAD/ws';
 export const INSTRUCTIONS =
   'CoreCAD is a parametric CAD program open in the user\'s browser tab; these tools work in that tab, on the model the user sees. ' +
   'Units are millimetres, Z is up. Start with get_state. A project is made of parts; each part has its own history of features and its own place. ' +
-  'Start a part with add_box, add_cylinder or add_sphere, or with add_sketch (shapes on a plane or on a face) and extrude or revolve; then hole, fillet, chamfer. ' +
-  'move_part places a part, copy_part repeats it (linked: the copy follows the original), combine joins another part to it or cuts one out of it. ' +
-  'add_group keeps parts together under a name (a container with a place and no shape: moving, turning, hiding, colouring or exporting it does that to what is in it). ' +
+  'There is one way to do each thing, and a solid is made in these steps: add_part (an empty part), add_sketch (an empty sketch on a plane of it, or on a flat face), add_to_sketch (shapes), then extrude or revolve; fillet and chamfer work on its edges. ' +
+  'A box is a rectangle extruded, a cylinder a circle extruded, a hole a circle on the face extruded as a cut, a ball a half disc revolved about its straight side. ' +
+  'A new part stands at the origin: edit_part names it, move_part places it, copy_part repeats it (linked: the copy follows the original), combine joins another part to it or cuts one out of it. ' +
+  'add_group makes a container (a place and no shape: moving, turning, hiding, colouring or exporting it does that to what is in it); move_part puts parts into it. ' +
   'Everything stays editable: set_dimension changes a sketch, edit_feature a feature, and what is built on it follows. ' +
-  'Every change answers with the bodies\' volumes and any problems: read them, and use screenshot to look at the result. ' +
+  'Every change answers with the bodies\' volumes and any problems: read them, and use screenshot to look at the result (set_view turns the camera). ' +
   'A command that cannot be built changes nothing and says why. Changes are undo steps in the user\'s page (undo). ' +
   'When the user says "this", "here" or "that": they have clicked something in the page or hold their mouse on it. get_selection tells what; ' +
-  'and the word "this" can be given wherever a command takes a face, edges, a part or a feature id (a hole on "this" face goes where they clicked). ' +
-  'measure tells how big something is and how far apart two things are; list_dimensions lists the numbers that drive the model, each with the command that changes it. ' +
+  'and the word "this" can be given wherever a command takes a face, edges, a part or a feature id. ' +
+  'measure tells how big something is and how far apart two things are. ' +
   'set_color colours a part or single faces. For printing, export as "3mf": every part is then an object of its own in the slicer, with its name and colours. ' +
   'CoreCAD is updated often: get_state says under "app" when a newer one is published, and reload_app loads it.';
 
