@@ -83,6 +83,38 @@ its own place, and may stand under another part and move with it.
   stands. A hole's `position` is a point in space; its `at` and a sketch's
   shapes are in the face's own coordinates, which turn with the part.
 
+## "This": what the person has clicked or points at
+
+Someone talking to an agent says "a hole on this face" or "make that
+bigger". The page keeps track of what they mean, and the commands can use it.
+
+- **Selected**: the faces and edges they have clicked (Shift-click adds), the
+  part they clicked in the list or in the view, the feature they clicked in
+  the history.
+- **Pointed**: the face or edge their mouse last came to rest on (about a
+  third of a second without moving). It stays that after the mouse has left
+  for another window, until they rest on something else, click empty space
+  or press Esc. While an MCP client is connected it is marked with a ring.
+  What the mouse only passed over on its way out is not it.
+- `get_selection` tells both: for each face or edge its part, where it is in
+  space, the `point` that was clicked and, on a flat face, the same point as
+  `at` in the face's own coordinates (what a sketch on it or a hole uses),
+  and `made_by`: the features whose work it is.
+- **The words** `"this"`, `"selected"` and `"pointed"` can be given wherever
+  a command takes a face, edges, a part, a feature id or a sketch. `"this"`
+  is what is selected, or else what is pointed at.
+  - `hole { face: "this", diameter: 5 }` drills where they clicked or point.
+    `at: "center"` puts it in the middle of the face instead.
+  - `add_sketch { plane: "this" }`, `fillet { edges: "this", radius: 2 }`,
+    `move_part { part: "this", by: [0, 0, 10] }`.
+  - `edit_feature { id: "this", diameter: 8 }` changes the feature that made
+    the face or edge: point at the wall or the rim of a hole and it is that
+    hole (or, for a hole cut with a part, that part's cylinder).
+- A change uses the selection up. If the mouse has not moved, what it rests
+  on after the rebuild is pointed at again, so "and another one here" works.
+- When there is nothing to go by, the command says so in a sentence to pass
+  on ("ask the person to click or point at a face"), and changes nothing.
+
 ## The commands
 
 Arguments in brackets are optional.
@@ -90,6 +122,7 @@ Arguments in brackets are optional.
 | Command | Arguments | What it does |
 |---|---|---|
 | `get_state` | - | The model at a glance: parts with their place, parent and history; features with status and main numbers; bodies with volume and bounding box in space; the current part. Start here. |
+| `get_selection` | - | What the person has clicked and what their mouse rests on: faces, edges, part and feature, with where they are and what made them. |
 | `get_document` | - | The whole project as JSON, as Save writes it. |
 | `load_document` | document | Replaces the open project. |
 | `new_document` | [name] | Starts an empty project. |

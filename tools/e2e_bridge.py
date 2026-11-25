@@ -146,6 +146,27 @@ def run(p, relay_port=None):
     step('refusals come back as errors, a screenshot as a picture')
     assert 'Last command: screenshot' in p.js('document.getElementById("bridge-status").textContent'), 'the dialog shows what was asked'
 
+    # ---- "this": the client is told what the person clicked, and can use it
+    import math
+    import time
+    p.click('[data-modal="close"]')
+    p.click(*p.js('corecad.screen([45, 20, 10])'))
+    sel = ok(mcp.call('get_selection'))
+    face = sel['selected'][0]
+    assert face['side'] == 'top' and abs(face['at'][0] - 45) < .5 and abs(face['at'][1] - 20) < .5 and face['made_by'][0]['type'] == 'extrude', face
+    r = ok(mcp.call('hole', face='this', diameter=3, depth=4))
+    assert abs(r['bodies'][0]['volume'] - (23360 - math.pi * 2.25 * 4)) < 0.01, r
+    time.sleep(.45)
+    assert p.js('corecad.pointed && corecad.pointed.type') in ('face', 'edge'), 'the mouse rests on the new hole: that is what it points at now'
+    p.screenshot(ROOT / '.scratch' / 'e2e_bridge_pointing.png')
+    wider = ok(mcp.call('edit_feature', id='pointed', diameter=5))
+    assert wider['type'] == 'hole' and abs(wider['bodies'][0]['volume'] - (23360 - math.pi * 6.25 * 4)) < 0.01, wider
+    ok(mcp.call('undo'))
+    assert abs(ok(mcp.call('undo'))['bodies'][0]['volume'] - 23360) < 0.01, 'both are undo steps'
+    p.click('#connect-button')
+    p.wait('!!document.getElementById("bridge-address")')
+    step('"a hole on this face" over MCP, where it was clicked; then "this hole" wider, by pointing at it')
+
     # ---- the person is in charge: disconnect, a new address
     p.click('[data-modal="toggle"]')
     p.wait('corecad.bridge.status === "off"')

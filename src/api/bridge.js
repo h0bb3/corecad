@@ -17,7 +17,9 @@ export const INSTRUCTIONS =
   'move_part places a part, copy_part repeats it (linked: the copy follows the original), combine joins another part to it or cuts one out of it. ' +
   'Everything stays editable: set_dimension changes a sketch, edit_feature a feature, and what is built on it follows. ' +
   'Every change answers with the bodies\' volumes and any problems: read them, and use screenshot to look at the result. ' +
-  'A command that cannot be built changes nothing and says why. Changes are undo steps in the user\'s page (undo).';
+  'A command that cannot be built changes nothing and says why. Changes are undo steps in the user\'s page (undo). ' +
+  'When the user says "this", "here" or "that": they have clicked something in the page or hold their mouse on it. get_selection tells what; ' +
+  'and the word "this" can be given wherever a command takes a face, edges, a part or a feature id (a hole on "this" face goes where they clicked).';
 
 /** Where the relay is. ?bridge=ws://localhost:… overrides it, for development only: never another host. */
 export function relayUrl(search = location.search) {

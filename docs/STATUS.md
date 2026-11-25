@@ -162,3 +162,27 @@ Limits of this version:
   are still hidden; a tool that is used by two combines is hidden by both.
 - Primitives always start a part; to add one to an existing part, combine it.
 - Not tried by a person yet: everything above was driven by scripts.
+
+## Pointing: "this" for an agent (2026-11-25)
+
+So that someone can say "a hole on this face" to Claude: the page tracks what
+is selected (clicked faces and edges, the part, the feature) and what the
+mouse last rested on, and the commands take the words `"this"`, `"selected"`
+and `"pointed"` for a face, edges, a part, a feature or a sketch
+(`docs/COMMANDS.md`). A hole on a face that was chosen this way goes where it
+was clicked. `get_selection` (command 36) reports it all, with the features
+that made each face. While an MCP client is connected, a ring marks where the
+mouse last rested.
+
+Verification: `python tools/e2e_api.py` clicks and rests the real mouse on
+faces, edges and a linked copy and checks what the commands then do (a hole at
+the clicked point, a hole after pointing, the same again after a rebuild
+without moving the mouse, the clicked hole made wider through
+`edit_feature id: "this"`, two clicked edges filleted, a clicked part moved,
+refusals when nothing is chosen). `python tools/e2e_bridge.py` does the first
+of these over MCP through the relay.
+
+Limits: only faces and edges of solids are pointed at, not sketch geometry or
+empty space. Resting takes a third of a second; a mouse that is moved away
+quickly keeps the earlier thing. Nothing tells the agent when the selection
+changes: it asks. Not tried with Claude itself.

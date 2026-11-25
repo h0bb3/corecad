@@ -7,6 +7,7 @@ import base64
 import json
 import math
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -266,6 +267,103 @@ def run(p, url='index.html?test=1'):
     assert own['part']['kind'] == 'part' and own['part']['name'] == 'Twin' and len(own['part']['features']) == 5 and own['part']['box'] == [[-20, -30, 40], [20, 30, 60]], own['part']
     assert p.js('document.querySelectorAll("[data-part]").length') == len(call('get_state')['parts']), 'the page lists every part'
     step('groups, hiding, export in place, delete with dependents, undo, unlink')
+
+    # ---- "this": what the person has clicked, and what their mouse rests on
+    def page(point):
+        return p.js('corecad.screen(' + json.dumps(point) + ')')
+
+    def close(a, b, tol=0.35):
+        return len(a) == len(b) and all(abs(x - y) <= tol for x, y in zip(a, b))
+
+    def rest(point):
+        """Moves the mouse onto a point of the model and leaves it there: that is pointing."""
+        p.move(*page(point), steps=4)
+        time.sleep(.45)
+
+    call('new_document', name='Pointing')
+    call('add_box', size=[60, 40, 12], name='Plate')
+    call('add_cylinder', diameter=10, height=30, position=[15, 0, -5], name='Pin')
+    call('combine', part='Plate', operation='cut', **{'with': ['Pin']})
+    call('add_box', size=[20, 20, 20], position=[60, 0, 0], name='Block')
+    twin = call('copy_part', part='Block', linked=True, by=[0, 40, 0], name='Twin')['part']['id']
+    call('set_view', view='top')
+    none = call('get_selection')
+    assert none['selected'] == [] and none['pointed'] is None and none['part']['id'] == twin, none
+    assert 'click or point' in fails('hole', 'No face is selected', face='this', diameter=3)
+    fails('fillet', 'No edge is selected', edges='selected', radius=1)
+    fails('edit_feature', 'No feature is selected', id='this', name='x')
+    fails('move_part', 'has not come to rest', part='pointed', by=[1, 0, 0])
+
+    p.click(*page([-20, 10, 12]))
+    sel = call('get_selection')
+    face = sel['selected'][0]
+    assert len(sel['selected']) == 1 and face['kind'] == 'face' and face['part'] == 'o1' and face['part_name'] == 'Plate' and face['body'] == 'f1', face
+    assert face['surface'] == 'plane' and face['side'] == 'top' and face['normal'] == [0, 0, 1] and close(face['point'], [-20, 10, 12]) and close(face['at'], [-20, 10]), face
+    assert [(m['id'], m['type'], m['as']) for m in face['made_by']] == [('f1', 'box', 'top')] and sel['part'] == {'id': 'o1', 'name': 'Plate'}, sel
+    assert call('get_state')['selection']['selected'] == sel['selected']
+    here = call('hole', face='this', diameter=4, depth=5)
+    made = call('get_state')['features'][-1]
+    assert made['type'] == 'hole' and close(made['at'], [-20, 10]), made
+    solid = 28800 - math.pi * 25 * 12 - math.pi * 4 * 5
+    near(vol(here, 'o1'), solid, what='a hole where the person clicked')
+    assert call('get_selection')['selected'] == [], 'what was selected is used up by the change'
+    step('"a hole on this face": the face that was clicked, at the point that was clicked')
+
+    # the mouse resting on something is pointing at it; the next "this" is that
+    rest([20, -12, 12])
+    at = call('get_selection')['pointed']
+    assert at and at['kind'] == 'face' and at['side'] == 'top' and close(at['at'], [20, -12]) and at['mouse_in_view'] and at['seconds_ago'] < 5, at
+    mid = call('hole', face='pointed', at='center', diameter=3, depth=2)
+    # the middle of a face is the middle of its area: the two holes already in it pull it a little
+    area = 2400 - 25 * math.pi - 4 * math.pi
+    centre = [(-15 * 25 * math.pi + 20 * 4 * math.pi) / area, -10 * 4 * math.pi / area]
+    assert close(call('get_state')['features'][-1]['at'], centre, 1e-3), (call('get_state')['features'][-1], centre)
+    again = call('hole', face='this', diameter=3, depth=2)       # the mouse has not moved: it still points there, on the rebuilt body
+    assert close(call('get_state')['features'][-1]['at'], [20, -12]), call('get_state')['features'][-1]
+    solid -= 2 * math.pi * 2.25 * 2
+    near(vol(again, 'o1'), solid, what='holes by pointing')
+    step('holding the mouse on a face is pointing at it, and it still is after the model is rebuilt')
+
+    # "make this hole bigger": the feature that made the face
+    p.click(*page([-20, 10, 7]))
+    floor = call('get_selection')['selected'][0]
+    assert [(m['id'], m['type']) for m in floor['made_by']] == [(made['id'], 'hole')] and abs(floor['center'][2] - 7) < 1e-6, floor
+    fails('get_sketch', 'not made from a sketch', sketch='this')
+    bigger = call('edit_feature', id='this', diameter=6)
+    assert bigger['id'] == made['id'] and bigger['type'] == 'hole'
+    solid += math.pi * 4 * 5 - math.pi * 9 * 5
+    near(vol(bigger, 'o1'), solid, what='the hole that was clicked, made wider')
+    step('"this" as a feature: the one that made the face that was clicked')
+
+    # edges that were clicked, and a part that was clicked
+    call('set_view', view='home')
+    picked = 0
+    for edge in [[60, -10, 20], [70, 0, 20]]:
+        xy = page(edge)
+        hit = p.js('corecad.pick(' + json.dumps(xy) + ', "edge")')
+        assert hit and hit['type'] == 'edge', (edge, hit)
+        p.click(*xy, modifiers=8 if picked else 0)
+        picked += 1
+    edges = call('get_selection')['selected']
+    assert [(e['kind'], e['curve'], e['length'], e['part']) for e in edges] == [('edge', 'line', 20, 'o3')] * 2, edges
+    rounded = call('fillet', edges='this', radius=3)
+    # two R3 fillets 20 long that meet at a corner: what both would remove there is removed once
+    near(vol(rounded, 'o3'), 8000 - 2 * (1 - math.pi / 4) * 9 * 20 + 27 * (5 / 3 - math.pi / 2), what='the two edges that were clicked, rounded')
+    call('set_view', view='top')
+    p.click(*page([60, 45, 20]))
+    chosen = call('get_selection')
+    assert chosen['part'] == {'id': twin, 'name': 'Twin'} and chosen['selected'][0]['linked_copy'] and chosen['selected'][0]['part'] == twin, chosen
+    assert close(chosen['selected'][0]['point'], [60, 45, 20]), chosen['selected'][0]
+    fails('hole', 'linked copy', face='this', diameter=2)
+    fails('add_sketch', 'linked copy', plane='this')
+    moved = call('move_part', part='this', by=[0, 10, 0])
+    assert moved['part']['id'] == twin and moved['part']['position'] == [60, 50, 0], moved['part']
+    time.sleep(.45)
+    assert call('get_selection')['pointed']['part'] == twin, 'the mouse still rests on the copy, where it now stands'
+    assert call('move_part', part='pointed', by=[0, -10, 0])['part']['position'] == [60, 40, 0]
+    p.key('Escape')
+    assert call('get_selection')['pointed'] is None and p.js('corecad.pointed') is None
+    step('edges and parts that were clicked or pointed at; a linked copy says what it is; Escape lets go')
 
     errors = p.errors()
     assert not errors, errors

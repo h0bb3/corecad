@@ -91,8 +91,10 @@ explains them.
 **With Claude, over MCP.** The **Connect** dialog pairs the tab with a small
 relay: the tab names a code, you give Claude the address that ends in that
 code as a custom connector, and Claude can then build and change the model in
-your open tab while you watch. How it works and what the code protects:
-[bridge/README.md](bridge/README.md).
+your open tab while you watch. You can say "this" and "here": Claude is told
+what you have clicked and what your mouse last rested on (a ring marks it),
+so "a hole on this face" or "make this hole bigger" works by pointing. How it
+works and what the code protects: [bridge/README.md](bridge/README.md).
 
 ## How it is made
 

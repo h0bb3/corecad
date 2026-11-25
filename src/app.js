@@ -63,7 +63,11 @@ let editor = null,
   modal = null,
   modelPress = null,
   selectedPart = null, // the part new sketches go into, and whose actions the browser shows
-  mover = null; // { id, base, doc, drag, hot }: a part being placed
+  mover = null, // { id, base, doc, drag, hot }: a part being placed
+  pointed = null, // the face or edge the mouse last rested on (a pick, with `when`): what "this" means to a command
+  mouse = null, // where the mouse is over the view, or null when it is elsewhere
+  restTimer = 0;
+const REST_MS = 300; // how long the mouse must stay on something for it to be what the person points at
 const collapsed = new Set(); // the parts whose history is folded away in the browser
 const PRIMITIVES = ['box', 'cylinder', 'sphere'];
 const pickFilter = () =>
@@ -109,7 +113,26 @@ const view = createViewport(id('viewport'), {
   move: (p, e) => {
     if (editor) editor.move(p, e);
     else if (mover) moveDrag(p, e);
-    else view.hover(view.pick(...p, pickFilter(), e.altKey));
+    else {
+      const hit = view.pick(...p, pickFilter(), e.altKey);
+      view.hover(hit);
+      // What the mouse comes to rest on is what the person points at; what it only passes over
+      // on its way out of the view is not.
+      mouse = p;
+      clearTimeout(restTimer);
+      if (!draft)
+        restTimer = setTimeout(() => {
+          // Picked again now, not as it was when the mouse stopped: the model may have been rebuilt since.
+          const now = mouse && !draft && !mover && !editor ? view.pick(...mouse, pickFilter()) : null;
+          if (now) point(now);
+        }, REST_MS);
+    }
+  },
+  leave: () => {
+    mouse = null;
+    clearTimeout(restTimer);
+    // With an MCP client connected the thing pointed at stays marked; otherwise nothing is left lit.
+    if (!editor && !mover && !draft) view.hover(bridgeOn() ? stillThere(pointed) : null);
   },
   up: (p, e) => {
     if (editor) editor.up();
@@ -130,8 +153,77 @@ view.overlay((ctx) => {
   else {
     drawProfiles(ctx);
     if (mover) drawArrows(ctx, moveArrows(), mover.drag?.axis ?? mover.hot ?? -1);
+    else if (!draft && bridgeOn()) drawPointed(ctx);
   }
 });
+// ------------------------------------------------------------------ what the person points at
+const bridgeOn = () => {
+  try {
+    return bridge.state.status === 'on';
+  } catch {
+    return false; // asked before the bridge exists
+  }
+};
+/** A pick, if the face or edge it names is still that one (the body has not been rebuilt or removed). */
+function stillThere(hit) {
+  if (!hit) return null;
+  const b = pickedBody(hit);
+  return b && b.key === hit.key ? hit : null;
+}
+function point(hit) {
+  pointed = { ...hit, when: Date.now() };
+  view.dirty();
+}
+/** A ring where the mouse last rested, while an MCP client can ask about it: "here". */
+function drawPointed(ctx) {
+  const hit = stillThere(pointed);
+  if (!hit) return;
+  const b = pickedBody(hit),
+    s = view.project(b.matrix ? Mat.point(b.matrix, hit.point) : hit.point);
+  ctx.beginPath();
+  ctx.arc(s[0], s[1], 7, 0, 2 * Math.PI);
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 4;
+  ctx.stroke();
+  ctx.strokeStyle = '#c9772d';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(s[0], s[1], 1.8, 0, 2 * Math.PI);
+  ctx.fillStyle = '#c9772d';
+  ctx.fill();
+}
+/** After a rebuild the numbers of faces and edges are new: what was pointed at is found again under the mouse, if it is still there. */
+function repoint() {
+  pointed = stillThere(pointed);
+  if (!mouse || editor || draft || mover) return;
+  const hit = view.pick(...mouse, pickFilter());
+  view.hover(hit);
+  if (hit) point(hit);
+}
+/** What the person has chosen, for the commands: picks that are still good, with the part each is on. */
+function chosen() {
+  const d = store.state.doc,
+    row = (hit) => {
+      const b = pickedBody(hit);
+      return {
+        kind: hit.type,
+        index: hit.face ?? hit.edge,
+        body: b.instance ? b.source : b.id,
+        part: b.part,
+        instance: !!b.instance,
+        matrix: b.matrix ?? Mat.IDENTITY,
+        point: hit.point,
+      };
+    },
+    at = stillThere(pointed);
+  return {
+    selected: editor || draft || mover ? [] : selection.filter(stillThere).map(row),
+    pointed: at && !editor && !draft && !mover ? { ...row(at), ms: Date.now() - at.when, over: !!mouse } : null,
+    part: partById(d, selectedPart) ? selectedPart : null,
+    feature: featureById(d, selectedFeature) ? selectedFeature : null,
+  };
+}
 /** The document that is on screen: with the feature, the sketch's new part or the placement being edited. */
 function viewDoc() {
   return mover
@@ -295,6 +387,7 @@ function modelClick(p, e) {
   }
   if (!hit) {
     selection = [];
+    pointed = null;
     view.select([]);
     return;
   }
@@ -641,6 +734,7 @@ store.subscribe((state) => {
     lastBuild = state.build;
     const b = state.build;
     refreshScene();
+    repoint();
     if (fitNext && !state.busy && b?.bodies.length) {
       view.fit();
       fitNext = false;
@@ -2288,7 +2382,9 @@ document.addEventListener('keydown', (e) => {
     } else {
       actions['close-panel']();
       selection = [];
+      pointed = null;
       view.select([]);
+      view.hover(null);
     }
     return;
   }
@@ -2362,6 +2458,8 @@ const api = createCommands({
   editing: () => !!(editor || draft || mover),
   /** The part the last command or click worked on (null when there is none), and the part a new sketch would go into. */
   currentPart: () => (partById(store.state.doc, selectedPart) ? selectedPart : homePart()),
+  /** What the person has clicked, and what their mouse last rested on. */
+  chosen,
   homePart: () => homePart(),
   cancelEdit: () => {
     if (editor) finishSketch(true);
@@ -2418,6 +2516,7 @@ function connectBody(b) {
       <li>Choose <b>${b.status === 'off' ? 'Connect' : 'Copy address'}</b> below and keep this tab open.</li>
       <li>In Claude: Settings, Connectors, <b>Add custom connector</b>. Paste the address; no sign-in is needed.</li>
       <li>Ask Claude to build or change something in CoreCAD. You see every change here, and Undo takes it back.</li>
+      <li>Say <b>this</b> or <b>here</b>: Claude can see what you have clicked, and what your mouse last rested on (it is marked with a ring).</li>
     </ol>
     <p class="bridge-note">While connected, whoever has this address can read and change the model in this tab, and nothing else in your browser. Commands pass through vibedit.app, and Claude sees the model. <b>New address</b> makes the old one useless.</p>`;
 }
@@ -2452,6 +2551,7 @@ function renderBridge(b) {
     button.lastChild.textContent = b.status === 'on' ? 'Connected' : 'Connect';
   }
   if (modal?.kind === 'connect') openConnect();
+  view.dirty(); // the ring on what is pointed at is drawn while connected
 }
 renderBridge(bridge.state);
 bridge.resume();
@@ -2484,6 +2584,10 @@ window.corecad = {
   },
   get selectedPart() {
     return selectedPart;
+  },
+  /** The face or edge the mouse last rested on, if it is still there: { type, body, face | edge, point, world, when }. */
+  get pointed() {
+    return structuredClone(stillThere(pointed));
   },
   /** The part being placed, as it would be kept; null when none is. */
   get moving() {

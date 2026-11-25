@@ -19,7 +19,7 @@ import { validateFeature } from '../doc/features.js';
 import { validateDocument, serialize, upgrade } from '../doc/schema.js';
 import { partById, featuresOf, worldOf, makePart, addPart, updatePart, removePart, partDependents, setParent, copyPart, unlinkPart, sceneOf, contentOf, descendantsOf, ancestorsOf } from '../doc/parts.js';
 import * as Mat from '../core/mat.js';
-import { faceRefFrom, edgeRefFrom } from '../doc/refs.js';
+import { faceRefFrom, edgeRefFrom, topoOfBody } from '../doc/refs.js';
 import { canonicalFrame, toLocal } from '../core/plane.js';
 import { STANDARD } from '../view/camera-math.js';
 
@@ -36,14 +36,14 @@ const VIEWS = Object.keys(STANDARD);
 const str = (description, more = {}) => ({ type: 'string', description, ...more });
 const numb = (description) => ({ type: 'number', description });
 const bool = (description) => ({ type: 'boolean', description });
-const SKETCH_ARG = str('The sketch\'s feature id, such as "f1". Left out: the newest sketch.');
+const SKETCH_ARG = str('The sketch\'s feature id, such as "f1"; or "this": the sketch the person has selected, or the one behind the extrusion they selected or point at. Left out: the newest sketch.');
 const BODY_ARG = str('The body\'s id (the id of the feature that made it). Left out: the body of the current part, or the only body.');
-const PART_ARG = str('The part: its id, such as "o2", or its name. Left out: the current part (get_state says which).');
+const PART_ARG = str('The part: its id, such as "o2", or its name; or "this": the part the person has selected, or else points at ("selected" and "pointed" say which of the two). Left out: the current part (get_state says which).');
 const FACE_ARG = {
-  description: `A flat face: a side name (${SIDE_NAMES.join(', ')}: the flat face furthest out that way, as the body stands in space), or { "face": index } with an index from list_faces, or { "side": name }; each may say whose with "part": id or name, or "body": id. Left out: the body of the current part.`,
+  description: `A flat face: "this" (the face the person has selected in the page, or else the one their mouse rests on; "selected" and "pointed" say which of the two); or a side name (${SIDE_NAMES.join(', ')}: the flat face furthest out that way, as the body stands in space); or { "face": index } with an index from list_faces, or { "side": name }, each of which may say whose with "part": id or name, or "body": id (left out: the body of the current part).`,
 };
 const EDGES_ARG = {
-  description: 'Which edges: "all"; or an array of indices from list_edges; or an object whose conditions must all hold: { "part": id or name, "body": id, "indices": [..], "kind": "line" | "circle", "parallel": "x" | "y" | "z", "on": a face (as for sketching), "length": mm }. Example: { "parallel": "z" } is every straight vertical edge.',
+  description: 'Which edges: "this" (the edges the person has selected in the page, or else the one their mouse rests on; also "selected", "pointed"); or "all"; or an array of indices from list_edges; or an object whose conditions must all hold: { "part": id or name, "body": id, "indices": [..], "kind": "line" | "circle", "parallel": "x" | "y" | "z", "on": a face (as for sketching), "length": mm }. Example: { "parallel": "z" } is every straight vertical edge.',
 };
 const VEC = (description) => ({ type: 'array', items: { type: 'number' }, description });
 const POSITION_ARG = VEC('Where the part\'s origin is: [x, y, z] in mm, in its parent\'s frame (in space when it has no parent). Default [0, 0, 0].');
@@ -71,6 +71,7 @@ const tool = (name, description, properties = {}, required = []) => ({
 
 export const TOOLS = [
   tool('get_state', 'The model at a glance: the parts (each with its place, its parent, and its own history of features), the features with their status and main numbers, the bodies with volume (mm³) and bounding box in space, which part is current, and whether the page is in the middle of an edit. Start here.'),
+  tool('get_selection', 'What the person has clicked in the page and what their mouse last rested on: faces and edges with where they are in space, the part each is on, the point that was clicked ("point" in space, "at" in the face\'s own coordinates) and which features made a face. Call it when they say "this", "here" or "that" about the model. The word "this" can then be given wherever a command takes a face, edges, a part or a feature id.'),
   tool('get_document', 'The whole project as JSON: exactly what Save writes to a .corecad file.'),
   tool('load_document', 'Replaces the open project with a document in the .corecad format (as get_document returns). The history of undo steps starts over.', { document: { type: 'object', description: 'The project.' } }, ['document']),
   tool('new_document', 'Starts an empty project. The open one is replaced (it stays in the browser only if it was saved).', { name: str('The project\'s name.') }),
@@ -132,7 +133,7 @@ export const TOOLS = [
     'Drills a round hole into a flat face, straight in.',
     {
       face: FACE_ARG,
-      at: { type: 'array', items: { type: 'number' }, description: 'Where, as [x, y] in the face\'s sketch coordinates (on a top face: the part\'s x and y). Left out: the middle of the face.' },
+      at: { description: 'Where: [x, y] in the face\'s sketch coordinates (on a top face: the part\'s x and y), or "center". Left out: where the person clicked or points when the face is theirs ("this"); otherwise the middle of the face.' },
       position: { type: 'array', items: { type: 'number' }, description: 'Instead of "at": a point [x, y, z] in space; the hole goes where it drops onto the face.' },
       diameter: numb('Millimetres.'),
       depth: numb('Millimetres. Left out: through everything.'),
@@ -146,7 +147,7 @@ export const TOOLS = [
     'edit_feature',
     'Changes a feature\'s parameters, name or suppression; the features after it are rebuilt. Extrude: distance, through_all, symmetric, distance2, operation, flip. Hole: diameter, depth, through_all, at. Fillet: radius. Chamfer: distance. Box: size, origin. Cylinder: diameter, height, origin. Sphere: diameter, origin. Combine: operation, with, keep. (A sketch is changed with set_dimension, add_to_sketch and remove_from_sketch; where a part stands with move_part.)',
     {
-      id: str('The feature\'s id, such as "f3".'),
+      id: str('The feature\'s id, such as "f3"; or "this": the feature the person has selected in the history, or the one that made the face or edge they have selected or point at (the wall or the rim of a hole, say).'),
       name: str('A new name.'),
       suppressed: bool('true: leave the feature out of the model without deleting it.'),
       distance: numb('mm'), through_all: bool('through everything'), symmetric: bool('half to each side'), distance2: numb('mm, the other way'),
@@ -212,7 +213,7 @@ export const TOOLS = [
   tool('edit_part', 'Renames a part, or hides or shows it (with everything under it). Hidden parts are not exported.', { part: PART_ARG, name: str('A new name.'), hidden: bool('true hides it, false shows it.') }),
   tool('unlink_part', 'Turns a linked copy into a part of its own, with its own history, in the same place.', { part: PART_ARG }),
   tool('delete_part', 'Deletes a part with its history and everything under it. If linked copies or combine features elsewhere use it, say with_dependents to delete those too, or the command lists them and changes nothing.', { part: PART_ARG, with_dependents: bool('Also delete the linked copies and combine features that use it.') }),
-  tool('delete_feature', 'Deletes a feature. If others are built on it they must go too: say so with with_dependents, or the command lists them and changes nothing.', { id: str('The feature\'s id.'), with_dependents: bool('Also delete what is built on it.') }, ['id']),
+  tool('delete_feature', 'Deletes a feature. If others are built on it they must go too: say so with with_dependents, or the command lists them and changes nothing.', { id: str('The feature\'s id; or "this", as for edit_feature.'), with_dependents: bool('Also delete what is built on it.') }, ['id']),
   tool('undo', 'Takes back the last change.'),
   tool('redo', 'Does again what undo took back.'),
   tool('cancel_edit', 'Closes a sketch or a feature dialog that is open in the page without keeping its changes. The commands that change the model need this to be closed.'),
@@ -240,6 +241,10 @@ export const TOOLS = [
  * @param {(featureId: string | null, partId?: string | null) => void} app.shown   a command made or changed this: select it, fit the view
  * @param {() => string | null} app.currentPart   the part being worked on
  * @param {() => string | null} app.homePart      the part a new sketch goes into (never a linked copy)
+ * @param {() => { selected: object[], pointed: object | null, part: string | null, feature: string | null }} app.chosen
+ *   what the person has clicked and what their mouse last rested on. A pick is { kind: 'face' | 'edge', index,
+ *   body, part, instance, matrix, point }: `body` a built body's id, `point` in its part's frame, `matrix` where
+ *   it is shown (for a linked copy, where the copy shows it); `pointed` also has `ms` (how long ago) and `over`.
  * @param {(blob: Blob, name: string) => void} app.download
  * @param {(doc: object) => string} app.filename
  */
@@ -263,6 +268,19 @@ export function createCommands(app) {
       if (!p) throw Error('There is no part yet: make one with add_sketch, add_box, add_cylinder, add_sphere or add_part.');
       return p;
     }
+    const word = theirWord(ref);
+    if (word) {
+      // The part the person clicked (in the list or in the view), or the one their mouse rests on.
+      const c = app.chosen(),
+        p = partById(d, word === 'selected' ? c.part : word === 'pointed' ? c.pointed?.part : c.selected.length ? c.part : c.pointed?.part ?? c.part);
+      if (!p)
+        throw Error(
+          word === 'pointed'
+            ? 'The mouse has not come to rest on a part: ask the person to hold it on the part, or to click it.'
+            : 'No part is selected: ask the person to click one, in the list or in the view.'
+        );
+      return p;
+    }
     const text = String(ref),
       byId = partById(d, text);
     if (byId) return byId;
@@ -275,6 +293,117 @@ export function createCommands(app) {
     );
   }
   const ctx = () => ({ current: app.currentPart() ?? undefined });
+
+  // ---- what the person has clicked or points at: "selected", "pointed", and "this" for whichever there is
+  const theirWord = (v) => (typeof v === 'string' && ['selected', 'pointed', 'this'].includes(v.toLowerCase()) ? v.toLowerCase() : null);
+  /** The picks a word stands for; kind: 'face' or 'edge'. Throws a sentence to pass on when there are none. */
+  function theirs(word, kind) {
+    const c = app.chosen(),
+      selected = c.selected.filter((h) => h.kind === kind),
+      pointed = c.pointed?.kind === kind ? [c.pointed] : [],
+      hits = word === 'selected' ? selected : word === 'pointed' ? pointed : selected.length ? selected : pointed;
+    if (hits.length) return hits;
+    const a = kind === 'edge' ? 'an edge' : 'a face',
+      other = c.selected.length || c.pointed ? ' (get_selection shows what is.)' : '';
+    throw Error(
+      (word === 'selected'
+        ? `No ${kind} is selected in the page: ask the person to click one (Shift-click adds more).`
+        : word === 'pointed'
+        ? `The mouse has not come to rest on ${a}: ask the person to hold it there, or to click.`
+        : `No ${kind} is selected and the mouse has not come to rest on one: ask the person to click or point at ${a}.`) + other
+    );
+  }
+  const LINKED_FACE = (h) =>
+    `That is on ${partById(doc(), h.part)?.name ?? 'a linked copy'}, a linked copy with no history of its own: work on the original, or unlink_part first.`;
+  /** The face a command means: the person's ("this"), with `hit` (where they clicked), or one described. */
+  function faceFrom(sel) {
+    const word = theirWord(sel);
+    if (!word) return findFace(bodies(), described(sel), ctx());
+    const hits = theirs(word, 'face');
+    if (hits.length > 1) throw Error(`${hits.length} faces are selected (${hits.map((h) => `face ${h.index} of body ${h.body}`).join(', ')}): say which, as { "body": id, "face": index }.`);
+    if (hits[0].instance) throw Error(LINKED_FACE(hits[0]));
+    return { body: findBody(bodies(), hits[0].body), face: hits[0].index, hit: hits[0] };
+  }
+  /** The edges a command means: the person's, or those described. */
+  function edgesFrom(sel, whose = {}) {
+    const word = theirWord(sel);
+    if (!word) return findEdges(bodies(), described(sel && typeof sel === 'object' && !Array.isArray(sel) ? { ...whose, ...sel } : Array.isArray(sel) ? { ...whose, indices: sel } : sel === 'all' ? { ...whose } : sel), ctx());
+    const hits = theirs(word, 'edge');
+    if (hits.some((h) => h.instance)) throw Error(LINKED_FACE(hits.find((h) => h.instance)));
+    if (new Set(hits.map((h) => h.body)).size > 1) throw Error('The selected edges are on several bodies: one fillet or chamfer takes the edges of one body.');
+    return findEdges(bodies(), { body: hits[0].body, indices: [...new Set(hits.map((h) => h.index))] });
+  }
+  /** The features whose work a face is, read from its labels. */
+  function makers(labels) {
+    const out = new Map();
+    for (const label of labels) {
+      const [id, ...as] = label.split('/'),
+        f = featureById(doc(), id);
+      if (f && !out.has(id)) out.set(id, { id, type: f.type, name: f.name, part: f.part, ...(f.sketch ? { sketch: f.sketch } : {}), as: as.join('/') });
+    }
+    return [...out.values()];
+  }
+  /** A feature by id, or the person's: the one selected in the history, or the one that made the face they chose. */
+  function featureOf(ref) {
+    const word = theirWord(ref);
+    if (!word) {
+      const f = featureById(doc(), ref);
+      if (!f) throw Error(`There is no feature "${ref}".`);
+      return f;
+    }
+    const c = app.chosen();
+    if (word !== 'pointed' && c.feature) return featureById(doc(), c.feature);
+    const pointed = c.pointed ? [c.pointed] : [],
+      h = (word === 'selected' ? c.selected : word === 'pointed' ? pointed : c.selected.length ? c.selected : pointed).at(-1);
+    if (!h)
+      throw Error('No feature is selected in the history, and no face or edge is selected or pointed at to tell which feature is meant: ask the person to click the feature, or something it made.');
+    const topo = topoOfBody(findBody(bodies(), h.body));
+    let made = makers(h.kind === 'face' ? topo.faces[h.index].labels : topo.edges[h.index].faces.flatMap((i) => topo.faces[i].labels));
+    if (h.kind === 'edge' && made.length > 1) {
+      // An edge is where the newer of the features behind its two faces met the older one: the rim of a hole is the hole's.
+      const order = doc().features.map((f) => f.id);
+      made = [made.reduce((a, b) => (order.indexOf(b.id) > order.indexOf(a.id) ? b : a))];
+    }
+    if (made.length === 1) return featureById(doc(), made[0].id);
+    throw Error(
+      made.length
+        ? `That ${h.kind} is the work of several features: ${made.map((m) => `${m.name} (${m.id})`).join(', ')}. Say which by its id.`
+        : `It is not known which feature made that ${h.kind}: say which by its id.`
+    );
+  }
+  /** A pick as a row to read: where it is in space, on what, made by what. */
+  function hitRow(h) {
+    const body = { ...findBody(bodies(), h.body), matrix: h.matrix },
+      base = { kind: h.kind, part: h.part, part_name: partById(doc(), h.part)?.name, body: h.body, ...(h.instance ? { linked_copy: true } : {}) },
+      point = round(Mat.point(h.matrix, h.point));
+    if (h.kind === 'face') {
+      const { face, kind, ...row } = describeFaces(body)[h.index],
+        own = topoOfBody(body).faces[h.index];
+      return {
+        ...base,
+        face,
+        surface: kind,
+        ...row,
+        point,
+        ...(own.plane ? { at: round(toLocal(canonicalFrame(own.plane.n, own.plane.d), h.point).slice(0, 2)) } : {}),
+        made_by: makers(own.labels),
+      };
+    }
+    const { edge, kind, ...row } = describeEdges(body).find((r) => r.edge === h.index) ?? { edge: h.index },
+      faces = topoOfBody(body).faces;
+    return { ...base, edge, curve: kind, ...row, point, made_by: makers((row.faces ?? []).flatMap((i) => faces[i].labels)) };
+  }
+  function selectionInfo() {
+    const c = app.chosen(),
+      part = partById(doc(), c.part),
+      f = featureById(doc(), c.feature);
+    return {
+      selected: c.selected.map(hitRow),
+      pointed: c.pointed ? { ...hitRow(c.pointed), seconds_ago: round(c.pointed.ms / 1000, 1), mouse_in_view: c.pointed.over } : null,
+      part: part ? { id: part.id, name: part.name } : null,
+      feature: f ? { id: f.id, type: f.type, name: f.name, part: f.part } : null,
+    };
+  }
   /** A face or edge description with its "part" (an id or a name) made an id. */
   const described = (s) => (s && typeof s === 'object' && !Array.isArray(s) && s.part !== undefined ? { ...s, part: partOf(s.part).id } : s);
   /** The bodies a listing is about: one by id, those of a part, or all that are in the picture. */
@@ -321,6 +450,13 @@ export function createCommands(app) {
       throw Error('A sketch or a feature dialog is open in the page. Finish or cancel it there, or call cancel_edit, before changing the model.');
   }
   function sketchOf(id) {
+    if (theirWord(id)) {
+      // The person's sketch: the one they selected, or the one behind the extrusion they selected or point at.
+      const own = featureOf(id),
+        sk = own.type === 'sketch' ? own : featureById(doc(), own.sketch);
+      if (!sk) throw Error(`${own.name} (${own.id}) is ${own.type === 'extrude' ? 'an' : 'a'} ${own.type}: it was not made from a sketch.`);
+      return sk;
+    }
     const f = id === undefined ? [...doc().features].reverse().find((f) => f.type === 'sketch') : featureById(doc(), id);
     if (!f) throw Error(id === undefined ? 'There is no sketch yet: make one with add_sketch.' : `There is no feature "${id}".`);
     if (f.type !== 'sketch') throw Error(`${f.name} (${f.id}) is ${f.type === 'extrude' ? 'an' : 'a'} ${f.type}, not a sketch.`);
@@ -455,6 +591,7 @@ export function createCommands(app) {
       units: 'mm',
       parts: partRows(),
       current_part: app.currentPart() ?? null,
+      selection: selectionInfo(),
       features: st.doc.features.map((f) => {
         const r = resultOf(f.id);
         return { id: f.id, part: f.part, type: f.type, name: f.name, status: r?.status ?? 'unknown', ...(r?.message ? { message: r.message } : {}), ...summary(f) };
@@ -601,7 +738,7 @@ export function createCommands(app) {
     await settled();
     const key = type === 'fillet' ? 'radius' : 'distance';
     positive(a[key], type === 'fillet' ? 'The radius' : 'The distance');
-    const hits = findEdges(bodies(), described(a.edges), ctx());
+    const hits = edgesFrom(a.edges);
     const made = makeFeature(doc(), type, { part: hits[0].body.part, [key]: a[key], ...(a.name ? { name: String(a.name) } : {}) });
     made.feature.edges = hits.map((h, i) => edgeRefFrom(h.body, h.edge, 'k' + (i + 1)));
     made.feature.kseq = hits.length;
@@ -618,6 +755,13 @@ export function createCommands(app) {
     async get_state() {
       await settled();
       return stateInfo();
+    },
+    async get_selection() {
+      await settled();
+      return {
+        ...selectionInfo(),
+        how: 'Give "this" (or "selected", "pointed") wherever a command takes a face, edges, a part or a feature id. A hole on "this" face goes to "point" unless told otherwise; to draw there, use "at" as sketch coordinates on that face.',
+      };
     },
     async get_document() {
       return structuredClone(doc());
@@ -648,9 +792,7 @@ export function createCommands(app) {
     async list_edges(a) {
       await settled();
       if (a.edges !== undefined) {
-        const sel = Array.isArray(a.edges) ? { indices: a.edges } : a.edges === 'all' ? {} : a.edges;
-        const whose = { ...(a.body !== undefined ? { body: a.body } : {}), ...(a.part !== undefined ? { part: a.part } : {}) };
-        const hits = findEdges(bodies(), described(sel && typeof sel === 'object' ? { ...whose, ...sel } : sel), ctx());
+        const hits = edgesFrom(a.edges, { ...(a.body !== undefined ? { body: a.body } : {}), ...(a.part !== undefined ? { part: a.part } : {}) });
         const rows = describeEdges(hits[0].body);
         return [{ body: hits[0].body.id, part: hits[0].body.part, edges: rows.filter((r) => hits.some((h) => h.edge === r.edge)) }];
       }
@@ -677,7 +819,7 @@ export function createCommands(app) {
           partId = newPart.id;
         }
       } else {
-        const { body, face } = findFace(bodies(), described(where), ctx());
+        const { body, face } = faceFrom(where);
         plane = { kind: 'face', ref: faceRefFrom(body, face) };
         partId = body.part;
         if (a.part !== undefined && a.part !== 'new' && partOf(a.part).id !== partId) throw Error(`That face belongs to part ${partId}: a sketch on a face is part of that part's history.`);
@@ -764,11 +906,19 @@ export function createCommands(app) {
       free();
       await settled();
       positive(a.diameter, 'The diameter');
-      const { body, face } = findFace(bodies(), described(a.face ?? 'top'), ctx()),
+      const { body, face, hit } = faceFrom(a.face ?? 'top'),
         ref = faceRefFrom(body, face),
-        frame = canonicalFrame(ref.hint.n, ref.hint.d);
-      // "position" is a point in space; the face's own coordinates are those of its part.
-      const at = a.at ?? toLocal(frame, a.position !== undefined ? Mat.point(Mat.invert(body.matrix), vec3(a.position, 'position')) : ref.hint.center).slice(0, 2);
+        frame = canonicalFrame(ref.hint.n, ref.hint.d),
+        centred = typeof a.at === 'string' && ['center', 'centre'].includes(a.at.toLowerCase());
+      // "position" is a point in space; the face's own coordinates are those of its part. On a face
+      // the person chose, a hole goes where they clicked or point unless it is told where.
+      const at =
+        a.at !== undefined && !centred
+          ? a.at
+          : toLocal(
+              frame,
+              centred ? ref.hint.center : a.position !== undefined ? Mat.point(Mat.invert(body.matrix), vec3(a.position, 'position')) : hit ? hit.point : ref.hint.center
+            ).slice(0, 2);
       if (!Array.isArray(at) || at.length !== 2 || !at.every(Number.isFinite)) throw Error('"at" must be [x, y] on the face.');
       const made = makeFeature(doc(), 'hole', {
         part: body.part,
@@ -785,8 +935,7 @@ export function createCommands(app) {
     async edit_feature(a) {
       free();
       await settled();
-      const f = featureById(doc(), a.id);
-      if (!f) throw Error(`There is no feature "${a.id}".`);
+      const f = featureOf(a.id);
       const allowed =
         {
           sketch: [],
@@ -959,8 +1108,7 @@ export function createCommands(app) {
     async delete_feature(a) {
       free();
       await settled();
-      const f = featureById(doc(), a.id);
-      if (!f) throw Error(`There is no feature "${a.id}".`);
+      const f = featureOf(a.id);
       const also = dependents(doc(), f.id).map((id) => featureById(doc(), id));
       if (also.length && !a.with_dependents)
         throw Error(`${also.map((x) => `${x.name} (${x.id})`).join(', ')} ${also.length > 1 ? 'are' : 'is'} built on ${f.name}. Say with_dependents: true to delete ${also.length > 1 ? 'them' : 'it'} too.`);

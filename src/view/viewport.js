@@ -273,7 +273,8 @@ export function createViewport(host, callbacks = {}) {
   /** A ray of the world in the frame of body i (placements are rigid: distances along it are the same). */
   const rayIn = (i, ray) => (inverses[i] ? { o: Mat.point(inverses[i], ray.o), d: Mat.dir(inverses[i], ray.d) } : ray);
   /** What is under a pixel. A hit's `point` is in the frame of the body's part (where its faces
-   *  and references are); `world` is the same point in space. */
+   *  and references are); `world` is the same point in space; `key` names the exact geometry the
+   *  face or edge number belongs to (it is another body's once the model is rebuilt). */
   function pick(x, y, filter = 'all', hidden = false) {
     const ray = M.ray(view, vp, x, y);
     let face = null,
@@ -282,7 +283,7 @@ export function createViewport(host, callbacks = {}) {
       const b = pickBodies[i],
         hit = pickFace(b.mesh, picks[i], rayIn(i, ray));
       if (hit && (!face || hit.t < face.t))
-        face = { type: 'face', body: b.id, ...hit, world: b.matrix ? Mat.point(b.matrix, hit.point) : hit.point };
+        face = { type: 'face', body: b.id, key: b.key, ...hit, world: b.matrix ? Mat.point(b.matrix, hit.point) : hit.point };
     }
     if (filter !== 'face')
       for (let i = 0; i < pickBodies.length; i++) {
@@ -311,7 +312,7 @@ export function createViewport(host, callbacks = {}) {
             });
           if (!visible) continue;
         }
-        if (!edge || hit.distPx < edge.distPx) edge = { type: 'edge', body: b.id, ...hit, world };
+        if (!edge || hit.distPx < edge.distPx) edge = { type: 'edge', body: b.id, key: b.key, ...hit, world };
       }
     return filter === 'edge' ? edge : edge ?? face;
   }
@@ -350,6 +351,7 @@ export function createViewport(host, callbacks = {}) {
     navigation = null;
     callbacks.cancel?.();
   });
+  canvas.addEventListener('pointerleave', () => callbacks.leave?.());
   canvas.addEventListener('dblclick', (e) => callbacks.double?.(local(e), e));
   canvas.addEventListener(
     'wheel',
