@@ -117,7 +117,7 @@ def run(p, relay_port=None):
     assert hello['serverInfo']['name'] == 'corecad' and 'get_state' in hello['instructions'], hello
     tools = mcp.request('tools/list')['tools']
     names = [t['name'] for t in tools]
-    assert names[0] == 'corecad_status' and {'get_state', 'add_sketch', 'extrude', 'fillet', 'screenshot'} <= set(names) and len(names) == 26, names
+    assert names[0] == 'corecad_status' and {'get_state', 'add_sketch', 'extrude', 'fillet', 'screenshot', 'add_box', 'combine', 'move_part'} <= set(names) and len(names) == 1 + p.js('corecad.tools.length'), names
     assert all(t['inputSchema']['type'] == 'object' and len(t['description']) > 20 for t in tools)
     step('initialize and tools/list: %d tools' % len(names))
 

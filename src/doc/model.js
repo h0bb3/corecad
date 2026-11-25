@@ -1,12 +1,14 @@
 import { createSketch } from '../sketch/model.js';
-export const FORMAT_VERSION = 1;
+export const FORMAT_VERSION = 2;
 export function createDocument(name = 'Untitled') {
   const now = new Date().toISOString();
   return {
     format: 'corecad',
     version: FORMAT_VERSION,
-    meta: { id: crypto.randomUUID(), name, created: now, modified: now, app: '0.1.0' },
+    meta: { id: crypto.randomUUID(), name, created: now, modified: now, app: '0.2.0' },
     seq: 0,
+    pseq: 0,
+    parts: [],
     features: [],
     bodies: {},
   };
@@ -55,6 +57,10 @@ export function makeFeature(doc, type, data = {}) {
     hole: { face: null, at: [0, 0], diameter: 5, depth: 'all' },
     fillet: { edges: [], radius: 2, kseq: 0 },
     chamfer: { edges: [], distance: 1, kseq: 0 },
+    box: { size: [40, 30, 20], origin: 'base' },
+    cylinder: { diameter: 20, height: 30, origin: 'base' },
+    sphere: { diameter: 30, origin: 'base' },
+    combine: { operation: 'join', tools: [], keep: false },
   };
   return {
     feature: { id, type, name: title + n, ...defaults[type], ...data },

@@ -107,6 +107,28 @@ export function validateFeature(f) {
       );
       check(Number.isInteger(f.kseq) && f.kseq >= 0, 'Invalid edge key counter.');
       break;
+    case 'box':
+      check(vec(f.size, 3) && f.size.every(size), 'Width, depth and height must be positive.');
+      check(['base', 'center', 'corner'].includes(f.origin), 'Choose where the box has its origin.');
+      break;
+    case 'cylinder':
+      check(size(f.diameter), 'Diameter must be positive.');
+      check(size(f.height), 'Height must be positive.');
+      check(['base', 'center'].includes(f.origin), 'Choose where the cylinder has its origin.');
+      break;
+    case 'sphere':
+      check(size(f.diameter), 'Diameter must be positive.');
+      check(['base', 'center'].includes(f.origin), 'Choose where the sphere has its origin.');
+      break;
+    case 'combine':
+      check(['join', 'cut', 'intersect'].includes(f.operation), 'Choose join, cut or intersect.');
+      check(
+        Array.isArray(f.tools) && f.tools.length > 0 && f.tools.every((t) => typeof t === 'string' && /^o[1-9][0-9]*$/.test(t)),
+        'Choose at least one other part to combine with.'
+      );
+      check(new Set(f.tools ?? []).size === (f.tools ?? []).length && !(f.tools ?? []).includes(f.part), 'A part cannot be combined with itself.');
+      check(f.keep === undefined || typeof f.keep === 'boolean', 'Keep tools must be true or false.');
+      break;
   }
   return errors;
 }

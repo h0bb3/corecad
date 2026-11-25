@@ -18,6 +18,12 @@ export const icons = {
   dimension: 'M3 3v18m18-18v18M3 12h18m-14-3-4 3 4 3m10-6 4 3-4 3',
   construction: 'M3 20l4-4m3-3 4-4m3-3 4-4',
   check: 'm5 12 4 4L20 5',
+  box: 'm4 8 8-4 8 4-8 4zm0 0v9l8 4 8-4V8m-8 4v9',
+  cylinder: 'M5 6c0-3 14-3 14 0v12c0 3-14 3-14 0zm0 0c0 3 14 3 14 0',
+  sphere: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M3 12c0 3 18 3 18 0M12 3c-4 3-4 15 0 18',
+  combine: 'M3 3h11v11H3zm7 7h11v11H10z',
+  'move-part': 'M12 3v18M3 12h18M12 3 9 6m3-3 3 3m-3 15-3-3m3 3 3-3M3 12l3-3m-3 3 3 3m15-3-3-3m3 3-3 3',
+  'new-part': 'm4 9 7-3.5L18 9l-7 3.5zm0 0v8l7 3.5v-8M18 9v4m1 3v6m-3-3h6',
 };
 export const icon = (name) =>
   `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${icons[name] ?? icons.sketch}"/></svg>`;

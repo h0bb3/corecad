@@ -12,10 +12,12 @@ const DEFAULT_URL = 'wss://vibedit.app/CoreCAD/ws';
 
 export const INSTRUCTIONS =
   'CoreCAD is a parametric CAD program open in the user\'s browser tab; these tools work in that tab, on the model the user sees. ' +
-  'Units are millimetres, Z is up. Start with get_state. A part is a history of features: add_sketch (shapes on a plane or on a face), ' +
-  'extrude (new, join, cut), hole, fillet, chamfer. Everything stays editable: set_dimension changes a sketch, edit_feature a feature, ' +
-  'and what is built on it follows. Every change answers with the bodies\' volumes and any problems: read them, and use screenshot to look ' +
-  'at the result. A command that cannot be built changes nothing and says why. Changes are undo steps in the user\'s page (undo).';
+  'Units are millimetres, Z is up. Start with get_state. A project is made of parts; each part has its own history of features and its own place. ' +
+  'Start a part with add_box, add_cylinder or add_sphere, or with add_sketch (shapes on a plane or on a face) and extrude; then hole, fillet, chamfer. ' +
+  'move_part places a part, copy_part repeats it (linked: the copy follows the original), combine joins another part to it or cuts one out of it. ' +
+  'Everything stays editable: set_dimension changes a sketch, edit_feature a feature, and what is built on it follows. ' +
+  'Every change answers with the bodies\' volumes and any problems: read them, and use screenshot to look at the result. ' +
+  'A command that cannot be built changes nothing and says why. Changes are undo steps in the user\'s page (undo).';
 
 /** Where the relay is. ?bridge=ws://localhost:… overrides it, for development only: never another host. */
 export function relayUrl(search = location.search) {

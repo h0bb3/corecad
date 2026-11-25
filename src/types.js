@@ -18,13 +18,21 @@
 // The document (the project file is exactly a Doc as JSON)
 // ---------------------------------------------------------------------------------------------
 
-/** @typedef {{ format: 'corecad', version: 1, meta: DocMeta, seq: number,
- *              features: Feature[], bodies: Object<string, BodyProps> }} Doc */
+/** @typedef {{ format: 'corecad', version: 2, meta: DocMeta, seq: number, pseq: number,
+ *              parts: Part[], features: Feature[], bodies: Object<string, BodyProps> }} Doc
+ *  seq, pseq: the highest feature and part number ever given out. A version 1 file had no parts:
+ *  doc/schema.js `upgrade` makes its features the history of one part. */
+/** A part: a history of its own (the features whose `part` is its id, in document order), a place
+ *  relative to its parent, and what stands under it. With `link` it has no history and shows another part.
+ *  @typedef {{ id: string, name: string, parent: string | null, pos: Vec3, rot: Vec3,
+ *              hidden?: boolean, link?: string }} Part
+ *  id: 'o' and a number. pos: millimetres. rot: degrees about the fixed X, then Y, then Z axis (core/mat.js). */
 /** @typedef {{ id: string, name: string, created: string, modified: string, app: string }} DocMeta */
 /** @typedef {{ name?: string, hidden?: boolean }} BodyProps */
 
 /** Fields every feature has.
- *  @typedef {{ id: string, type: string, name: string, suppressed?: true, ui?: { hidden?: boolean } }} FeatureBase */
+ *  @typedef {{ id: string, part: string, type: string, name: string, suppressed?: true, ui?: { hidden?: boolean } }} FeatureBase
+ *  part: the part whose history it belongs to. Everything a feature refers to is in that part's own frame. */
 
 /** @typedef {{ kind: 'base', base: 'XY'|'XZ'|'YZ' } | { kind: 'face', ref: FaceRef }} PlaneSpec */
 
@@ -54,7 +62,17 @@
 /** @typedef {FeatureBase & { type: 'chamfer', edges: EdgeRef[], distance: number, kseq: number }} ChamferFeature
  *  kseq: how many edge keys this feature has ever given out; the next key is 'k' + (kseq + 1). */
 
-/** @typedef {SketchFeature | ExtrudeFeature | HoleFeature | FilletFeature | ChamferFeature} Feature */
+/** Solids without a sketch. origin: which point of the solid is at the part's origin: 'base' (the middle of
+ *  its bottom; a sphere's lowest point), 'center', or for a box 'corner' (its lowest corner).
+ *  @typedef {FeatureBase & { type: 'box', size: Vec3, origin: 'base'|'center'|'corner' }} BoxFeature */
+/** @typedef {FeatureBase & { type: 'cylinder', diameter: number, height: number, origin: 'base'|'center' }} CylinderFeature */
+/** @typedef {FeatureBase & { type: 'sphere', diameter: number, origin: 'base'|'center' }} SphereFeature */
+/** Other parts joined to this part, cut out of it, or intersected with it, where they stand.
+ *  @typedef {FeatureBase & { type: 'combine', operation: 'join'|'cut'|'intersect', tools: string[], keep?: boolean }} CombineFeature
+ *  tools: part ids. keep: the tools stay in the picture; otherwise they are used up (doc/parts.js). */
+
+/** @typedef {SketchFeature | ExtrudeFeature | HoleFeature | FilletFeature | ChamferFeature
+ *          | BoxFeature | CylinderFeature | SphereFeature | CombineFeature} Feature */
 
 // ---------------------------------------------------------------------------------------------
 // References (docs/SPEC.md 4.3)
@@ -108,10 +126,13 @@
 /** What doc/refs.js resolves against.
  *  @typedef {{ id: string, faces: FaceInfo[], edges: EdgeInfo[] }} BodyTopo */
 
-/** @typedef {{ positions: Float32Array, normals: Float32Array, indices: Uint32Array, op: 'new'|'join'|'cut'|'intersect' }} ToolMesh */
+/** @typedef {{ positions: Float32Array, normals: Float32Array, indices: Uint32Array, op: 'new'|'join'|'cut'|'intersect', part: string }} ToolMesh
+ *  part: the part in whose frame the tool is. */
 
-/** @typedef {{ id: string, key: string, lumps: number, volume: number, bbox: [Vec3, Vec3], mesh: BodyMesh }} BodyOut
- *  id: the id of the feature that created the body. key: names this exact geometry ('<chain key>:<id>'). */
+/** @typedef {{ id: string, key: string, part: string, lumps: number, volume: number, bbox: [Vec3, Vec3], mesh: BodyMesh }} BodyOut
+ *  id: the id of the feature that created the body. key: names this exact geometry ('<chain key>:<id>').
+ *  part: the part it belongs to. Everything in it is in that part's frame: doc/parts.js `sceneOf` gives
+ *  each body its `matrix` (and the bodies a linked copy shows) for the view. */
 
 /** @typedef {{ status: 'ok'|'lost'|'ambiguous'|'guessed', count: number }} RefStatus */
 
@@ -127,10 +148,12 @@
 /** @typedef {{ ms: number, recomputed: number, cached: number, heap: number, unlabelled: number }} RebuildStats */
 
 /** @typedef {{ status: 'done'|'superseded', seq: number, count: number,
- *              features: FeatureResult[], bodies: BodyOut[], before?: BodyOut[], tool?: ToolMesh,
- *              stats: RebuildStats }} RebuildResult
- *  count: how many features, from the first, were evaluated; the rest have status 'rolled'.
- *  bodies: the model after feature count - 1. before: the model before that feature (asked for with want.before). */
+ *              features: FeatureResult[], bodies: BodyOut[], used: Object<string, string>,
+ *              before?: BodyOut[], tool?: ToolMesh, stats: RebuildStats }} RebuildResult
+ *  features: in document order. A job with roll: { part, count } builds only the first `count` features
+ *  of that part (the rest have status 'rolled') and every other part in full.
+ *  bodies: of every part. used: tool part -> the part whose combine used it up (it is out of the picture).
+ *  before: the model before the last feature built of the part looked back in (asked for with before: true). */
 
 // ---------------------------------------------------------------------------------------------
 // Inside the worker (docs/SPEC.md 6.4 to 6.10)

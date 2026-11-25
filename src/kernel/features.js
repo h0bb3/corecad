@@ -4,7 +4,7 @@ import { frameOfSketch, resolveFaceRef, resolveEdgeRef } from '../doc/refs.js';
 import { findRegions, resolveProfile } from '../sketch/profiles.js';
 import { canonicalFrame, toWorld } from '../core/plane.js';
 import { sub, mul, dot } from '../core/vec.js';
-import { prism, boolean, cylinder, blend, edgesOf, bounds, volume, countSolids } from './shapes.js';
+import { prism, boolean, cylinder, blend, edgesOf, bounds, volume, countSolids, boxSolid, cylinderSolid, sphereSolid, placed } from './shapes.js';
 import { topoOf } from './topo.js';
 import { errorText } from './occ.js';
 
@@ -30,6 +30,62 @@ function reached(a, b) {
 }
 const changedVolume = (a, b) =>
   Math.abs(volume(a.shape) - volume(b.shape)) > 1e-7 * Math.max(1, Math.abs(volume(a.shape)));
+
+const WORDS = {
+  extrude: {
+    madeBody: 'The extrusion touches no target body. A new body was created.',
+    removesAll: 'This cut would remove an entire body. Reduce the size or depth.',
+    empty: 'The selected profiles and bodies have no common volume.',
+    noEffect: 'The cut does not remove material from any target body.',
+  },
+  combine: {
+    madeBody: 'The parts do not touch. They are kept as separate bodies of this part.',
+    removesAll: 'This cut would remove the whole part. Move or shrink the part that cuts.',
+    empty: 'The parts have no common volume.',
+    noEffect: 'The cut does not remove material: the parts do not overlap.',
+  },
+};
+/** A tool solid applied to bodies: the one rule for extrusions and for combining parts. */
+function applyTool(fid, operation, all, targets, tool, own, body, words) {
+  let bodies = [...all],
+    result = {};
+  if (operation === 'new') bodies.push(body(fid, tool));
+  else if (operation === 'join') {
+    const merges = targets.filter((t) => {
+      if (!reached(t, tool)) return false;
+      const fused = own(boolean('fuse', t, tool, fid));
+      return countSolids(fused.shape) < countSolids(t.shape) + countSolids(tool.shape);
+    });
+    if (!merges.length) {
+      bodies.push(body(fid, tool));
+      result = { code: 'join-made-body', message: words.madeBody };
+    } else {
+      let acc = tool;
+      for (const t of merges) acc = own(boolean('fuse', t, acc, fid));
+      const id = merges[0].id,
+        ids = new Set(merges.map((b) => b.id));
+      bodies = bodies.flatMap((b) => (b.id === id ? [body(id, acc)] : ids.has(b.id) ? [] : [b]));
+    }
+  } else {
+    let changed = 0;
+    for (const target of targets) {
+      if (!reached(target, tool)) continue;
+      const next = own(boolean(operation === 'cut' ? 'cut' : 'common', target, tool, fid));
+      if (!countSolids(next.shape)) {
+        if (operation === 'cut') fail('removes-all', words.removesAll);
+        continue;
+      }
+      if (!changedVolume(target, next) && operation === 'cut') continue;
+      bodies = bodies.map((b) => (b.id === target.id ? body(b.id, next) : b));
+      changed++;
+    }
+    if (!changed) {
+      if (operation === 'intersect') fail('empty-result', words.empty);
+      result = { code: 'no-effect', message: words.noEffect };
+    }
+  }
+  return { bodies, result };
+}
 
 /** Each feature is atomic: only the returned state is installed by the engine. */
 export function evaluate(f, state, ctx) {
@@ -95,51 +151,7 @@ export function evaluate(f, state, ctx) {
       const shape = own(prism(f.id, sk.frame, region, a, b, roles));
       tool = tool ? own(boolean('fuse', tool, shape, f.id)) : shape;
     }
-    let bodies = [...state.bodies],
-      result = {};
-    if (f.operation === 'new') bodies.push(body(f.id, tool));
-    else if (f.operation === 'join') {
-      const merges = targets.filter((t) => {
-        if (!reached(t, tool)) return false;
-        const fused = own(boolean('fuse', t, tool, f.id));
-        return countSolids(fused.shape) < countSolids(t.shape) + countSolids(tool.shape);
-      });
-      if (!merges.length) {
-        bodies.push(body(f.id, tool));
-        result = {
-          code: 'join-made-body',
-          message: 'The extrusion touches no target body. A new body was created.',
-        };
-      } else {
-        let acc = tool;
-        for (const t of merges) acc = own(boolean('fuse', t, acc, f.id));
-        const id = merges[0].id,
-          ids = new Set(merges.map((b) => b.id));
-        bodies = bodies.flatMap((b) => (b.id === id ? [body(id, acc)] : ids.has(b.id) ? [] : [b]));
-      }
-    } else {
-      let changed = 0;
-      for (const target of targets) {
-        if (!reached(target, tool)) continue;
-        const next = own(boolean(f.operation === 'cut' ? 'cut' : 'common', target, tool, f.id));
-        if (!countSolids(next.shape)) {
-          if (f.operation === 'cut')
-            fail('removes-all', 'This cut would remove an entire body. Reduce the size or depth.');
-          continue;
-        }
-        if (!changedVolume(target, next) && f.operation === 'cut') continue;
-        bodies = bodies.map((b) => (b.id === target.id ? body(b.id, next) : b));
-        changed++;
-      }
-      if (!changed) {
-        if (f.operation === 'intersect')
-          fail('empty-result', 'The selected profiles and bodies have no common volume.');
-        result = {
-          code: 'no-effect',
-          message: 'The cut does not remove material from any target body.',
-        };
-      }
-    }
+    let { bodies, result } = applyTool(f.id, f.operation, state.bodies, targets, tool, own, body, WORDS.extrude);
     if (guessed)
       result = {
         code: 'profile-guessed',
@@ -239,6 +251,32 @@ export function evaluate(f, state, ctx) {
           : {}),
       },
     };
+  }
+  if (['box', 'cylinder', 'sphere'].includes(f.type)) {
+    const solid = own(
+      f.type === 'box'
+        ? boxSolid(f.id, f.size, f.origin)
+        : f.type === 'cylinder'
+        ? cylinderSolid(f.id, f.diameter / 2, f.height, f.origin)
+        : sphereSolid(f.id, f.diameter / 2, f.origin)
+    );
+    return { state: { ...state, bodies: [...state.bodies, body(f.id, solid)] }, result: {} };
+  }
+  if (f.type === 'combine') {
+    // ctx.tools: the bodies of the other parts, each with where it stands in this part's frame.
+    if (ctx.toolError) fail(ctx.toolError.code, ctx.toolError.message);
+    let tool = null;
+    for (const t of ctx.tools ?? []) {
+      const moved = own(placed(t.body, t.matrix));
+      tool = tool ? own(boolean('fuse', tool, moved, f.id)) : moved;
+    }
+    if (!tool) fail('no-tool', 'The parts to combine with have no solid.');
+    if (!state.bodies.length) {
+      if (f.operation !== 'join') fail('no-target', 'This part has no solid yet to cut or intersect.');
+      return { state: { ...state, bodies: [body(f.id, tool)] }, result: {}, tool };
+    }
+    const { bodies, result } = applyTool(f.id, f.operation, state.bodies, state.bodies, tool, own, body, WORDS.combine);
+    return { state: { ...state, bodies }, result, tool };
   }
   fail('unknown-type', `Feature type "${f.type}" needs a newer CoreCAD.`);
 }

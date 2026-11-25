@@ -11,6 +11,12 @@ await corecad.run('add_sketch', { plane: 'top', shapes: [{ type: 'circle', cente
 await corecad.run('extrude', { operation: 'cut', through_all: true });
 await corecad.run('fillet', { edges: { parallel: 'z' }, radius: 4 });
 // { ok: true, result: { id: 'f5', status: 'ok', bodies: [{ id: 'f2', volume: 23360, ... }], problems: [] } }
+
+// Several parts: a box, a cylinder placed in it, cut out of it, and a linked copy beside it.
+await corecad.run('add_box', { size: [60, 40, 12], name: 'Plate' });
+await corecad.run('add_cylinder', { diameter: 10, height: 30, position: [15, 0, -5], name: 'Pin' });
+await corecad.run('combine', { part: 'Plate', with: ['Pin'], operation: 'cut' });
+await corecad.run('copy_part', { part: 'Plate', linked: true, by: [0, 60, 0] });
 ```
 
 - `corecad.run(name, args)` never throws: it answers `{ ok: true, result }`
@@ -44,7 +50,38 @@ await corecad.run('fillet', { edges: { parallel: 'z' }, radius: 4 });
   the choice into the same kind of reference a click makes, so it survives
   rebuilds the same way.
 - Units are millimetres (degrees for angles). Sketch coordinates are in the
-  sketch's plane; on XY and on top faces they are the world's x and y.
+  sketch's plane; on XY and on top faces they are the part's x and y (the
+  world's, as long as the part has not been moved or turned).
+
+## Parts
+
+A project is made of **parts**. Each part has its own history of features,
+its own place, and may stand under another part and move with it.
+
+- **Starting one**: `add_box`, `add_cylinder` and `add_sphere` make a part
+  from a solid without a sketch; `add_sketch` puts a sketch into a part (a
+  first part is made when there is none; `part: "new"` starts another);
+  `add_part` makes an empty one, for sketches or as a group.
+- **The current part** is the one the last command worked on; `get_state`
+  names it. Commands that leave `part`, `body` or a face's owner out mean
+  it. A part is named by its id (`"o2"`) or its name.
+- **A part's history only changes that part.** `extrude` joins to or cuts
+  the bodies of its sketch's own part. Other parts meet through `combine`.
+- **Place**: `move_part` gives `position` and `rotation` (degrees about the
+  fixed X, then Y, then Z axis, round the part's origin), or moves `by` an
+  offset, or makes a `turn` about the middle of the part. Positions are in
+  the parent's frame. Moving rebuilds nothing unless a combine depends on it.
+- **Combine** joins other parts to a part, cuts them out of it, or keeps
+  what they share, where they stand. It is a feature of the part that is
+  changed. The others become its tools: hidden, placed under it, still there.
+  Move or edit a tool and the result follows.
+- **Copies**: `copy_part` makes a copy with its own history; with
+  `linked: true` a copy that shows the original in another place and changes
+  with it. `unlink_part` turns a linked copy into a part of its own.
+- **Where things are reported**: `get_state`, `list_faces` and `list_edges`
+  give boxes, centres, normals and sides (`"top"`) in space, where the part
+  stands. A hole's `position` is a point in space; its `at` and a sketch's
+  shapes are in the face's own coordinates, which turn with the part.
 
 ## The commands
 
@@ -52,14 +89,14 @@ Arguments in brackets are optional.
 
 | Command | Arguments | What it does |
 |---|---|---|
-| `get_state` | - | The model at a glance: features with status and main numbers, bodies with volume and bounding box. Start here. |
+| `get_state` | - | The model at a glance: parts with their place, parent and history; features with status and main numbers; bodies with volume and bounding box in space; the current part. Start here. |
 | `get_document` | - | The whole project as JSON, as Save writes it. |
 | `load_document` | document | Replaces the open project. |
 | `new_document` | [name] | Starts an empty project. |
 | `get_sketch` | [sketch] | One sketch in full: entities with coordinates, dimensions and constraints with ids, degrees of freedom, closed regions. |
-| `list_faces` | [body] | The faces of a body: index, kind, centre, area, normal, and which side a flat face is. |
-| `list_edges` | [body], [edges] | The edges that can be filleted or chamfered, optionally only those matching a description. |
-| `add_sketch` | [plane], [shapes], [name] | A sketch on an origin plane or a flat face, optionally with shapes in it. |
+| `list_faces` | [body], [part] | The faces of a body: index, kind, centre, area, normal, and which side a flat face is. |
+| `list_edges` | [body], [part], [edges] | The edges that can be filleted or chamfered, optionally only those matching a description. |
+| `add_sketch` | [plane], [part], [shapes], [name] | A sketch on an origin plane of a part or on a flat face, optionally with shapes in it. |
 | `add_to_sketch` | [sketch], shapes | Adds shapes to an existing sketch. |
 | `set_dimension` | [sketch], dimension, value | Changes a driving dimension; everything built on the sketch is rebuilt. |
 | `add_dimension` | [sketch], refs, [value], [mode] | Adds a driving dimension. |
@@ -71,6 +108,16 @@ Arguments in brackets are optional.
 | `chamfer` | edges, distance, [name] | Bevels edges. |
 | `edit_feature` | id, and what to change | Changes a feature's parameters, name or suppression. |
 | `delete_feature` | id, [with_dependents] | Deletes a feature (and, if asked, what is built on it). |
+| `add_box` | size, [origin], [position], [rotation], [parent], [name] | A box as a new part, without a sketch. |
+| `add_cylinder` | diameter, height, [origin], [position], [rotation], [parent], [name] | A cylinder along Z as a new part. |
+| `add_sphere` | diameter, [origin], [position], [rotation], [parent], [name] | A sphere as a new part. |
+| `add_part` | [name], [position], [rotation], [parent] | An empty part: for sketches, or a group to put parts under. |
+| `combine` | [part], with, operation, [keep], [name] | Joins other parts to a part, cuts them out of it, or keeps what they share. |
+| `move_part` | [part], [position], [rotation], [by], [turn], [parent] | Places a part: where it stands, how it is turned, what it stands under. |
+| `copy_part` | [part], [linked], [position], [rotation], [by], [parent], [name] | A copy of its own, or a linked copy that follows the original. |
+| `edit_part` | [part], [name], [hidden] | Renames a part, hides or shows it. |
+| `unlink_part` | [part] | Turns a linked copy into a part of its own. |
+| `delete_part` | [part], [with_dependents] | Deletes a part with its history and what is under it. |
 | `undo`, `redo` | - | As the buttons. |
 | `cancel_edit` | - | Closes a sketch or dialog that is open in the page, discarding. |
 | `export` | [format], [download] | STEP or the project as text, STL as base64, or a browser download. |
@@ -81,10 +128,12 @@ Arguments in brackets are optional.
 
 - `src/api/commands.js`: the commands and the `tools` list.
 - `src/api/shapes.js`: shapes into constrained sketch geometry (pure).
-- `src/api/select.js`: faces and edges by description (pure).
-- `test/api-shapes.test.html`: tests of the two pure modules.
+- `src/api/select.js`: faces and edges by description, where the part
+  stands (pure).
+- `src/doc/parts.js`: parts, their hierarchy, copies and what is shown (pure).
+- `test/api-shapes.test.html`: tests of the pure modules.
 - `tools/e2e_api.py`: every command against the real kernel, with expected
-  volumes; run it with `python tools/e2e_api.py`.
+  volumes and boxes; run it with `python tools/e2e_api.py`.
 
 ## Over MCP
 

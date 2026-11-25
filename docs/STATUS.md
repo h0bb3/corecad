@@ -1,4 +1,9 @@
-# CoreCAD v0.1 status — 2026-11-25
+# CoreCAD status — 2026-11-25
+
+The newest work is at the end: [0.2: parts](#02-parts-2026-11-25). The first
+sections describe 0.1 as it was finished.
+
+## v0.1
 
 The takeover implementation is complete. The required first-version workflow is
 implemented in the existing static site: constrained sketches on origin planes
@@ -97,3 +102,58 @@ test's hand-written one have spoken to it. One thing seen on the way:
 Cloudflare refused requests with Python's default user agent (error 1010), so
 if a client cannot reach `/CoreCAD/mcp`, the zone's bot rules are the first
 place to look.
+
+## 0.2: parts (2026-11-25)
+
+A project is now made of parts. Each part has its own feature history and its
+own place, may stand under another part, and can be copied or linked.
+
+- **Per-part history.** The browser lists the parts as a tree with each
+  part's features under it. A sketch goes into the selected part (or the part
+  of the face it is drawn on); Roll here looks back in one part only.
+- **Placing.** Move (M, or double-click a part): drag one of three arrows in
+  1 mm steps, type position and rotation, turn a quarter on the spot, choose a
+  parent. Dragging a part onto another in the list puts it under that.
+  Placements are not geometry: moving rebuilds nothing unless a combine
+  depends on it.
+- **Copies.** Copy makes a part with its own history; Linked copy shows the
+  original in another place and follows it; Unlink makes a link independent.
+- **Primitives.** Box, Cylinder and Sphere start a part without a sketch.
+- **Combine.** Join, cut or intersect a part with other parts where they
+  stand. The others become tools under it and stay editable.
+- Files are format 2; format 1 files and autosaves open as one part.
+- The command set has ten more commands (35 in all): `add_box`,
+  `add_cylinder`, `add_sphere`, `add_part`, `combine`, `move_part`,
+  `copy_part`, `edit_part`, `unlink_part`, `delete_part`. Faces, edges and
+  boxes are reported where the part stands.
+
+Verification, all run on this state:
+
+- `python tools/run_tests.py`: 92 tests passed. New: `test/parts.test.html`
+  (11: placements, format upgrade, hierarchy, copies, what is shown) and
+  `test/kernel-parts.test.html` (8, real kernel: primitive volumes and face
+  names, a cut by a placed and turned tool with a chamfer on the hole it
+  made, join and intersect, linked and grouped tools, cycles, looking back
+  per part, STL bounds of placed, linked and hidden parts).
+- `python tools/e2e_parts.py`: passed, with real mouse and key events: box
+  and cylinder, combine, dragging a move arrow, typed placement, quarter
+  turn, copy and linked copy, a face sketch on a moved part, a new part,
+  hide, delete with dependents, drag and drop in the list, a turned part
+  (view, picking and sketch plane agree), reload, opening a format 1 file.
+- `python tools/e2e_api.py`: passed, including the new commands with
+  expected volumes and boxes in space.
+- `tools/e2e.py`, `tools/e2e_more.py` and `tools/e2e_bridge.py` pass (the
+  second with body visibility replaced by part visibility; the third with
+  the tool count taken from the page).
+
+Limits of this version:
+
+- Parts are placed by numbers and arrows. There are no joints, mates or
+  snapping of one part to another's faces.
+- The move arrows translate; rotation is typed or by quarter turns.
+- A linked copy is the whole original: it cannot have features of its own.
+- Sketches do not show or snap to other parts' geometry.
+- A combine that has nothing to cut is kept with a warning, and its tools
+  are still hidden; a tool that is used by two combines is hidden by both.
+- Primitives always start a part; to add one to an existing part, combine it.
+- Not tried by a person yet: everything above was driven by scripts.

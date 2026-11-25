@@ -1049,3 +1049,84 @@ main {
     display: none;
   }
 }
+
+/* Parts: every part has its own history under it; children are indented under their parent. */
+.tree-row {
+  padding-left: calc(17px + var(--depth, 0) * 14px);
+}
+.part-row {
+  cursor: pointer;
+  font-weight: 600;
+  gap: 6px;
+  color: #33484d;
+}
+.part-row:hover {
+  background: #f1f6f5;
+}
+.part-row.selected:hover {
+  background: #e7f2ee;
+}
+.part-row .twist {
+  width: 14px;
+  min-width: 14px;
+  padding: 0;
+  font-size: 10px;
+  color: #7c9795;
+  text-align: center;
+}
+.part-row.used .tree-name,
+.part-row.used .feature-symbol,
+.part-row.hidden-part .tree-name,
+.part-row.hidden-part .feature-symbol {
+  opacity: 0.5;
+}
+.part-note {
+  font-size: 10px;
+  font-weight: 400;
+  color: #8aa0a0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 45%;
+}
+.group-title .eye {
+  padding: 1px 6px;
+  font-size: 13px;
+  margin-right: -7px;
+}
+.turns {
+  display: flex;
+  gap: 6px;
+  margin: 2px 0 12px;
+}
+.turns button {
+  flex: 1;
+  font-size: 11px;
+  padding: 6px 4px;
+  border: 1px solid #dce5e3;
+}
+.tool-list {
+  margin-bottom: 10px;
+}
+.part-row .tree-name {
+  white-space: nowrap;
+  min-width: 3em;
+}
+.part-note {
+  flex-shrink: 2;
+}
+/* The steps of a part's history sit a little closer than the parts themselves. */
+#browser-content .tree-row[data-feature],
+#browser-content .body-row {
+  min-height: 31px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.part-row.drop {
+  outline: 2px dashed var(--accent);
+  outline-offset: -3px;
+}
+#browser-content.drop {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}

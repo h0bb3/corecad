@@ -2,15 +2,18 @@
 export function createHistory(initial, limit = 200) {
   let entries = [{ doc: initial, label: '', mergeKey: null }],
     at = 0,
-    featureSeq = initial.seq;
+    featureSeq = initial.seq,
+    partSeq = initial.pseq ?? 0;
   const sketchSeq = new Map();
   const reserve = (doc) => {
     featureSeq = Math.max(featureSeq, doc.seq);
+    partSeq = Math.max(partSeq, doc.pseq ?? 0);
     for (const f of doc.features)
       if (f.type === 'sketch') sketchSeq.set(f.id, Math.max(sketchSeq.get(f.id) ?? 0, f.seq));
     return {
       ...doc,
       seq: featureSeq,
+      pseq: partSeq,
       features: doc.features.map((f) =>
         f.type === 'sketch' && f.seq < sketchSeq.get(f.id) ? { ...f, seq: sketchSeq.get(f.id) } : f
       ),

@@ -16,7 +16,9 @@ import { DIMENSIONS, CONSTRAINTS } from '../sketch/catalogue.js';
 import { findRegions, profileRefFrom, regionAt, pointInRegion, pointInLoop } from '../sketch/profiles.js';
 import { createDocument, makeFeature, addFeature, updateFeature, removeFeature, featureById, dependents } from '../doc/model.js';
 import { validateFeature } from '../doc/features.js';
-import { validateDocument, serialize } from '../doc/schema.js';
+import { validateDocument, serialize, upgrade } from '../doc/schema.js';
+import { partById, featuresOf, worldOf, makePart, addPart, updatePart, removePart, partDependents, setParent, copyPart, unlinkPart, sceneOf, contentOf, descendantsOf, ancestorsOf } from '../doc/parts.js';
+import * as Mat from '../core/mat.js';
 import { faceRefFrom, edgeRefFrom } from '../doc/refs.js';
 import { canonicalFrame, toLocal } from '../core/plane.js';
 import { STANDARD } from '../view/camera-math.js';
@@ -35,13 +37,19 @@ const str = (description, more = {}) => ({ type: 'string', description, ...more 
 const numb = (description) => ({ type: 'number', description });
 const bool = (description) => ({ type: 'boolean', description });
 const SKETCH_ARG = str('The sketch\'s feature id, such as "f1". Left out: the newest sketch.');
-const BODY_ARG = str('The body\'s id (the id of the feature that made it). Left out: the only body.');
+const BODY_ARG = str('The body\'s id (the id of the feature that made it). Left out: the body of the current part, or the only body.');
+const PART_ARG = str('The part: its id, such as "o2", or its name. Left out: the current part (get_state says which).');
 const FACE_ARG = {
-  description: `A flat face: a side name (${SIDE_NAMES.join(', ')}: the flat face furthest out that way), or { "body": id, "face": index } with an index from list_faces, or { "body": id, "side": name }.`,
+  description: `A flat face: a side name (${SIDE_NAMES.join(', ')}: the flat face furthest out that way, as the body stands in space), or { "face": index } with an index from list_faces, or { "side": name }; each may say whose with "part": id or name, or "body": id. Left out: the body of the current part.`,
 };
 const EDGES_ARG = {
-  description: 'Which edges: "all"; or an array of indices from list_edges; or an object whose conditions must all hold: { "body": id, "indices": [..], "kind": "line" | "circle", "parallel": "x" | "y" | "z", "on": a face (as for sketching), "length": mm }. Example: { "parallel": "z" } is every straight vertical edge.',
+  description: 'Which edges: "all"; or an array of indices from list_edges; or an object whose conditions must all hold: { "part": id or name, "body": id, "indices": [..], "kind": "line" | "circle", "parallel": "x" | "y" | "z", "on": a face (as for sketching), "length": mm }. Example: { "parallel": "z" } is every straight vertical edge.',
 };
+const VEC = (description) => ({ type: 'array', items: { type: 'number' }, description });
+const POSITION_ARG = VEC('Where the part\'s origin is: [x, y, z] in mm, in its parent\'s frame (in space when it has no parent). Default [0, 0, 0].');
+const ROTATION_ARG = VEC('How it is turned: [rx, ry, rz] in degrees, about the fixed X axis first, then Y, then Z, round the part\'s origin. Default [0, 0, 0].');
+const PARENT_ARG = { description: 'The part it stands under and moves with: an id or a name; null for none.' };
+const ORIGIN_ARG = (kinds) => str(`Which point of the solid is the part's origin (what "position" places): ${kinds}. Default "base".`);
 const SHAPES_ARG = {
   type: 'array',
   description:
@@ -62,17 +70,22 @@ const tool = (name, description, properties = {}, required = []) => ({
 });
 
 export const TOOLS = [
-  tool('get_state', 'The model at a glance: the features in order with their status and main numbers, the bodies with volume (mm³) and bounding box, and whether the page is busy or in the middle of an edit. Start here.'),
+  tool('get_state', 'The model at a glance: the parts (each with its place, its parent, and its own history of features), the features with their status and main numbers, the bodies with volume (mm³) and bounding box in space, which part is current, and whether the page is in the middle of an edit. Start here.'),
   tool('get_document', 'The whole project as JSON: exactly what Save writes to a .corecad file.'),
   tool('load_document', 'Replaces the open project with a document in the .corecad format (as get_document returns). The history of undo steps starts over.', { document: { type: 'object', description: 'The project.' } }, ['document']),
   tool('new_document', 'Starts an empty project. The open one is replaced (it stays in the browser only if it was saved).', { name: str('The project\'s name.') }),
   tool('get_sketch', 'One sketch in full: its lines, circles, arcs and points with coordinates and the ids of their points, its dimensions and constraints with their ids, its degrees of freedom (0 = fully constrained), and its closed regions (what extrude can use).', { sketch: SKETCH_ARG }),
-  tool('list_faces', 'The faces of a body (or of every body): index, kind (plane, cylinder, …), centre, area, the outward normal of flat faces, radius of round ones, and which side of the body a flat face is ("top", …).', { body: BODY_ARG }),
-  tool('list_edges', 'The edges of a body (or of every body) that can be filleted or chamfered: index, kind, end points, middle, length, the two faces it lies between. Optionally only those matching a description.', { body: BODY_ARG, edges: EDGES_ARG }),
+  tool('list_faces', 'The faces of a body (or of every body): index, kind (plane, cylinder, …), centre, area, the outward normal of flat faces, radius of round ones, and which side of the body a flat face is ("top", …). Coordinates are in space, where the part stands.', { body: BODY_ARG, part: PART_ARG }),
+  tool('list_edges', 'The edges of a body (or of every body) that can be filleted or chamfered: index, kind, end points, middle, length, the two faces it lies between. Optionally only those matching a description. Coordinates are in space.', { body: BODY_ARG, part: PART_ARG, edges: EDGES_ARG }),
   tool(
     'add_sketch',
-    'Makes a sketch on an origin plane or on a flat face of a body, optionally with shapes in it. Sketch coordinates are millimetres in the plane; on XY and on top faces they are the world\'s x and y. Returns the sketch as get_sketch does.',
-    { plane: { description: `"XY" (the ground; default), "XZ", "YZ", or a flat face: ${FACE_ARG.description}` }, shapes: SHAPES_ARG, name: str('A name for the history.') }
+    'Makes a sketch on an origin plane of a part or on a flat face of a body, optionally with shapes in it. It becomes the next step of that part\'s history. Sketch coordinates are millimetres in the plane; on XY and on top faces they are the part\'s x and y (the world\'s, when the part has not been moved or turned). Returns the sketch as get_sketch does.',
+    {
+      plane: { description: `"XY" (the ground; default), "XZ", "YZ", or a flat face: ${FACE_ARG.description}` },
+      part: str('For an origin plane: the part the sketch goes into, by id or name, or "new" to start a new part. Left out: the current part (a first part is made when there is none).'),
+      shapes: SHAPES_ARG,
+      name: str('A name for the history.'),
+    }
   ),
   tool('add_to_sketch', 'Adds shapes to an existing sketch. Features built on the sketch are rebuilt.', { sketch: SKETCH_ARG, shapes: SHAPES_ARG }, ['shapes']),
   tool(
@@ -107,7 +120,7 @@ export const TOOLS = [
       profiles: { description: 'Which regions: "outer" (default: every outline with its holes left open), "all" (holes filled too), or an array of region indices from get_sketch or of points [x, y] inside the regions meant.' },
       distance: numb('How far, in mm, along the sketch plane\'s normal (a cut on a face goes into the body). Negative: the other way.'),
       through_all: bool('For cut and intersect: through everything, instead of a distance.'),
-      operation: str('Default: "new" when there is no body yet, otherwise "join".', { enum: ['new', 'join', 'cut', 'intersect'] }),
+      operation: str('Default: "new" when the sketch\'s part has no body yet, otherwise "join". Only the bodies of that part are joined or cut: other parts are combined with combine.', { enum: ['new', 'join', 'cut', 'intersect'] }),
       symmetric: bool('The distance is the total, half to each side of the sketch plane.'),
       distance2: numb('A second distance, against the direction (two-sided extrusion).'),
       flip: bool('Reverse the direction.'),
@@ -119,7 +132,7 @@ export const TOOLS = [
     'Drills a round hole into a flat face, straight in.',
     {
       face: FACE_ARG,
-      at: { type: 'array', items: { type: 'number' }, description: 'Where, as [x, y] in the face\'s sketch coordinates (on a top face: the world\'s x and y). Left out: the middle of the face.' },
+      at: { type: 'array', items: { type: 'number' }, description: 'Where, as [x, y] in the face\'s sketch coordinates (on a top face: the part\'s x and y). Left out: the middle of the face.' },
       position: { type: 'array', items: { type: 'number' }, description: 'Instead of "at": a point [x, y, z] in space; the hole goes where it drops onto the face.' },
       diameter: numb('Millimetres.'),
       depth: numb('Millimetres. Left out: through everything.'),
@@ -131,7 +144,7 @@ export const TOOLS = [
   tool('chamfer', 'Bevels edges of a body by a distance.', { edges: EDGES_ARG, distance: numb('Millimetres.'), name: str('A name for the history.') }, ['edges', 'distance']),
   tool(
     'edit_feature',
-    'Changes a feature\'s parameters, name or suppression; the features after it are rebuilt. Extrude: distance, through_all, symmetric, distance2, operation, flip. Hole: diameter, depth, through_all, at. Fillet: radius. Chamfer: distance. (A sketch is changed with set_dimension, add_to_sketch and remove_from_sketch.)',
+    'Changes a feature\'s parameters, name or suppression; the features after it are rebuilt. Extrude: distance, through_all, symmetric, distance2, operation, flip. Hole: diameter, depth, through_all, at. Fillet: radius. Chamfer: distance. Box: size, origin. Cylinder: diameter, height, origin. Sphere: diameter, origin. Combine: operation, with, keep. (A sketch is changed with set_dimension, add_to_sketch and remove_from_sketch; where a part stands with move_part.)',
     {
       id: str('The feature\'s id, such as "f3".'),
       name: str('A new name.'),
@@ -139,9 +152,66 @@ export const TOOLS = [
       distance: numb('mm'), through_all: bool('through everything'), symmetric: bool('half to each side'), distance2: numb('mm, the other way'),
       operation: str('new, join, cut or intersect', { enum: ['new', 'join', 'cut', 'intersect'] }), flip: bool('reverse the direction'),
       diameter: numb('mm'), depth: numb('mm'), at: { type: 'array', items: { type: 'number' }, description: '[x, y] on the face' }, radius: numb('mm'),
+      size: VEC('a box: [x, y, z] in mm'), height: numb('mm'), origin: str('base, center or corner'),
+      with: { type: 'array', items: { type: 'string' }, description: 'a combine: the other parts, by id or name' }, keep: bool('a combine: leave the other parts as they are'),
     },
     ['id']
   ),
+  tool(
+    'add_box',
+    'A box as a new part, without a sketch: the first step of that part\'s history. Place it with position and rotation here, or later with move_part; join it to another part or cut it out of one with combine. The new part becomes the current part.',
+    { size: VEC('[x, y, z]: width along X, depth along Y, height along Z, in mm.'), origin: ORIGIN_ARG('"base" (the middle of its bottom face), "center", or "corner" (its lowest corner)'), position: POSITION_ARG, rotation: ROTATION_ARG, parent: PARENT_ARG, name: str('A name for the part.') },
+    ['size']
+  ),
+  tool(
+    'add_cylinder',
+    'A cylinder along Z as a new part, without a sketch. Turn it with rotation ([90, 0, 0] lays it along -Y, [0, 90, 0] along X). The new part becomes the current part.',
+    { diameter: numb('Millimetres.'), height: numb('Millimetres.'), origin: ORIGIN_ARG('"base" (the middle of its bottom face) or "center"'), position: POSITION_ARG, rotation: ROTATION_ARG, parent: PARENT_ARG, name: str('A name for the part.') },
+    ['diameter', 'height']
+  ),
+  tool(
+    'add_sphere',
+    'A sphere as a new part, without a sketch. The new part becomes the current part.',
+    { diameter: numb('Millimetres.'), origin: ORIGIN_ARG('"base" (its lowest point) or "center"'), position: POSITION_ARG, rotation: ROTATION_ARG, parent: PARENT_ARG, name: str('A name for the part.') },
+    ['diameter']
+  ),
+  tool(
+    'add_part',
+    'A new, empty part: a place for sketches (give it to add_sketch as "part", or leave that out: it is now the current part), or a group to put other parts under so that they move together.',
+    { name: str('A name for the part.'), position: POSITION_ARG, rotation: ROTATION_ARG, parent: PARENT_ARG }
+  ),
+  tool(
+    'combine',
+    'Joins other parts to a part, cuts them out of it, or keeps only what it shares with them, where they stand. It is a step in the history of the part that is changed. The other parts become its tools: hidden, placed under it, and still there to edit or move (the result follows). A group or a linked copy can be taken too.',
+    {
+      part: str('The part that is changed, by id or name. Left out: the current part.'),
+      with: { type: 'array', items: { type: 'string' }, description: 'The other parts, by id or name.' },
+      operation: str('"join" (add them), "cut" (take them away) or "intersect" (keep the common volume).', { enum: ['join', 'cut', 'intersect'] }),
+      keep: bool('true: the other parts stay as they are, visible and where they are in the tree.'),
+      name: str('A name for the history.'),
+    },
+    ['with', 'operation']
+  ),
+  tool(
+    'move_part',
+    'Places a part: where it stands, how it is turned, what it stands under. Nothing is rebuilt unless a combine depends on it. What is left out stays as it is.',
+    {
+      part: PART_ARG,
+      position: POSITION_ARG,
+      rotation: ROTATION_ARG,
+      by: VEC('Instead of position: move it by [dx, dy, dz] mm from where it is (along its parent\'s axes).'),
+      turn: { type: 'object', description: 'Instead of rotation: turn it from where it is, { "axis": "x" | "y" | "z", "angle": degrees, "about": "center" (the middle of what it shows; default), "origin" (its own origin) or a point [x, y, z] in its parent\'s frame }.' },
+      parent: { description: 'Put it under another part (id or name), or null for none. It stays where it is in space unless position or rotation are given too.' },
+    }
+  ),
+  tool(
+    'copy_part',
+    'Copies a part with everything under it. A copy of its own has its own history, free to change. linked: true makes a linked copy instead: it shows the original in another place and changes with it (make as many as needed; unlink_part makes one independent). The copy stands where the original stands unless told otherwise, and becomes the current part.',
+    { part: PART_ARG, linked: bool('A linked copy.'), position: POSITION_ARG, rotation: ROTATION_ARG, by: VEC('Move the copy by [dx, dy, dz] mm from where the original stands.'), parent: PARENT_ARG, name: str('A name for the copy.') }
+  ),
+  tool('edit_part', 'Renames a part, or hides or shows it (with everything under it). Hidden parts are not exported.', { part: PART_ARG, name: str('A new name.'), hidden: bool('true hides it, false shows it.') }),
+  tool('unlink_part', 'Turns a linked copy into a part of its own, with its own history, in the same place.', { part: PART_ARG }),
+  tool('delete_part', 'Deletes a part with its history and everything under it. If linked copies or combine features elsewhere use it, say with_dependents to delete those too, or the command lists them and changes nothing.', { part: PART_ARG, with_dependents: bool('Also delete the linked copies and combine features that use it.') }),
   tool('delete_feature', 'Deletes a feature. If others are built on it they must go too: say so with with_dependents, or the command lists them and changes nothing.', { id: str('The feature\'s id.'), with_dependents: bool('Also delete what is built on it.') }, ['id']),
   tool('undo', 'Takes back the last change.'),
   tool('redo', 'Does again what undo took back.'),
@@ -167,14 +237,64 @@ export const TOOLS = [
  * @param {() => boolean} app.editing     a sketch or a feature dialog is open in the page
  * @param {() => void} app.cancelEdit     closes it, discarding
  * @param {() => void} app.ready          called before a change: leave any look-back in the history
- * @param {(featureId: string | null) => void} app.shown   a command made or changed this: select it, fit the view
+ * @param {(featureId: string | null, partId?: string | null) => void} app.shown   a command made or changed this: select it, fit the view
+ * @param {() => string | null} app.currentPart   the part being worked on
+ * @param {() => string | null} app.homePart      the part a new sketch goes into (never a linked copy)
  * @param {(blob: Blob, name: string) => void} app.download
  * @param {(doc: object) => string} app.filename
  */
 export function createCommands(app) {
   const { store, view } = app;
   const doc = () => store.state.doc;
-  const bodies = () => store.state.build?.bodies ?? [];
+  const usedUp = () => new Map(Object.entries(store.state.build?.used ?? {}));
+  /** Every body the kernel built, with where its part stands; `away` when it is not in the picture (hidden, or used up as a tool). */
+  function bodies() {
+    const d = doc(),
+      built = store.state.build?.bodies ?? [],
+      world = worldOf(d),
+      shown = new Set(sceneOf(d, built, usedUp()).filter((b) => !b.instance).map((b) => b.id));
+    return built.map((b) => ({ ...b, matrix: world.get(b.part) ?? Mat.IDENTITY, ...(shown.has(b.id) ? {} : { away: true }) }));
+  }
+  /** A part by id or by name; nothing given: the current part. */
+  function partOf(ref) {
+    const d = doc();
+    if (ref === undefined || ref === null) {
+      const p = partById(d, app.currentPart());
+      if (!p) throw Error('There is no part yet: make one with add_sketch, add_box, add_cylinder, add_sphere or add_part.');
+      return p;
+    }
+    const text = String(ref),
+      byId = partById(d, text);
+    if (byId) return byId;
+    const named = d.parts.filter((x) => x.name.toLowerCase() === text.toLowerCase());
+    if (named.length === 1) return named[0];
+    throw Error(
+      named.length
+        ? `${named.length} parts are named "${text}" (${named.map((x) => x.id).join(', ')}): use the id.`
+        : `There is no part "${text}". Parts: ${d.parts.map((x) => `${x.id} "${x.name}"`).join(', ') || 'none'}.`
+    );
+  }
+  const ctx = () => ({ current: app.currentPart() ?? undefined });
+  /** A face or edge description with its "part" (an id or a name) made an id. */
+  const described = (s) => (s && typeof s === 'object' && !Array.isArray(s) && s.part !== undefined ? { ...s, part: partOf(s.part).id } : s);
+  /** The bodies a listing is about: one by id, those of a part, or all that are in the picture. */
+  function bodiesFor(a) {
+    const list = bodies();
+    if (a.body !== undefined) return [findBody(list, a.body)];
+    if (a.part !== undefined) {
+      const p = partOf(a.part),
+        own = list.filter((b) => b.part === p.id);
+      if (!own.length) throw Error(`${p.name} (${p.id}) has no body${p.link ? ': it is a linked copy and shows the bodies of ' + p.link : ''}.`);
+      return own;
+    }
+    return list.filter((b) => !b.away);
+  }
+  const vec3 = (v, what, fallback) => {
+    if (v === undefined) return fallback;
+    if (!Array.isArray(v) || v.length !== 3 || !v.every(Number.isFinite)) throw Error(`"${what}" must be three numbers.`);
+    return [...v];
+  };
+  const parentFrom = (ref) => (ref === undefined || ref === null || ref === '' ? null : partOf(ref).id);
 
   /** Resolves with the store's state once the kernel has answered the latest request. */
   function settled(timeout = 180000) {
@@ -214,13 +334,45 @@ export function createCommands(app) {
   const bodyRows = () =>
     bodies().map((b) => ({
       id: b.id,
+      part: b.part,
       name: doc().bodies[b.id]?.name ?? 'Body ' + b.id.slice(1),
       volume: round(b.volume, 3),
-      box: [round(b.bbox[0]), round(b.bbox[1])],
+      box: round(Mat.box(b.matrix, b.bbox)),
       lumps: b.lumps,
       faces: b.mesh.faces.length,
       ...(doc().bodies[b.id]?.hidden ? { hidden: true } : {}),
+      ...(b.away ? { shown: false } : {}),
     }));
+  /** The box in space round what a part shows (its own bodies and those under it), or null. `local`: its placement, when it is being changed. */
+  function boxOf(d, pid, list = bodies(), frame = worldOf(d).get(pid)) {
+    const boxes = contentOf(d, pid).flatMap((item) => list.filter((b) => b.part === item.from).map((b) => Mat.box(Mat.mul(frame, item.rel), b.bbox)));
+    if (!boxes.length) return null;
+    return [[0, 1, 2].map((i) => Math.min(...boxes.map((b) => b[0][i]))), [0, 1, 2].map((i) => Math.max(...boxes.map((b) => b[1][i])))];
+  }
+  function partRows() {
+    const d = doc(),
+      list = bodies(),
+      used = usedUp();
+    return d.parts.map((p) => {
+      const fs = featuresOf(d, p.id),
+        box = boxOf(d, p.id, list);
+      return {
+        id: p.id,
+        name: p.name,
+        kind: p.link ? 'linked copy' : fs.length ? 'part' : d.parts.some((x) => x.parent === p.id) ? 'group' : 'empty',
+        ...(p.link ? { copy_of: p.link } : {}),
+        parent: p.parent ?? null,
+        position: round(p.pos),
+        rotation: round(p.rot),
+        ...(p.hidden ? { hidden: true } : {}),
+        ...(used.has(p.id) ? { tool_of: used.get(p.id) } : {}),
+        features: fs.map((f) => f.id),
+        bodies: list.filter((b) => b.part === p.id).map((b) => b.id),
+        ...(box ? { box: round(box) } : {}),
+      };
+    });
+  }
+  const partOutcome = (pid, more = {}) => ({ part: partRows().find((x) => x.id === pid) ?? null, ...more, problems: problems(), bodies: bodyRows() });
 
   function sketchInfo(f) {
     const ix = indexSketch(f),
@@ -237,6 +389,7 @@ export function createCommands(app) {
     return {
       id: f.id,
       name: f.name,
+      part: f.part,
       plane: f.plane.kind === 'base' ? f.plane.base : { face_of_body: f.plane.ref.body },
       degrees_of_freedom: analyseSketch(f).dof,
       entities: f.entities.map((e) => {
@@ -288,6 +441,10 @@ export function createCommands(app) {
     if (f.type === 'hole') return { diameter: f.diameter, ...(f.depth === 'all' ? { through_all: true } : { depth: f.depth }), at: round(f.at), on_body: f.face?.body };
     if (f.type === 'fillet') return { radius: f.radius, edges: f.edges.length };
     if (f.type === 'chamfer') return { distance: f.distance, edges: f.edges.length };
+    if (f.type === 'box') return { size: f.size, origin: f.origin };
+    if (f.type === 'cylinder') return { diameter: f.diameter, height: f.height, origin: f.origin };
+    if (f.type === 'sphere') return { diameter: f.diameter, origin: f.origin };
+    if (f.type === 'combine') return { operation: f.operation, with: f.tools, ...(f.keep ? { keep: true } : {}) };
     return {};
   }
 
@@ -296,9 +453,11 @@ export function createCommands(app) {
     return {
       project: st.doc.meta.name,
       units: 'mm',
+      parts: partRows(),
+      current_part: app.currentPart() ?? null,
       features: st.doc.features.map((f) => {
         const r = resultOf(f.id);
-        return { id: f.id, type: f.type, name: f.name, status: r?.status ?? 'unknown', ...(r?.message ? { message: r.message } : {}), ...summary(f) };
+        return { id: f.id, part: f.part, type: f.type, name: f.name, status: r?.status ?? 'unknown', ...(r?.message ? { message: r.message } : {}), ...summary(f) };
       }),
       bodies: bodyRows(),
       editing: app.editing(),
@@ -314,6 +473,7 @@ export function createCommands(app) {
       r = resultOf(id);
     return {
       id,
+      part: f?.part,
       type: f?.type,
       name: f?.name,
       status: r?.status ?? 'unknown',
@@ -325,11 +485,58 @@ export function createCommands(app) {
   };
 
   /** Makes `next` the document. A sketch-only change needs no trial: the solver has accepted it. */
-  async function commit(next, label, id) {
+  async function commit(next, label, id, partId = null) {
     store.commit(next, label);
     const st = await settled();
     if (st.error) throw Error(st.error);
-    app.shown(id ?? null);
+    app.shown(id ?? null, partId);
+  }
+
+  /** Makes `next` the document unless it breaks a feature that was whole (a move can pull a tool out of what it cuts). */
+  async function partChange(next, label, pid, more) {
+    if (next.features.some((f) => f.type === 'combine' && !f.suppressed)) {
+      const before = new Set(problems().filter((x) => x.status === 'error').map((x) => x.id));
+      store.preview(next);
+      const st = await settled(),
+        broken = (st.build?.features ?? []).filter((r) => r.status === 'error' && !before.has(r.id));
+      if (st.error || broken.length) {
+        store.cancelPreview();
+        await settled();
+        throw Error(st.error || 'That would break ' + broken.map((r) => `${featureById(next, r.id)?.name} (${r.id}): ${r.message}`).join(' '));
+      }
+    }
+    await commit(next, label, null, pid);
+    return partOutcome(pid, more);
+  }
+
+  /** The parts a combine of `target` is given, as ids. */
+  function toolsFrom(list, target) {
+    if (!Array.isArray(list) || !list.length) throw Error('"with" lists the other parts, by id or name.');
+    const no = new Set([target.id, ...ancestorsOf(doc(), target.id)]);
+    const ids = list.map((ref) => {
+      const p = partOf(ref);
+      if (p.id === target.id) throw Error(`${p.name} cannot be combined with itself.`);
+      if (no.has(p.id)) throw Error(`${target.name} stands under ${p.name}, so it is part of it: it cannot be combined with it.`);
+      return p.id;
+    });
+    return [...new Set(ids)];
+  }
+  /** The parts a combine uses up are put under the part it changes (they stay where they are in space). */
+  function adopt(next, feature) {
+    if (!feature.keep) for (const t of feature.tools) if (!ancestorsOf(next, t).includes(feature.part)) next = setParent(next, t, feature.part);
+    return next;
+  }
+  /** The placement a new part is given. */
+  const placementFrom = (a) => ({ parent: parentFrom(a.parent), pos: vec3(a.position, 'position', [0, 0, 0]), rot: vec3(a.rotation, 'rotation', [0, 0, 0]) });
+  async function primitive(type, a, data) {
+    free();
+    await settled();
+    if (a.origin !== undefined && !(type === 'box' ? ['base', 'center', 'corner'] : ['base', 'center']).includes(a.origin))
+      throw Error(`"origin" is "base"${type === 'box' ? ', "center" or "corner"' : ' or "center"'}.`);
+    const made = makePart(doc(), { base: type[0].toUpperCase() + type.slice(1), ...(a.name ? { name: String(a.name) } : {}), ...placementFrom(a) }),
+      f = makeFeature(made.doc, type, { part: made.part.id, ...data, ...(a.origin !== undefined ? { origin: a.origin } : {}) });
+    const out = await apply(addFeature(addPart(f.doc, made.part), f.feature), f.feature, 'Add ' + made.part.name);
+    return { ...out, part: partRows().find((x) => x.id === made.part.id) };
   }
 
   /** Tries `next` (in which `feature` is new or changed) as a preview, and commits it only if that feature builds. */
@@ -394,8 +601,8 @@ export function createCommands(app) {
     await settled();
     const key = type === 'fillet' ? 'radius' : 'distance';
     positive(a[key], type === 'fillet' ? 'The radius' : 'The distance');
-    const hits = findEdges(bodies(), a.edges);
-    const made = makeFeature(doc(), type, { [key]: a[key], ...(a.name ? { name: String(a.name) } : {}) });
+    const hits = findEdges(bodies(), described(a.edges), ctx());
+    const made = makeFeature(doc(), type, { part: hits[0].body.part, [key]: a[key], ...(a.name ? { name: String(a.name) } : {}) });
     made.feature.edges = hits.map((h, i) => edgeRefFrom(h.body, h.edge, 'k' + (i + 1)));
     made.feature.kseq = hits.length;
     return apply(addFeature(made.doc, made.feature), made.feature, 'Apply ' + made.feature.name);
@@ -419,7 +626,7 @@ export function createCommands(app) {
       free();
       const errors = validateDocument(a.document);
       if (errors.length) throw Error('Not a valid CoreCAD project: ' + errors.join(' '));
-      store.open(structuredClone(a.document));
+      store.open(upgrade(structuredClone(a.document)));
       await settled();
       app.shown(null);
       return stateInfo();
@@ -436,31 +643,48 @@ export function createCommands(app) {
     },
     async list_faces(a) {
       await settled();
-      return (a.body === undefined ? bodies() : [findBody(bodies(), a.body)]).map((b) => ({ body: b.id, faces: describeFaces(b) }));
+      return bodiesFor(a).map((b) => ({ body: b.id, part: b.part, faces: describeFaces(b) }));
     },
     async list_edges(a) {
       await settled();
       if (a.edges !== undefined) {
         const sel = Array.isArray(a.edges) ? { indices: a.edges } : a.edges === 'all' ? {} : a.edges;
-        const hits = findEdges(bodies(), a.body !== undefined && sel && typeof sel === 'object' ? { body: a.body, ...sel } : sel);
+        const whose = { ...(a.body !== undefined ? { body: a.body } : {}), ...(a.part !== undefined ? { part: a.part } : {}) };
+        const hits = findEdges(bodies(), described(sel && typeof sel === 'object' ? { ...whose, ...sel } : sel), ctx());
         const rows = describeEdges(hits[0].body);
-        return [{ body: hits[0].body.id, edges: rows.filter((r) => hits.some((h) => h.edge === r.edge)) }];
+        return [{ body: hits[0].body.id, part: hits[0].body.part, edges: rows.filter((r) => hits.some((h) => h.edge === r.edge)) }];
       }
-      return (a.body === undefined ? bodies() : [findBody(bodies(), a.body)]).map((b) => ({ body: b.id, edges: describeEdges(b) }));
+      return bodiesFor(a).map((b) => ({ body: b.id, part: b.part, edges: describeEdges(b) }));
     },
     async add_sketch(a) {
       free();
       await settled();
       const where = a.plane ?? 'XY';
-      let plane;
-      if (typeof where === 'string' && PLANES.includes(where.toUpperCase())) plane = { kind: 'base', base: where.toUpperCase() };
-      else {
-        const { body, face } = findFace(bodies(), where);
+      let plane,
+        base = doc(),
+        partId,
+        newPart = null;
+      if (typeof where === 'string' && PLANES.includes(where.toUpperCase())) {
+        plane = { kind: 'base', base: where.toUpperCase() };
+        // The part it goes into: the one named, the current one, or a new one ("new", or when there is none).
+        const home = a.part === undefined ? partById(base, app.homePart()) : a.part === 'new' ? null : partOf(a.part);
+        if (home?.link) throw Error(`${home.name} is a linked copy and has no history of its own: sketch in the original (${home.link}), or unlink_part first.`);
+        if (home) partId = home.id;
+        else {
+          const made = makePart(base);
+          base = made.doc;
+          newPart = made.part;
+          partId = newPart.id;
+        }
+      } else {
+        const { body, face } = findFace(bodies(), described(where), ctx());
         plane = { kind: 'face', ref: faceRefFrom(body, face) };
+        partId = body.part;
+        if (a.part !== undefined && a.part !== 'new' && partOf(a.part).id !== partId) throw Error(`That face belongs to part ${partId}: a sketch on a face is part of that part's history.`);
       }
-      const made = makeFeature(doc(), 'sketch', { plane, ...(a.name ? { name: String(a.name) } : {}) });
+      const made = makeFeature(base, 'sketch', { plane, part: partId, ...(a.name ? { name: String(a.name) } : {}) });
       const feature = a.shapes?.length ? addShapes(made.feature, a.shapes).sketch : made.feature;
-      await commit(addFeature(made.doc, feature), 'Create ' + feature.name, feature.id);
+      await commit(addFeature(newPart ? addPart(made.doc, newPart) : made.doc, feature), 'Create ' + feature.name, feature.id);
       return outcome(feature.id, { sketch: sketchInfo(featureById(doc(), feature.id)) });
     },
     async add_to_sketch(a) {
@@ -519,13 +743,14 @@ export function createCommands(app) {
       await settled();
       const sk = sketchOf(a.sketch),
         regions = regionsFor(sk, a.profiles),
-        operation = a.operation ?? (bodies().length ? 'join' : 'new');
+        operation = a.operation ?? (bodies().some((b) => b.part === sk.part) ? 'join' : 'new');
       if (!a.through_all && a.distance === undefined) throw Error('Give a distance (or through_all for a cut).');
       const extent = extentFrom(a, operation);
       // A cut drawn on a face goes into the body, against the face's outward normal, unless told otherwise.
       let flip = a.flip ?? (operation === 'cut' && sk.plane.kind === 'face');
       if (a.distance < 0) flip = !flip;
       const made = makeFeature(doc(), 'extrude', {
+        part: sk.part,
         sketch: sk.id,
         profiles: regions.map(profileRefFrom),
         operation,
@@ -539,12 +764,14 @@ export function createCommands(app) {
       free();
       await settled();
       positive(a.diameter, 'The diameter');
-      const { body, face } = findFace(bodies(), a.face ?? 'top'),
+      const { body, face } = findFace(bodies(), described(a.face ?? 'top'), ctx()),
         ref = faceRefFrom(body, face),
         frame = canonicalFrame(ref.hint.n, ref.hint.d);
-      const at = a.at ?? toLocal(frame, a.position ?? ref.hint.center).slice(0, 2);
+      // "position" is a point in space; the face's own coordinates are those of its part.
+      const at = a.at ?? toLocal(frame, a.position !== undefined ? Mat.point(Mat.invert(body.matrix), vec3(a.position, 'position')) : ref.hint.center).slice(0, 2);
       if (!Array.isArray(at) || at.length !== 2 || !at.every(Number.isFinite)) throw Error('"at" must be [x, y] on the face.');
       const made = makeFeature(doc(), 'hole', {
+        part: body.part,
         face: ref,
         at,
         diameter: a.diameter,
@@ -560,7 +787,18 @@ export function createCommands(app) {
       await settled();
       const f = featureById(doc(), a.id);
       if (!f) throw Error(`There is no feature "${a.id}".`);
-      const allowed = { sketch: [], extrude: ['distance', 'through_all', 'symmetric', 'distance2', 'operation', 'flip'], hole: ['diameter', 'depth', 'through_all', 'at'], fillet: ['radius'], chamfer: ['distance'] }[f.type] ?? [];
+      const allowed =
+        {
+          sketch: [],
+          extrude: ['distance', 'through_all', 'symmetric', 'distance2', 'operation', 'flip'],
+          hole: ['diameter', 'depth', 'through_all', 'at'],
+          fillet: ['radius'],
+          chamfer: ['distance'],
+          box: ['size', 'origin'],
+          cylinder: ['diameter', 'height', 'origin'],
+          sphere: ['diameter', 'origin'],
+          combine: ['operation', 'with', 'keep'],
+        }[f.type] ?? [];
       const given = Object.keys(a).filter((k) => !['id', 'name', 'suppressed'].includes(k));
       const wrong = given.filter((k) => !allowed.includes(k));
       if (wrong.length)
@@ -585,7 +823,138 @@ export function createCommands(app) {
       }
       if (f.type === 'fillet' && a.radius !== undefined) next.radius = a.radius;
       if (f.type === 'chamfer' && a.distance !== undefined) next.distance = a.distance;
+      if (f.type === 'box' && a.size !== undefined) next.size = vec3(a.size, 'size');
+      if (['cylinder', 'sphere'].includes(f.type) && a.diameter !== undefined) next.diameter = a.diameter;
+      if (f.type === 'cylinder' && a.height !== undefined) next.height = a.height;
+      if (['box', 'cylinder', 'sphere'].includes(f.type) && a.origin !== undefined) next.origin = a.origin;
+      if (f.type === 'combine') {
+        if (a.operation !== undefined) next.operation = a.operation;
+        if (a.with !== undefined) next.tools = toolsFrom(a.with, partById(doc(), f.part));
+        if (a.keep !== undefined) next.keep = !!a.keep;
+        return apply(adopt(updateFeature(doc(), f.id, () => next), next), next, 'Edit ' + next.name);
+      }
       return apply(updateFeature(doc(), f.id, () => next), next, 'Edit ' + next.name);
+    },
+    async add_box(a) {
+      const size = vec3(a.size, 'size');
+      size.forEach((v, i) => positive(v, ['The width', 'The depth', 'The height'][i]));
+      return primitive('box', a, { size });
+    },
+    async add_cylinder(a) {
+      return primitive('cylinder', a, { diameter: positive(a.diameter, 'The diameter'), height: positive(a.height, 'The height') });
+    },
+    async add_sphere(a) {
+      return primitive('sphere', a, { diameter: positive(a.diameter, 'The diameter') });
+    },
+    async add_part(a) {
+      free();
+      await settled();
+      const made = makePart(doc(), { ...(a.name ? { name: String(a.name) } : {}), ...placementFrom(a) });
+      await commit(addPart(made.doc, made.part), 'New part', null, made.part.id);
+      return partOutcome(made.part.id);
+    },
+    async combine(a) {
+      free();
+      await settled();
+      const target = partOf(a.part);
+      if (target.link) throw Error(`${target.name} is a linked copy: combine changes a part with a history. Use the original (${target.link}), or unlink_part first.`);
+      if (!['join', 'cut', 'intersect'].includes(a.operation)) throw Error('"operation" is "join", "cut" or "intersect".');
+      const made = makeFeature(doc(), 'combine', { part: target.id, operation: a.operation, tools: toolsFrom(a.with, target), keep: !!a.keep, ...(a.name ? { name: String(a.name) } : {}) });
+      const out = await apply(adopt(addFeature(made.doc, made.feature), made.feature), made.feature, 'Apply ' + made.feature.name);
+      return { ...out, parts: partRows() };
+    },
+    async move_part(a) {
+      free();
+      await settled();
+      const p = partOf(a.part);
+      let next = doc();
+      if (a.parent !== undefined) next = setParent(next, p.id, parentFrom(a.parent));
+      const cur = partById(next, p.id),
+        rot = vec3(a.rotation, 'rotation', null);
+      let pos = vec3(a.position, 'position', null);
+      if (a.by !== undefined) {
+        if (pos) throw Error('Give "position" or "by", not both.');
+        const by = vec3(a.by, 'by');
+        pos = cur.pos.map((v, i) => v + by[i]);
+      }
+      let placed = { pos: pos ?? cur.pos, rot: rot ?? cur.rot };
+      if (a.turn !== undefined) {
+        if (rot) throw Error('Give "rotation" or "turn", not both.');
+        const axis = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }[String(a.turn?.axis).toLowerCase()];
+        if (!axis || !Number.isFinite(a.turn.angle)) throw Error('"turn" is { "axis": "x", "y" or "z", "angle": degrees, "about": "center", "origin" or [x, y, z] }.');
+        const local = Mat.fromPlacement(placed.pos, placed.rot),
+          about = a.turn.about ?? 'center';
+        let pivot = placed.pos;
+        if (Array.isArray(about)) pivot = vec3(about, 'about');
+        else if (about === 'center') {
+          // the middle of what the part shows, in its parent's frame
+          const box = boxOf(next, p.id, bodies(), local);
+          if (box) pivot = [0, 1, 2].map((i) => (box[0][i] + box[1][i]) / 2);
+        } else if (about !== 'origin') throw Error('"about" is "center", "origin" or a point [x, y, z].');
+        placed = Mat.toPlacement(Mat.mul(Mat.turn(axis, a.turn.angle, pivot), local));
+      }
+      next = updatePart(next, p.id, placed);
+      if (a.parent === undefined && pos === null && rot === null && a.turn === undefined) throw Error('Say where: give position, rotation, by, turn or parent.');
+      return partChange(next, 'Move ' + p.name, p.id);
+    },
+    async copy_part(a) {
+      free();
+      await settled();
+      const p = partOf(a.part),
+        c = copyPart(doc(), p.id, { linked: !!a.linked });
+      let next = c.doc;
+      if (a.parent !== undefined) next = setParent(next, c.id, parentFrom(a.parent));
+      const cur = partById(next, c.id),
+        rot = vec3(a.rotation, 'rotation', null);
+      let pos = vec3(a.position, 'position', null);
+      if (a.by !== undefined) {
+        if (pos) throw Error('Give "position" or "by", not both.');
+        const by = vec3(a.by, 'by');
+        pos = cur.pos.map((v, i) => v + by[i]);
+      }
+      next = updatePart(next, c.id, { ...(a.name ? { name: String(a.name) } : {}), pos: pos ?? cur.pos, rot: rot ?? cur.rot });
+      return partChange(next, (a.linked ? 'Linked copy of ' : 'Copy of ') + p.name, c.id, { copy_of: p.id });
+    },
+    async edit_part(a) {
+      free();
+      await settled();
+      const p = partOf(a.part);
+      if (a.name === undefined && a.hidden === undefined) throw Error('Give a name, or hidden: true or false.');
+      const next = updatePart(doc(), p.id, (x) => {
+        const { hidden, ...rest } = x,
+          hide = a.hidden === undefined ? !!hidden : !!a.hidden;
+        return { ...rest, ...(a.name !== undefined ? { name: String(a.name) } : {}), ...(hide ? { hidden: true } : {}) };
+      });
+      if (!partById(next, p.id).name.trim()) throw Error('A part needs a name.');
+      await commit(next, 'Edit ' + p.name, null, p.id);
+      return partOutcome(p.id);
+    },
+    async unlink_part(a) {
+      free();
+      await settled();
+      const p = partOf(a.part),
+        u = unlinkPart(doc(), p.id);
+      return partChange(u.doc, 'Unlink ' + p.name, u.id);
+    },
+    async delete_part(a) {
+      free();
+      await settled();
+      const d = doc(),
+        p = partOf(a.part),
+        deps = partDependents(d, p.id),
+        under = descendantsOf(d, p.id);
+      if ((deps.links.length || deps.features.length) && !a.with_dependents)
+        throw Error(
+          `${[
+            ...deps.links.map((l) => `the linked copy ${partById(d, l).name} (${l})`),
+            ...deps.features.map((f) => `${featureById(d, f).name} (${f}) of part ${featureById(d, f).part}`),
+          ].join(', ')} ${deps.links.length + deps.features.length > 1 ? 'use' : 'uses'} ${p.name}. Say with_dependents: true to delete ${deps.links.length + deps.features.length > 1 ? 'them' : 'it'} too.`
+        );
+      let next = removePart(d, p.id);
+      for (const l of deps.links) next = removePart(next, l);
+      for (const f of deps.features) next = removeFeature(next, f);
+      await commit(next, 'Delete ' + p.name, null, null);
+      return { deleted: { parts: [p.id, ...under, ...deps.links], features: [...d.features.filter((f) => !featureById(next, f.id)).map((f) => f.id)] }, parts: partRows(), problems: problems(), bodies: bodyRows() };
     },
     async delete_feature(a) {
       free();

@@ -130,3 +130,26 @@ const e = shape.meshEdges({ tolerance: 0.05, angularTolerance: 0.3 });
 ```js
 const message = e => (e instanceof WebAssembly.Exception ? 'OCCT: ' + OC.getExceptionMessage(e).join(' ') : String(e?.message ?? e));
 ```
+
+## Placing a shape, and primitives (for parts)
+
+```js
+const t = new OC.gp_Trsf();
+t.SetValues(r00, r01, r02, tx, r10, r11, r12, ty, r20, r21, r22, tz);   // row order
+const loc = new OC.TopLoc_Location(t);
+const moved = r.cast(shape.wrapped.Moved(loc, false));                   // the source stays alive
+```
+
+- `moved.faces[i]` is `shape.faces[i]` in its new place: same count, same
+  order. Labels kept per face index carry over unchanged.
+- A moved shape works as a boolean tool, and a fillet or chamfer on an edge
+  the tool made works afterwards (also with a turned tool).
+- A hole that is tangent to a wall cannot take a chamfer on its rim
+  (`Standard_ProgramError TopOpeBRepDS_DataStructure::Point`): that is the
+  geometry, not the placement.
+- `r.makeBox(corner1, corner2)`, `r.makeCylinder(radius, height, location,
+  direction)` and `r.makeSphere(radius)` give a `Solid` with 6, 3 and 1
+  faces. A box's faces are told apart by `normalAt()`.
+- A sphere has three edges: a seam and two of zero length at the poles. All
+  belong to one face only, so none can be picked; reading their points and
+  length does not throw.

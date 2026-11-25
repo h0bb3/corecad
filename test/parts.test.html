@@ -1,0 +1,134 @@
+<!doctype html><meta charset="utf-8"><title>Parts and placements</title><script type="module">
+import {test,eq,ok,near,throws,run} from './harness.js';
+import * as Mat from '../src/core/mat.js';
+import {createDocument,makeFeature,addFeature} from '../src/doc/model.js';
+import {upgrade,validateDocument,parse,serialize} from '../src/doc/schema.js';
+import {createHistory} from '../src/doc/history.js';
+import {makePart,addPart,updatePart,removePart,partById,featuresOf,worldOf,setParent,setWorld,contentOf,consumedIn,buildOrder,sceneOf,copyPart,unlinkPart,partDependents,treeOrder,descendantsOf} from '../src/doc/parts.js';
+
+/** A document with parts made from short descriptions: part('a', {pos, parent}). */
+function scene(...specs){
+ let d=createDocument('Scene');const ids={};
+ for(const [name,data={}] of specs){const m=makePart(d,{name,...data,parent:data.parent?ids[data.parent]:null,...(data.link?{link:ids[data.link]}:{})});d=addPart(m.doc,m.part);ids[name]=m.part.id;}
+ return {d,ids};
+}
+const feature=(d,type,part,data={})=>{const m=makeFeature(d,type,{part,...data});return {d:addFeature(m.doc,m.feature),f:m.feature};};
+
+test('Placements: degrees about X, then Y, then Z; exact quarter turns',()=>{
+ eq(Mat.fromPlacement([0,0,0],[0,0,0]),[...Mat.IDENTITY]);
+ const z=Mat.fromPlacement([10,20,30],[0,0,90]);eq(z,[0,-1,0,10,1,0,0,20,0,0,1,30]);
+ near(Mat.point(z,[1,0,0]),[10,21,30],1e-12);near(Mat.dir(z,[0,1,0]),[-1,0,0],1e-12);
+ // X first, then Z: the part's own Y axis ends up along world -X after tipping up to Z
+ const m=Mat.fromPlacement([0,0,0],[90,0,90]);near(Mat.dir(m,[0,1,0]),[0,0,1],1e-12);near(Mat.dir(m,[0,0,1]),[1,0,0],1e-12);
+ for(const rot of [[0,0,0],[30,0,0],[0,45,0],[0,0,-120],[10,20,30],[-170,60,145],[90,0,90],[12.5,-89,3]]){
+  const p=Mat.toPlacement(Mat.fromPlacement([1,2,3],rot));near(p.rot,rot,1e-6,'rot '+rot);eq(p.pos,[1,2,3]);
+ }
+ // at ry = 90 the same placement comes back, with rz folded into rx
+ const g=Mat.fromPlacement([0,0,0],[20,90,50]),back=Mat.toPlacement(g);eq(back.rot[2],0);near(Mat.fromPlacement([0,0,0],back.rot),g,1e-9);
+ ok(Object.is(Mat.toPlacement(Mat.fromPlacement([0,0,0],[0,0,0])).rot[0],0),'no negative zero');
+});
+test('Placements compose, invert and turn about a point',()=>{
+ const a=Mat.fromPlacement([5,0,0],[0,0,90]),b=Mat.fromPlacement([0,3,0],[90,0,0]),ab=Mat.mul(a,b);
+ near(Mat.point(ab,[1,2,3]),Mat.point(a,Mat.point(b,[1,2,3])),1e-12);
+ ok(Mat.isIdentity(Mat.mul(ab,Mat.invert(ab)),1e-12));ok(Mat.isIdentity(Mat.mul(Mat.invert(ab),ab),1e-12));
+ const t=Mat.turn([0,0,1],90,[10,0,0]);near(Mat.point(t,[10,0,0]),[10,0,0],1e-12);near(Mat.point(t,[11,0,0]),[10,1,0],1e-12);
+ near(Mat.box(Mat.fromPlacement([100,0,0],[0,0,90]),[[0,0,0],[40,30,20]]),[[70,0,0],[100,40,20]],1e-9);
+ const f=Mat.frame(a,{o:[0,0,0],x:[1,0,0],y:[0,1,0],n:[0,0,1]});near([f.o,f.x,f.y,f.n],[[5,0,0],[0,1,0],[-1,0,0],[0,0,1]],1e-12);
+ eq(Mat.toColumns16(Mat.shift([1,2,3])).slice(12),[1,2,3,1]);
+});
+test('A format 1 project becomes one part; current files are left alone',()=>{
+ const v1={format:'corecad',version:1,meta:{id:'x',name:'Old',created:'',modified:'',app:'0.1.0'},seq:2,bodies:{f2:{name:'Plate'}},
+  features:[{id:'f1',type:'sketch',name:'Sketch1',plane:{kind:'base',base:'XY'},points:[],entities:[],constraints:[],seq:0},{id:'f2',type:'future',name:'Later'}]};
+ eq(validateDocument(v1),[]);
+ const d=upgrade(v1);eq(d.version,2);eq(d.parts,[{id:'o1',name:'Part 1',parent:null,pos:[0,0,0],rot:[0,0,0]}]);eq(d.pseq,1);
+ ok(d.features.every(f=>f.part==='o1'));eq(d.bodies,v1.bodies);ok(upgrade(d)===d,'nothing to do the second time');
+ eq(parse(JSON.stringify(v1)),d);eq(parse(serialize(d)),d);
+ eq(upgrade({...v1,features:[]}).parts,[]);
+ const fresh=createDocument();eq(fresh.version,2);ok(upgrade(fresh)===fresh);eq(validateDocument(fresh),[]);
+});
+test('Parts are validated: ids, parents, links and where features belong',()=>{
+ const {d,ids}=scene(['a'],['b',{parent:'a'}],['c',{link:'a'}]);eq(validateDocument(d),[]);
+ const bad=(change,pattern)=>{const errors=validateDocument(change(structuredClone(d)));ok(errors.some(e=>pattern.test(e)),()=>JSON.stringify(errors));};
+ bad(x=>{x.parts[0].parent=ids.b;return x;},/under itself/);
+ bad(x=>{x.parts[1].parent='o99';return x;},/parent does not exist/);
+ bad(x=>{x.parts[1].id=ids.a;return x;},/duplicate part id/);
+ bad(x=>{x.parts[0].pos=[0,0];return x;},/placement/);
+ bad(x=>{x.parts[2].link=ids.c;return x;},/link to itself/);
+ bad(x=>{x.parts[1].link=ids.c;return x;},/not to another copy/);
+ bad(x=>{x.features.push({id:'f1',type:'future',name:'F',part:ids.c});x.seq=1;return x;},/linked copy has no features/);
+ bad(x=>{x.features.push({id:'f1',type:'future',name:'F',part:'o77'});x.seq=1;return x;},/belongs to no part/);
+ bad(x=>{x.pseq=1;return x;},/part id/);
+});
+test('Children stand in their parent; a new parent keeps a part where it is',()=>{
+ let {d,ids}=scene(['base',{pos:[100,0,0],rot:[0,0,90]}],['arm',{parent:'base',pos:[10,0,0]}],['loose',{pos:[1,2,3]}]);
+ near(Mat.point(worldOf(d).get(ids.arm),[0,0,0]),[100,10,0],1e-9);
+ const before=worldOf(d).get(ids.loose);d=setParent(d,ids.loose,ids.arm);eq(partById(d,ids.loose).parent,ids.arm);
+ near(worldOf(d).get(ids.loose),before,1e-9);near(partById(d,ids.loose).pos,[-8,99,3],1e-9);eq(partById(d,ids.loose).rot,[0,0,-90]);
+ d=setParent(d,ids.loose,null);near(partById(d,ids.loose).pos,[1,2,3],1e-9);
+ d=setWorld(d,ids.arm,Mat.fromPlacement([0,0,50],[0,0,0]));near(Mat.point(worldOf(d).get(ids.arm),[0,0,0]),[0,0,50],1e-9);
+ await_throws(()=>setParent(d,ids.base,ids.arm),/under itself/);await_throws(()=>setParent(d,ids.base,ids.base),/under itself/);
+ eq(treeOrder(d).map(x=>[x.part.name,x.depth]),[['base',0],['arm',1],['loose',0]]);eq(descendantsOf(d,ids.base),[ids.arm]);
+});
+function await_throws(fn,pattern){let e=null;try{fn();}catch(x){e=x;}ok(e&&pattern.test(e.message),()=>'expected '+pattern+', got '+e?.message);}
+test('What a part contains: its children, not its used-up tools; a link stands for its source',()=>{
+ let {d,ids}=scene(['plate'],['hole',{parent:'plate',pos:[5,0,0]}],['rib',{parent:'plate',pos:[0,7,0]}],['twin',{link:'plate',pos:[0,0,40]}],['group'],['inner',{parent:'group',link:'plate',pos:[1,1,1]}]);
+ ({d}=feature(d,'combine',ids.plate,{operation:'cut',tools:[ids.hole]}));
+ eq([...consumedIn(d)],[[ids.hole,ids.plate]]);
+ const c=contentOf(d,ids.plate);eq(c.map(x=>x.from),[ids.plate,ids.rib]);near(Mat.point(c[1].rel,[0,0,0]),[0,7,0],1e-12);
+ eq(contentOf(d,ids.twin).map(x=>x.from),[ids.plate,ids.rib]);
+ const g=contentOf(d,ids.group);eq(g.map(x=>x.from),[ids.group,ids.plate,ids.rib]);near(Mat.point(g[2].rel,[0,0,0]),[1,8,1],1e-12);
+ // the tool alone still has its own body (it is what the combine takes)
+ eq(contentOf(d,ids.hole).map(x=>x.from),[ids.hole]);
+ // a link placed under its own source does not recurse for ever
+ d=setParent(d,ids.twin,ids.plate);ok(contentOf(d,ids.plate).length<10);
+});
+test('What is shown: every body where it stands, hidden and used-up parts left out',()=>{
+ let {d,ids}=scene(['plate',{pos:[10,0,0]}],['hole',{parent:'plate',pos:[5,0,0]}],['twin',{link:'plate',pos:[0,0,40]}],['spare',{hidden:true}]);
+ const bodies=[{id:'f1',part:ids.plate,key:'k1'},{id:'f2',part:ids.hole,key:'k2'},{id:'f3',part:ids.spare,key:'k3'}];
+ const t=ids.twin;let s=sceneOf(d,bodies);eq(s.map(x=>[x.id,x.part]),[['f1',ids.plate],['f2',ids.hole],[t+'~0~f1',t],[t+'~1~f2',t]]);
+ near(Mat.point(s[0].matrix,[0,0,0]),[10,0,0],1e-12);near(Mat.point(s[1].matrix,[0,0,0]),[15,0,0],1e-12);near(Mat.point(s[2].matrix,[0,0,0]),[0,0,40],1e-12);near(Mat.point(s[3].matrix,[0,0,0]),[5,0,40],1e-12);
+ ok(s[2].instance);eq(s[2].source,'f1');eq(s[2].from,ids.plate);eq(s[2].key,'k1');ok(!s[0].instance);
+ eq(sceneOf(updatePart(d,ids.plate,{hidden:true}),bodies).map(x=>x.id),[t+'~0~f1',t+'~1~f2'],'a hidden original still shows through its links, its children hide with it');
+ eq(sceneOf({...d,bodies:{f1:{hidden:true}}},bodies).map(x=>x.id),['f2',t+'~0~f1',t+'~1~f2']);
+ const cut=feature(d,'combine',ids.plate,{operation:'cut',tools:[ids.hole]}).d;
+ eq(sceneOf(cut,bodies,new Map([[ids.hole,ids.plate]])).map(x=>x.id),['f1',t+'~0~f1'],'a tool that was used is gone, from the copy too');
+ eq(sceneOf(cut,bodies).map(x=>x.id),['f1','f2',t+'~0~f1'],'a combine that failed used nothing up: the tool is shown');
+ eq(sceneOf(updatePart(d,ids.spare,{hidden:false}),bodies).at(-1).id,'f3');
+});
+test('Build order puts tools first and names the parts that would be built from themselves',()=>{
+ let {d,ids}=scene(['a'],['b'],['c'],['copy',{link:'b'}]);
+ ({d}=feature(d,'combine',ids.a,{operation:'cut',tools:[ids.copy]}));({d}=feature(d,'combine',ids.b,{operation:'join',tools:[ids.c]}));
+ const {order,cyclic}=buildOrder(d);ok(order.indexOf(ids.c)<order.indexOf(ids.b)&&order.indexOf(ids.b)<order.indexOf(ids.a),()=>order.join());eq([...cyclic],[]);ok(!order.includes(ids.copy));
+ ({d}=feature(d,'combine',ids.c,{operation:'join',tools:[ids.a]}));eq([...buildOrder(d).cyclic].sort(),[ids.a,ids.b,ids.c].sort());eq(buildOrder(d).order.length,3);
+});
+test('A copy of its own has new ids throughout; a linked copy has none',()=>{
+ let {d,ids}=scene(['plate',{pos:[10,0,0]}],['hole',{parent:'plate',pos:[5,0,0]}],['other']);
+ const ref={labels:['f1/top','f2/wall'],of:1,body:'f1',hint:{n:[0,0,1],d:20,center:[0,0,20],area:1200}};
+ d={...d,seq:0};({d}=feature(d,'box',ids.plate,{name:'Box named f2'}));({d}=feature(d,'cylinder',ids.hole));({d}=feature(d,'combine',ids.plate,{operation:'cut',tools:[ids.hole]}));
+ ({d}=feature(d,'hole',ids.plate,{face:ref,at:[1,2],diameter:3,depth:'all'}));({d}=feature(d,'box',ids.other));
+ d={...d,bodies:{f1:{name:'The plate'}}};eq(validateDocument(d),[]);
+ const c=copyPart(d,ids.plate),n=c.doc;eq(validateDocument(n),[]);eq(n.parts.length,5);eq(n.seq,9);eq(n.pseq,5);
+ const root=partById(n,c.id),child=n.parts.find(p=>p.parent===c.id);eq(root.name,'plate copy');eq(root.pos,[10,0,0]);eq(root.parent,null);eq(child.name,'hole');eq(child.pos,[5,0,0]);
+ const fs=featuresOf(n,c.id);eq(fs.map(f=>f.type),['box','combine','hole']);eq(fs.map(f=>f.id),['f6','f8','f9']);eq(fs[0].name,'Box named f2');
+ eq(fs[1].tools,[child.id]);eq(featuresOf(n,child.id).map(f=>f.id),['f7']);
+ eq(fs[2].face.labels,['f6/top','f7/wall']);eq(fs[2].face.body,'f6');eq(n.bodies.f6,{name:'The plate'});
+ eq(featuresOf(n,ids.plate),featuresOf(d,ids.plate),'the original is untouched');
+ eq(copyPart(n,c.id).doc.parts.at(-2).name,'plate copy 2');
+ const l=copyPart(d,ids.plate,{linked:true}),link=partById(l.doc,l.id);eq(link.link,ids.plate);eq(link.pos,[10,0,0]);eq(featuresOf(l.doc,l.id),[]);eq(l.doc.seq,d.seq);
+ eq(partById(copyPart(l.doc,l.id).doc,'o5').link,ids.plate,'a copy of a link is a link to the same original');
+ const u=unlinkPart(l.doc,l.id);eq(validateDocument(u.doc),[]);ok(!partById(u.doc,l.id));eq(partById(u.doc,u.id).name,link.name);eq(featuresOf(u.doc,u.id).map(f=>f.type),['box','combine','hole']);
+});
+test('Removing a part takes what is under it; what it leaves hanging is named first',()=>{
+ let {d,ids}=scene(['plate'],['hole',{parent:'plate'}],['twin',{link:'plate'}],['user']);
+ ({d}=feature(d,'box',ids.plate));({d}=feature(d,'cylinder',ids.hole));({d}=feature(d,'combine',ids.user,{operation:'cut',tools:[ids.hole]}));
+ d={...d,bodies:{f1:{name:'P'},f2:{name:'H'}}};
+ eq(partDependents(d,ids.plate),{links:[ids.twin],features:['f3']});eq(partDependents(d,ids.twin),{links:[],features:[]});
+ const n=removePart(d,ids.plate);eq(n.parts.map(p=>p.name),['twin','user']);eq(n.features.map(f=>f.id),['f3']);eq(n.bodies,{});
+ eq(validateDocument(n),[],'a link or a tool that is gone is a lost reference, not a broken file');
+});
+test('Undo keeps the part counter, so ids are never used twice',()=>{
+ let d=createDocument();const h=createHistory(d),a=makePart(d);h.commit(addPart(a.doc,a.part),'Part');
+ const b=makePart(h.doc);h.commit(addPart(b.doc,b.part),'Part');eq(b.part.id,'o2');h.undo();h.undo();eq(h.doc.pseq,2);eq(makePart(h.doc).part.id,'o3');eq(makePart(h.doc).part.name,'Part 1');
+});
+run();
+</script>

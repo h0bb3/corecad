@@ -116,14 +116,15 @@ def run(p):
     assert abs(bounds[1][0]-10) < .001 and abs(bounds[1][1]-60) < .001 and abs(bounds[1][2]-40) < .001
     assert abs(p.js('corecad.build.bodies[0].volume') - expected) < .02
     p.key('z', modifiers=2); wait()
-    p.click('[data-visible="f2"]'); wait()
-    assert p.js('corecad.doc.bodies.f2.hidden')
-    p.click('[data-visible="f2"]'); wait()
+    p.click('[data-part-eye="o1"]'); wait()
+    assert p.js('corecad.doc.parts[0].hidden') and p.js('corecad.scene.length') == 0
+    p.click('[data-part-eye="o1"]'); wait()
+    assert p.js('corecad.scene.length') == 1
     p.click('[data-feature="f2"]'); p.click('[data-action="rollback"]'); wait()
     assert abs(p.js('corecad.build.bodies[0].volume')-24000) < .01
     p.click('[data-action="end-history"]'); wait()
     assert abs(p.js('corecad.build.bodies[0].volume') - expected) < .02
-    print('PASS plane redefinition, body visibility and history rollback')
+    print('PASS plane redefinition, part visibility and history rollback')
 
     # Hover help is attached to every visible, enabled control in the final shell.
     missing = p.js('[...document.querySelectorAll("button,input,select,a")].filter(e=>e.getClientRects().length&&!e.closest("[title]")).map(e=>e.outerHTML)')

@@ -1,6 +1,7 @@
 import * as M from './camera-math.js';
 import { buildPickData, pickFace, pickEdge, projectEdges } from './pick3d.js';
 import { basePlane, canonicalFrame, toWorld } from '../core/plane.js';
+import * as Mat from '../core/mat.js';
 
 /** Demand-rendered WebGL solids and a CSS-pixel canvas for sketch annotations. */
 export function createViewport(host, callbacks = {}) {
@@ -26,7 +27,10 @@ export function createViewport(host, callbacks = {}) {
     frame = null,
     drawOverlay = null,
     planes = true,
+    origin = null,
     preview = null,
+    ghosts = [],
+    inverses = [],
     queued = false;
   let T, renderer, scene, camera, solids, highlights, toolGroup;
   const cache = new Map();
@@ -51,6 +55,15 @@ export function createViewport(host, callbacks = {}) {
       c.material?.dispose();
     }
   }
+  /** Puts a three.js object where a body stands (b.matrix: twelve numbers, or nothing). */
+  function place(object, m) {
+    if (m && !Mat.isIdentity(m)) {
+      object.matrixAutoUpdate = false;
+      object.matrix.fromArray(Mat.toColumns16(m));
+      object.matrixWorldNeedsUpdate = true;
+    }
+    return object;
+  }
   function buildSolids() {
     if (!T) return;
     free(solids);
@@ -59,7 +72,7 @@ export function createViewport(host, callbacks = {}) {
       const mesh = new T.Mesh(
         geometry(b.mesh),
         new T.MeshStandardMaterial({
-          color: 0xbac8ca,
+          color: b.chosen ? 0xa8d2c8 : b.instance ? 0xb9c4d6 : 0xbac8ca,
           metalness: 0.15,
           roughness: 0.55,
           side: T.DoubleSide,
@@ -68,7 +81,7 @@ export function createViewport(host, callbacks = {}) {
           polygonOffsetUnits: 1,
         })
       );
-      solids.add(mesh);
+      solids.add(place(mesh, b.matrix));
       const g = new T.BufferGeometry(),
         segments = b.mesh.edgeSegs,
         lines = new Float32Array(segments.reduce((n, v, i) => n + (i % 2 ? v * 3 : 0), 0));
@@ -80,12 +93,26 @@ export function createViewport(host, callbacks = {}) {
       }
       g.setAttribute('position', new T.BufferAttribute(lines, 3));
       solids.add(
-        new T.LineSegments(
-          g,
-          new T.LineBasicMaterial({ color: 0x41585d, transparent: true, opacity: 0.72 })
+        place(
+          new T.LineSegments(
+            g,
+            new T.LineBasicMaterial({ color: b.chosen ? 0x0b7f6e : 0x41585d, transparent: true, opacity: b.chosen ? 0.95 : 0.72 })
+          ),
+          b.matrix
         )
       );
     }
+    // Parts that are not part of the picture but are being worked with: a tool that was used up.
+    for (const b of ghosts)
+      toolGroup.add(
+        place(
+          new T.Mesh(
+            geometry(b.mesh),
+            new T.MeshBasicMaterial({ color: 0x5b83b8, transparent: true, opacity: 0.2, depthWrite: false, side: T.DoubleSide })
+          ),
+          b.matrix
+        )
+      );
     if (preview) {
       const mesh = new T.Mesh(
         geometry(preview),
@@ -97,7 +124,7 @@ export function createViewport(host, callbacks = {}) {
           side: T.DoubleSide,
         })
       );
-      toolGroup.add(mesh);
+      toolGroup.add(place(mesh, preview.matrix));
     }
     dirty();
   }
@@ -137,7 +164,7 @@ export function createViewport(host, callbacks = {}) {
       }
       if (object) {
         object.renderOrder = 5;
-        highlights.add(object);
+        highlights.add(place(object, b.matrix));
       } else g.dispose();
     }
   }
@@ -194,7 +221,7 @@ export function createViewport(host, callbacks = {}) {
     } else if (planes) {
       for (const [i, name] of ['XY', 'XZ', 'YZ'].entries()) {
         const p = basePlane(name),
-          f = canonicalFrame(p.n, p.d),
+          f = origin ? Mat.frame(origin, canonicalFrame(p.n, p.d)) : canonicalFrame(p.n, p.d),
           coords = [
             [-15, -15],
             [50, -15],
@@ -243,26 +270,32 @@ export function createViewport(host, callbacks = {}) {
     renderer?.setSize(vp.w, vp.h);
     dirty();
   }
+  /** A ray of the world in the frame of body i (placements are rigid: distances along it are the same). */
+  const rayIn = (i, ray) => (inverses[i] ? { o: Mat.point(inverses[i], ray.o), d: Mat.dir(inverses[i], ray.d) } : ray);
+  /** What is under a pixel. A hit's `point` is in the frame of the body's part (where its faces
+   *  and references are); `world` is the same point in space. */
   function pick(x, y, filter = 'all', hidden = false) {
     const ray = M.ray(view, vp, x, y);
     let face = null,
       edge = null;
     for (let i = 0; i < pickBodies.length; i++) {
       const b = pickBodies[i],
-        hit = pickFace(b.mesh, picks[i], ray);
-      if (hit && (!face || hit.t < face.t)) face = { type: 'face', body: b.id, ...hit };
+        hit = pickFace(b.mesh, picks[i], rayIn(i, ray));
+      if (hit && (!face || hit.t < face.t))
+        face = { type: 'face', body: b.id, ...hit, world: b.matrix ? Mat.point(b.matrix, hit.point) : hit.point };
     }
     if (filter !== 'face')
       for (let i = 0; i < pickBodies.length; i++) {
         const b = pickBodies[i],
-          hit = pickEdge(b.mesh, projectEdges(b.mesh, view, vp), x, y, 8);
+          hit = pickEdge(b.mesh, projectEdges(b.mesh, view, vp, b.matrix), x, y, 8);
         if (!hit) continue;
-        const depth = M.dot(M.sub(hit.point, ray.o), ray.d),
+        const world = b.matrix ? Mat.point(b.matrix, hit.point) : hit.point,
+          depth = M.dot(M.sub(world, ray.o), ray.d),
           tolerance = Math.max(0.01, M.mmPerPx(view, vp) * 2);
         if (!hidden && face && depth > face.t + tolerance) {
           // At silhouettes a subpixel rounding change can put the ray just inside
           // the solid. Test a tiny neighbourhood of the edge itself, not the mouse.
-          const s = M.project(view, vp, hit.point),
+          const s = M.project(view, vp, world),
             visible = [
               [0.75, 0],
               [-0.75, 0],
@@ -270,15 +303,15 @@ export function createViewport(host, callbacks = {}) {
               [0, -0.75],
             ].some(([dx, dy]) => {
               const r = M.ray(view, vp, s[0] + dx, s[1] + dy),
-                z = M.dot(M.sub(hit.point, r.o), r.d);
+                z = M.dot(M.sub(world, r.o), r.d);
               return !pickBodies.some((body, j) => {
-                const h = pickFace(body.mesh, picks[j], r);
+                const h = pickFace(body.mesh, picks[j], rayIn(j, r));
                 return h && h.t < z - tolerance;
               });
             });
           if (!visible) continue;
         }
-        if (!edge || hit.distPx < edge.distPx) edge = { type: 'edge', body: b.id, ...hit };
+        if (!edge || hit.distPx < edge.distPx) edge = { type: 'edge', body: b.id, ...hit, world };
       }
     return filter === 'edge' ? edge : edge ?? face;
   }
@@ -361,10 +394,15 @@ export function createViewport(host, callbacks = {}) {
     get pickBodies() {
       return pickBodies;
     },
-    setBodies(bs, tool = null, source = bs) {
+    /** bs: what is drawn; source: what can be picked (the model before a feature, while it is
+     *  edited). Each body may have `matrix`: where it stands (twelve numbers, core/mat.js).
+     *  tool: a translucent solid of the feature being edited; extra: translucent parts beside the picture. */
+    setBodies(bs, tool = null, source = bs, extra = []) {
       bodies = bs;
       pickBodies = source;
       preview = tool;
+      ghosts = extra;
+      inverses = source.map((b) => (b.matrix && !Mat.isIdentity(b.matrix) ? Mat.invert(b.matrix) : null));
       picks = source.map((b) => {
         if (!cache.has(b.key)) cache.set(b.key, buildPickData(b.mesh));
         return cache.get(b.key);
@@ -393,6 +431,11 @@ export function createViewport(host, callbacks = {}) {
       planes = on;
       dirty();
     },
+    /** Where the origin planes are drawn: the placement of the part whose planes they are (or nothing). */
+    origin(at) {
+      origin = at && !Mat.isIdentity(at) ? at : null;
+      dirty();
+    },
     setFrame(f, box) {
       frame = f;
       if (f) {
@@ -410,7 +453,7 @@ export function createViewport(host, callbacks = {}) {
     },
     fit() {
       if (frame) return;
-      const boxes = bodies.map((b) => b.bbox);
+      const boxes = bodies.map((b) => (b.matrix ? Mat.box(b.matrix, b.bbox) : b.bbox));
       if (!boxes.length) {
         view = { ...view, target: [20, 15, 0], dist: 160 };
       } else {

@@ -1,0 +1,117 @@
+<!doctype html><meta charset="utf-8"><title>Kernel: parts, primitives, combine</title><script type="module">
+import {test,eq,ok,near,throws,run} from './harness.js';
+import {createKernel} from '../src/kernel/client.js';
+import {createDocument,makeFeature,addFeature,updateFeature} from '../src/doc/model.js';
+import {makePart,addPart,updatePart,copyPart,setParent,sceneOf,worldOf,partById} from '../src/doc/parts.js';
+import {faceRefFrom,edgeRefFrom} from '../src/doc/refs.js';
+import {findRegions,profileRefFrom} from '../src/sketch/profiles.js';
+import {sk,rect} from './fixtures/sketches.js';
+import * as Mat from '../src/core/mat.js';
+const k=createKernel();
+const good=r=>{eq(r.status,'done');ok(!r.features.some(f=>f.status==='error'),()=>JSON.stringify(r.features));return r;};
+const part=(d,data={})=>{const m=makePart(d,data);return [addPart(m.doc,m.part),m.part.id];};
+const feat=(d,type,p,data={})=>{const m=makeFeature(d,type,{part:p,...data});return [addFeature(m.doc,m.feature),m.feature.id];};
+const of=(r,p)=>r.bodies.filter(b=>b.part===p);
+const labels=(b)=>[...new Set(b.mesh.faces.flatMap(f=>f.labels))].sort();
+/** The corners of everything in a binary STL. */
+async function stlBox(blob){const v=new DataView(await blob.arrayBuffer()),n=v.getUint32(80,true),lo=[1e9,1e9,1e9],hi=[-1e9,-1e9,-1e9];
+ for(let t=0;t<n;t++)for(let c=0;c<3;c++)for(let a=0;a<3;a++){const x=v.getFloat32(84+t*50+12+c*12+a*4,true);if(x<lo[a])lo[a]=x;if(x>hi[a])hi[a]=x;}return [lo,hi];}
+let base,plate,pin; // a 40 x 30 x 20 box at the origin, and a cylinder d10 h30 standing 10 to the right of its middle
+test('Primitives: sizes, origins and named faces',async()=>{
+ await k.ready;let d=createDocument('Prims'),a,b,c,fa,fb,fc;
+ [d,a]=part(d);[d,fa]=feat(d,'box',a);[d,b]=part(d);[d,fb]=feat(d,'cylinder',b);[d,c]=part(d);[d,fc]=feat(d,'sphere',c);
+ let r=good(await k.rebuild(d,{purpose:'commit'}));eq(r.bodies.map(x=>[x.id,x.part]),[[fa,a],[fb,b],[fc,c]]);
+ near(r.bodies[0].volume,24000,1e-6);near(r.bodies[0].bbox,[[-20,-15,0],[20,15,20]],1e-6);
+ eq(labels(r.bodies[0]),['back','bottom','front','left','right','top'].map(s=>fa+'/'+s));
+ const side=(name)=>r.bodies[0].mesh.faces.find(f=>f.labels[0]===fa+'/'+name).plane.n;eq(side('top'),[0,0,1]);eq(side('front'),[0,-1,0]);eq(side('right'),[1,0,0]);
+ near(r.bodies[1].volume,Math.PI*100*30,1e-6);near(r.bodies[1].bbox,[[-10,-10,0],[10,10,30]],1e-6);eq(labels(r.bodies[1]),['bottom','top','wall'].map(s=>fb+'/'+s));
+ near(r.bodies[2].volume,4/3*Math.PI*15**3,1e-5);near(r.bodies[2].bbox,[[-15,-15,0],[15,15,30]],1e-5);eq(labels(r.bodies[2]),[fc+'/surface']);
+ ok(r.bodies[2].mesh.edges.every(e=>e.seam),'a sphere has no edge to pick');ok(r.bodies[2].mesh.indices.length>300);
+ d=updateFeature(d,fa,{size:[10,20,30],origin:'corner'});d=updateFeature(d,fb,{origin:'center'});d=updateFeature(d,fc,{origin:'center',diameter:10});
+ r=good(await k.rebuild(d));near(r.bodies[0].bbox,[[0,0,0],[10,20,30]],1e-6);near(r.bodies[1].bbox,[[-10,-10,-15],[10,10,15]],1e-6);near(r.bodies[2].bbox,[[-5,-5,-5],[5,5,5]],1e-5);
+ d=updateFeature(d,fa,{origin:'center'});near(good(await k.rebuild(d)).bodies[0].bbox,[[-5,-10,-15],[5,10,15]],1e-6);
+ d=updateFeature(d,fa,{size:[10,0,30]});eq((await k.rebuild(d)).features[0].status,'error');
+});
+test('Parts build apart; moving one rebuilds nothing',async()=>{
+ let d=createDocument('Two'),fa,fb;[d,plate]=part(d);[d,fa]=feat(d,'box',plate);[d,pin]=part(d,{pos:[10,0,-5]});[d,fb]=feat(d,'cylinder',pin,{diameter:10});base=d;
+ let r=good(await k.rebuild(d,{purpose:'commit'}));eq(r.bodies.length,2);eq(r.used,{});near(of(r,pin)[0].bbox,[[-5,-5,0],[5,5,30]],1e-6,'bodies are in their part\'s own frame');
+ const moved=updatePart(d,pin,{pos:[100,50,0],rot:[90,0,0]});r=good(await k.rebuild(moved));eq(r.stats.recomputed,0);
+ const s=sceneOf(moved,r.bodies);near(Mat.box(s[1].matrix,s[1].bbox),[[95,20,-5],[105,50,5]],1e-6);
+});
+test('Combine cuts with a part where it stands, uses it up, and follows it',async()=>{
+ let d=base,fc;[d,fc]=feat(d,'combine',plate,{operation:'cut',tools:[pin]});
+ let r=good(await k.rebuild(d,{before:true,tool:true,roll:{part:plate,count:2}}));eq(r.used,{[pin]:plate});
+ near(of(r,plate)[0].volume,24000-Math.PI*25*20,1e-4);eq(of(r,plate)[0].id,'f1');eq(of(r,pin).length,1,'the tool part is still built; the page leaves it out');
+ ok(labels(of(r,plate)[0]).includes('f2/wall'),'the hole wall carries the tool\'s label');
+ near(of({bodies:r.before},plate)[0].volume,24000,1e-6);eq(r.tool.op,'cut');eq(r.tool.part,plate);ok(r.tool.indices.length>0);
+ eq(sceneOf(d,r.bodies,new Map(Object.entries(r.used))).map(x=>x.id),['f1']);
+ // the tool is placed in the frame of the part that is cut, wherever that part stands
+ const both=updatePart(updatePart(d,plate,{pos:[500,0,0],rot:[0,0,90]}),pin,{pos:[500,10,-5],rot:[0,0,90]});
+ r=good(await k.rebuild(both));eq(r.stats.recomputed,0,'the same cut, moved as one');
+ // move the tool half out of the plate: half the hole
+ const half=updatePart(d,pin,{pos:[20,0,-5]});r=good(await k.rebuild(half));near(of(r,plate)[0].volume,24000-Math.PI*25*20/2,1e-3);
+ // tip the tool over: a slot through the side
+ const tipped=updatePart(d,pin,{pos:[-25,0,10],rot:[0,90,0]});r=good(await k.rebuild(tipped));near(of(r,plate)[0].volume,24000-Math.PI*25*25,1e-3);
+ // out of reach: a warning, and nothing is used up... the feature is still built, so the tool stays hidden
+ const away=updatePart(d,pin,{pos:[200,0,0]});r=await k.rebuild(away);eq(r.features[2].code,'no-effect');near(of(r,plate)[0].volume,24000,1e-6);
+ // a later feature on the wall of the hole: a reference into another part's labels
+ r=good(await k.rebuild(d));const body=of(r,plate)[0],rim=body.mesh.edges.findIndex(e=>e.kind==='circle'&&e.closed&&Math.abs(e.mid[2]-20)<1e-6);ok(rim>=0);
+ let fd;[d,fd]=feat(d,'chamfer',plate,{edges:[edgeRefFrom(body,rim,'k1')],distance:1,kseq:1});
+ r=good(await k.rebuild(d));near(of(r,plate)[0].volume,24000-Math.PI*25*20-16*Math.PI/3,1e-2);
+ r=good(await k.rebuild(updateFeature(d,'f2',{diameter:8})));ok(r.features.every(f=>f.status==='ok'),'the chamfer follows a narrower tool');near(of(r,plate)[0].volume,24000-Math.PI*16*20-13*Math.PI/3,1e-2);
+ r=good(await k.rebuild(updatePart(d,pin,{pos:[10,0,-5],rot:[0,0,45]})));ok(r.features.every(f=>f.status==='ok'),'and a turned one');near(of(r,plate)[0].volume,24000-Math.PI*25*20-16*Math.PI/3,1e-2);
+ r=good(await k.rebuild(updatePart(updatePart(setParent(d,pin,plate),pin,{pos:[10,0,25],rot:[180,0,0]}),plate,{pos:[7,8,9],rot:[30,40,50]})));ok(r.features.every(f=>f.status==='ok'),'upside down, as a child of a tilted part');near(of(r,plate)[0].volume,24000-Math.PI*25*20-16*Math.PI/3,1e-2);
+});
+test('Join, intersect, keeping the tool, several tools and an empty target',async()=>{
+ let d=base,fc;[d,fc]=feat(d,'combine',plate,{operation:'join',tools:[pin]});
+ let r=good(await k.rebuild(d));eq(of(r,plate).length,1);near(of(r,plate)[0].volume,24000+Math.PI*25*10,1e-3);near(of(r,plate)[0].bbox,[[-20,-15,-5],[20,15,25]],1e-6);
+ r=good(await k.rebuild(updateFeature(d,fc,{operation:'intersect'})));near(of(r,plate)[0].volume,Math.PI*25*20,1e-3);
+ r=good(await k.rebuild(updateFeature(d,fc,{keep:true})));eq(r.used,{});
+ r=await k.rebuild(updateFeature(updatePart(d,pin,{pos:[300,0,0]}),fc,{operation:'intersect'}));eq(r.features[2].status,'error');eq(r.features[2].code,'empty-result');eq(r.used,{});
+ r=await k.rebuild(updatePart(d,pin,{pos:[300,0,0]}));eq(r.features[2].code,'join-made-body');eq(of(r,plate).length,2);
+ // a second tool, and a group that joins its tools into a body of its own
+ let other,fo,group,fg;[d,other]=part(d,{pos:[-10,0,20]});[d,fo]=feat(d,'sphere',other,{diameter:10,origin:'center'});d=updateFeature(d,fc,{operation:'cut',tools:[pin,other]});
+ r=good(await k.rebuild(d));near(of(r,plate)[0].volume,24000-Math.PI*25*20-2/3*Math.PI*125,1e-2);eq(r.used,{[pin]:plate,[other]:plate});
+ [d,group]=part(d);d=updateFeature(d,fc,{suppressed:true});[d,fg]=feat(d,'combine',group,{operation:'join',tools:[plate,pin]});
+ r=good(await k.rebuild(d));eq(of(r,group).map(b=>b.id),[fg]);near(of(r,group)[0].volume,24000+Math.PI*25*10,1e-3);eq(r.features.find(f=>f.id===fc).status,'suppressed');
+ r=await k.rebuild(updateFeature(d,fg,{operation:'cut'}));eq(r.features.find(f=>f.id===fg).code,'no-target');
+});
+test('A linked copy and a group as tools; a copy of its own builds the same',async()=>{
+ let d=base,row,twin,fc;[d,row]=part(d,{pos:[0,0,0]});d=setParent(d,pin,row);
+ const l=copyPart(d,pin,{linked:true});d=updatePart(l.doc,l.id,{pos:[-15,0,-5]});twin=l.id;eq(partById(d,twin).parent,row);
+ [d,fc]=feat(d,'combine',plate,{operation:'cut',tools:[row]});
+ let r=good(await k.rebuild(d));near(of(r,plate)[0].volume,24000-2*Math.PI*25*20,1e-3,'the group holds the pin and its linked copy');eq(r.bodies.length,2,'a link builds nothing of its own');
+ r=good(await k.rebuild(updateFeature(d,'f2',{diameter:6})));near(of(r,plate)[0].volume,24000-2*Math.PI*9*20,1e-3,'the copy follows the original');
+ r=good(await k.rebuild(updateFeature(d,fc,{tools:[twin]})));near(of(r,plate)[0].volume,24000-Math.PI*25*20,1e-3);
+ const c=copyPart(d,plate);r=good(await k.rebuild(c.doc));near(of(r,c.id)[0].volume,24000-2*Math.PI*25*20,1e-3,'a copy of its own is cut by the same tools');
+ r=good(await k.rebuild(updatePart(c.doc,c.id,{pos:[0,100,0]})));near(of(r,c.id)[0].volume,24000,1e-6,'moved away from them, it is whole');near(of(r,plate)[0].volume,24000-2*Math.PI*25*20,1e-3);
+});
+test('A part cannot be built from itself; a lost tool is said plainly',async()=>{
+ let d=base,fa,fb;[d,fa]=feat(d,'combine',plate,{operation:'cut',tools:[pin]});[d,fb]=feat(d,'combine',pin,{operation:'join',tools:[plate]});
+ let r=await k.rebuild(d);eq(r.status,'done');eq([r.features[2].code,r.features[3].code],['tool-cycle','tool-cycle']);eq(r.bodies.length,2);near(of(r,plate)[0].volume,24000,1e-6);
+ d=base;[d,fa]=feat(d,'combine',plate,{operation:'cut',tools:['o9']});r=await k.rebuild(d);eq(r.features[2].code,'tool-lost');
+ let empty;d=base;[d,empty]=part(d);[d,fa]=feat(d,'combine',plate,{operation:'cut',tools:[empty]});r=await k.rebuild(d);eq(r.features[2].code,'no-tool');
+});
+test('Looking back in one part leaves the others whole; a project of format 1 builds as one part',async()=>{
+ let d=base,fc;[d,fc]=feat(d,'combine',plate,{operation:'cut',tools:[pin]});
+ let r=good(await k.rebuild(d,{roll:{part:plate,count:1}}));eq(r.features.map(f=>f.status),['ok','ok','rolled']);eq(r.used,{});near(of(r,plate)[0].volume,24000,1e-6);eq(of(r,pin).length,1);
+ r=await k.rebuild(d,{roll:{part:pin,count:0}});eq(r.features.map(f=>f.status),['ok','rolled','error']);eq(of(r,pin).length,0);
+ const s=sk();rect(s,0,0,60,40);const f1={id:'f1',type:'sketch',name:'S',plane:{kind:'base',base:'XY'},...s};
+ const old={format:'corecad',version:1,meta:{id:'x',name:'Old',created:'',modified:'',app:'0.1.0'},seq:2,bodies:{},features:[f1,{id:'f2',type:'extrude',name:'E',sketch:'f1',profiles:findRegions(f1).map(profileRefFrom),operation:'new',extent:{type:'oneSide',distance:10},flip:false,targets:null}]};
+ r=good(await k.rebuild(old));eq(r.bodies.map(b=>[b.id,b.part]),[['f2','o1']]);near(r.bodies[0].volume,24000,1e-6);
+ r=good(await k.rebuild(old,{count:1}));eq(r.features.map(f=>f.status),['ok','rolled']);eq(r.bodies.length,0);
+});
+test('Export puts every visible solid where it stands',async()=>{
+ let d=updatePart(base,pin,{pos:[100,0,0],rot:[0,90,0]});
+ near(await stlBox(await k.export(d,{format:'stl'})),[[-20,-15,-5],[130,15,20]],0.05);
+ const l=copyPart(d,plate,{linked:true});d=updatePart(l.doc,l.id,{pos:[0,0,200]});
+ near(await stlBox(await k.export(d,{format:'stl'})),[[-20,-15,-5],[130,15,220]],0.05,'the linked copy is exported too');
+ near(await stlBox(await k.export(updatePart(d,pin,{hidden:true}),{format:'stl'})),[[-20,-15,0],[20,15,220]],0.05);
+ let fc;[d,fc]=feat(d,'combine',plate,{operation:'cut',tools:[pin]});
+ near(await stlBox(await k.export(d,{format:'stl'})),[[-20,-15,0],[20,15,220]],0.05,'a tool that was used up is not exported');
+ const step=await (await k.export(d,{format:'step'})).text();ok(step.startsWith('ISO-10303-21;'));ok(step.includes('Part 1'),'solids carry their part\'s name');
+ await throws(()=>k.export(updatePart(updatePart(d,plate,{hidden:true}),l.id,{hidden:true}),{format:'stl'}),/no visible solids/);
+ k.dispose();
+});
+run();
+</script>

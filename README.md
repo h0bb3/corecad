@@ -2,8 +2,10 @@
 
 A simple, constraint-based CAD program for 3D modelling, in the browser:
 sketch on a plane, constrain and dimension the sketch, extrude it, cut holes
-and pockets, round and bevel the edges, export for printing. Inspired by the
-way Fusion 360 works.
+and pockets, round and bevel the edges, export for printing. Build a scene
+from several parts: place them, copy them, start them from a box, a cylinder
+or a sphere, and join or cut them with each other. Inspired by the way
+Fusion 360 works.
 
 **[Open CoreCAD](https://h0bb3.github.io/corecad/)** — the first working version.
 No account or installation. Projects stay in your browser or in files you download.
@@ -27,6 +29,23 @@ The geometry libraries load from a CDN, so the first visit needs internet access
 7. **Save** downloads an editable `.corecad` project. **Export** produces STL
    for printing or STEP with exact solid geometry.
 
+## Several parts
+
+A project is made of parts. Each part has its own history, listed under it,
+and its own place.
+
+- **Box**, **Cylinder** and **Sphere** start a part without a sketch.
+  **Part** starts an empty one: the next sketch goes into it.
+- Select a part in the list or by clicking it in the view. **Move** (or a
+  double-click on it in the list) places it: drag an arrow, type a position
+  and a rotation, or turn it a quarter. Its parent is chosen there too, or by
+  dragging the part onto another in the list; a part moves with its parent.
+- **Copy** makes a part with its own history. **Linked copy** shows the
+  original in another place and changes with it.
+- **Combine** joins other parts to the selected part, cuts them out of it, or
+  keeps what they share. The others become its tools: hidden, listed under
+  it, and still there to move or edit, with the result following.
+
 Autosave keeps the last committed project in this browser. Download a project
 file for a portable copy; clearing browser storage removes the autosave.
 The **?** button lists shortcuts. Every control has hover help.
@@ -37,6 +56,7 @@ The **?** button lists shortcuts. Every control has hover help.
 | Line / Rectangle / Circle / Arc / Point | L / R / C / A / P, in a sketch |
 | Dimension / Construction | D / X, in a sketch |
 | Fillet / Chamfer | F / Shift+F |
+| Box / Move the selected part | B / M |
 | Finish sketch | Ctrl+Enter |
 | Undo / Redo | Ctrl+Z / Ctrl+Y |
 | Save / Open | Ctrl+S / Ctrl+O |
@@ -46,7 +66,8 @@ The **?** button lists shortcuts. Every control has hover help.
 
 The first version includes the required sketch constraints, dimensions, profiles
 with holes, all four extrusion operations, quick holes, edge treatments, editable
-history, undo/redo, body visibility and exports. See [STATUS](docs/STATUS.md) for
+history, undo/redo and exports; 0.2 adds parts with their own histories, placement,
+copies, primitives and combining. See [STATUS](docs/STATUS.md) for
 validation and remaining limits, [SPEC](docs/SPEC.md) for the implementation contract,
 and [BRIEF](docs/BRIEF.md) for the original scope.
 
@@ -92,6 +113,8 @@ need HTTP, not `file://`). Tests run in a real browser:
 python tools/run_tests.py
 python tools/e2e.py
 python tools/e2e_more.py
+python tools/e2e_parts.py
+python tools/e2e_api.py
 ```
 
 These need Python 3 and Chrome; `tools/browser.py` uses only Python's standard
@@ -103,7 +126,9 @@ go under ignored `.scratch/`. Tests do not import any scratch prototypes.
 Core modules are in `src/core`, `src/sketch`, `src/doc`, `src/kernel` and
 `src/view`. `src/app.js` connects the editor, forms and document store. Kernel
 operations run in a module worker with a bounded prefix cache and stable face
-labels; the sketch solver has no external dependency.
+labels; the sketch solver has no external dependency. Parts (hierarchy,
+placement, copies) are in `src/doc/parts.js` and `src/core/mat.js`; the kernel
+builds each part's history on its own, tools before the parts that use them.
 
 ## Licence
 

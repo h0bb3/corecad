@@ -120,12 +120,20 @@ export function pickFace(mesh, pd, ray, tMax = Infinity) {
     : { face: bestFace, t: best, point: [ox + dx * best, oy + dy * best, oz + dz * best] };
 }
 
-/** Every point of the edge lines on the screen: [sx, sy, depth] each. Made again when the camera or the mesh changes. */
-export function projectEdges(mesh, view, vp) {
+/** Every point of the edge lines on the screen: [sx, sy, depth] each. Made again when the camera or the mesh changes.
+ *  m: where the mesh stands (twelve numbers, core/mat.js), or nothing when it stands at the origin. */
+export function projectEdges(mesh, view, vp, m = null) {
   const L = mesh.edgeLines,
     out = new Float32Array(L.length);
   for (let i = 0; i < L.length; i += 3) {
-    const s = project(view, vp, [L[i], L[i + 1], L[i + 2]]);
+    const x = L[i],
+      y = L[i + 1],
+      z = L[i + 2];
+    const s = project(
+      view,
+      vp,
+      m ? [m[0] * x + m[1] * y + m[2] * z + m[3], m[4] * x + m[5] * y + m[6] * z + m[7], m[8] * x + m[9] * y + m[10] * z + m[11]] : [x, y, z]
+    );
     out[i] = s[0];
     out[i + 1] = s[1];
     out[i + 2] = s[2];

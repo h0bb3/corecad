@@ -50,6 +50,45 @@ Autosave uses browser storage independently of explicit file saves. Save/open an
 STL/STEP downloads work on ordinary static hosting. Export uses the committed
 document and visible bodies, never an unconfirmed preview.
 
+## Parts (0.2)
+
+A project is made of parts. This section replaces the single project-wide
+history of 0.1; everything else in this document holds per part.
+
+The file is format 2: `{format:'corecad', version:2, meta, seq, pseq, parts,
+features, bodies}`. A part is `{id:'oN', name, parent, pos, rot, hidden?,
+link?}`. Every feature has `part`: a part's history is the features with its
+id, in document order, built from nothing. Feature ids stay unique in the
+whole project, so face labels are too. A format 1 file is read as one part
+(`doc/schema.js`, `upgrade`); files are always written in format 2.
+
+A placement is `pos` in millimetres and `rot` in degrees about the fixed X,
+then Y, then Z axis, relative to the parent. Placements are rigid and are not
+part of the geometry: bodies are built and referenced in their part's own
+frame, and the view, the picking, the sketch plane and the export apply the
+placement (`core/mat.js`, `doc/parts.js`). Moving a part rebuilds nothing.
+A sketch on an origin plane lies on that plane of its part.
+
+Features `box`, `cylinder` and `sphere` make a solid without a sketch, with
+named faces. They begin a part of their own.
+
+`combine` is a feature of the part that is changed: `{operation: join | cut |
+intersect, tools: [part ids], keep?}`. The tools are taken where they stand
+relative to that part. A tool's solids are its own bodies and those of the
+parts under it that were not themselves used up as tools; a linked copy stands
+for what it links to. Unless `keep`, the tools are used up: out of the picture
+and the export, placed under the part (so they move with it), still editable.
+Parts are built in an order that puts tools first; a part that would be built
+from itself is an error of the feature, not of the file.
+
+A part with `link` has no history. It shows the solids of another part (and
+of what stands under that) in its own place and changes with it. A copy of
+its own duplicates the part, what stands under it and all their features with
+new ids, references included.
+
+Looking back in history is per part: `roll: {part, count}` builds the first
+`count` features of that part and every other part in full.
+
 ## Sketches and constraints
 
 A sketch contains `points`, `entities`, `constraints`, `seq` and a plane reference.
@@ -148,6 +187,7 @@ exercise dragging, quick holes, planes, undo and persistence. Screenshots go in
 
 Deferred: the brief's “should” tools (2D corner operations, trim, offset, mirror,
 named expressions, projected geometry, measure and section tools), plus imports,
-revolve, sweep, loft, shell, patterns and assemblies. Arithmetic in number fields
+revolve, sweep, loft, shell, patterns, and joints or mates between parts (parts are
+placed by position and rotation). Arithmetic in number fields
 is evaluated once, not retained as a parametric expression. Desktop mouse/keyboard
 is the primary target. Any remaining limitations belong in `docs/STATUS.md`.

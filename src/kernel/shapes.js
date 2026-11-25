@@ -245,6 +245,77 @@ export function cylinder(fid, center, dir, radius, height) {
   });
   return { shape, faces, labels };
 }
+const SIDES = [
+  ['top', [0, 0, 1]],
+  ['bottom', [0, 0, -1]],
+  ['right', [1, 0, 0]],
+  ['left', [-1, 0, 0]],
+  ['back', [0, 1, 0]],
+  ['front', [0, -1, 0]],
+];
+/** A box with its faces named by the side they are on. origin: 'base' (the middle of its
+ *  bottom face), 'center' or 'corner' (its lowest corner) is at the part's origin. */
+export function boxSolid(fid, size, origin = 'base') {
+  const { r } = kernel(),
+    [x, y, z] = size,
+    lo = origin === 'corner' ? [0, 0, 0] : [-x / 2, -y / 2, origin === 'center' ? -z / 2 : 0];
+  const shape = r.makeBox(lo, add(lo, size)),
+    faces = shape.faces;
+  const labels = faces.map((f) => {
+    const v = f.normalAt(),
+      n = v.toTuple();
+    v.delete();
+    return [`${fid}/${SIDES.find(([, d]) => dot(d, n) > 0.5)?.[0] ?? 'x'}`];
+  });
+  return { shape, faces, labels };
+}
+/** A cylinder along Z. origin: 'base' (the middle of its bottom face) or 'center'. */
+export function cylinderSolid(fid, radius, height, origin = 'base') {
+  const { r } = kernel(),
+    z0 = origin === 'center' ? -height / 2 : 0,
+    shape = r.makeCylinder(radius, height, [0, 0, z0], [0, 0, 1]),
+    faces = shape.faces;
+  const labels = faces.map((f) => {
+    if (f.geomType === 'CYLINDRE') return [`${fid}/wall`];
+    const p = f.center,
+      top = p.toTuple()[2] > z0 + height / 2;
+    p.delete();
+    return [`${fid}/${top ? 'top' : 'bottom'}`];
+  });
+  return { shape, faces, labels };
+}
+/** A sphere. origin: 'base' (its lowest point) or 'center'. */
+export function sphereSolid(fid, radius, origin = 'base') {
+  const { r } = kernel();
+  let shape = r.makeSphere(radius);
+  if (origin !== 'center') shape = shape.translate([0, 0, radius]); // deletes the unmoved one
+  const faces = shape.faces;
+  return { shape, faces, labels: faces.map(() => [`${fid}/surface`]) };
+}
+/** The raw shape moved by a placement (twelve numbers, core/mat.js). The source stays alive. */
+export function movedShape(shape, m) {
+  const { OC, r } = kernel(),
+    own = scope();
+  try {
+    const t = own(new OC.gp_Trsf());
+    t.SetValues(m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11]);
+    const loc = own(new OC.TopLoc_Location(t));
+    return r.cast(shape.wrapped.Moved(loc, false));
+  } finally {
+    own.end();
+  }
+}
+/** A labelled body in another place: the same faces in the same order, with the same labels. */
+export function placed(body, m) {
+  const shape = movedShape(body.shape, m),
+    faces = shape.faces;
+  if (faces.length !== body.faces.length) {
+    faces.forEach((f) => f.delete());
+    shape.delete();
+    throw new FeatureError('kernel', 'A part could not be placed for the operation.');
+  }
+  return { shape, faces, labels: body.labels.map((l) => [...l]) };
+}
 export function edgesOf(body) {
   if (body.edgeTable) return body.edgeTable;
   const edges = body.shape.edges,
