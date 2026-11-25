@@ -259,8 +259,16 @@ def run(p, url='index.html?test=1'):
 
     # ---- a copy of its own, and a linked copy
     p.click('[data-part="o1"]')
+    p.key('m')
+    wait('!!corecad.moving')
+    middle_arrows = p.js('corecad.arrows')  # where the arrows of the original stand
+    p.key('Escape')
+    wait('!corecad.busy && !corecad.editing')
     p.click('[data-action="copy-part"]')
     wait('!!corecad.moving && corecad.moving.id === "o3"')
+    early = p.js('corecad.arrows')          # the copy may not be built yet: the arrows already stand at its middle
+    wait('!corecad.busy')
+    assert p.js('corecad.arrows') == early and early == middle_arrows, 'the gizmo does not jump when the copy arrives'
     drag_arrow(1, 60)
     assert p.js('corecad.moving.pos') == [0, 60, 0]
     apply_move()

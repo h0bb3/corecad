@@ -345,3 +345,8 @@ exported as its parts, with its colour where they have none).
 Limits: a group is selected in the list, not in the view (a click in the view
 selects the part that was hit). Parts cannot be reordered in the list by
 dragging, only put under one another.
+
+Also fixed here: after Copy, the arrows and rings stood at the copy's origin
+until the kernel had built it and then jumped to its middle, so a quick press
+could take hold of the wrong arrow. Until the copy is built the gizmo uses the
+shape of the original. `tools/e2e_parts.py` checks that it does not move.

@@ -2164,9 +2164,11 @@ function moveFrame() {
     W = placementOf(p.id, d),
     parentW = p.parent ? placementOf(p.parent, d) : Mat.IDENTITY,
     bodies = store.state.build?.bodies ?? [];
-  const boxes = contentOf(d, p.id).flatMap((item) =>
-    bodies.filter((b) => b.part === item.from).map((b) => Mat.box(Mat.mul(W, item.rel), b.bbox))
-  );
+  const boxesOf = (pid) => contentOf(d, pid).flatMap((item) => bodies.filter((b) => b.part === item.from).map((b) => Mat.box(Mat.mul(W, item.rel), b.bbox)));
+  let boxes = boxesOf(p.id);
+  // A copy that the kernel has not built yet has the shape of its original: the arrows and rings
+  // stand where they will stand, and do not jump when the copy arrives.
+  if (!boxes.length && mover.like) boxes = boxesOf(mover.like);
   const anchor =
     mover.drag?.kind === 'ring'
       ? mover.drag.anchor
@@ -2317,6 +2319,7 @@ function duplicatePart(linked) {
     selectedPart = c.id;
     store.commit(c.doc, (linked ? 'Linked copy of ' : 'Copy of ') + p.name);
     startMove(c.id); // it stands where the original stands: the next thing is to move it away
+    if (mover && !linked) mover.like = p.id;
     toast(
       linked
         ? 'A linked copy: it changes with the original. Drag an arrow to move it away, then Apply.'
