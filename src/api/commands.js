@@ -255,19 +255,8 @@ export const TOOLS = [
   tool('undo', 'Takes back the last change.'),
   tool('redo', 'Does again what undo took back.'),
   tool(
-    'list_commands',
-    'The commands this CoreCAD tab has now. CoreCAD is updated often and an MCP client keeps the list of tools it read when it connected, so the tab may have commands that are not among your tools: this shows them, and run_command runs them. Without "name": every command with a line about it. With "name": that command in full, with its arguments.',
-    { name: str('A command, to see it in full.') }
-  ),
-  tool(
-    'run_command',
-    'Runs a command of this tab by its name: the same as calling the tool of that name. For commands that list_commands shows and your own list of tools lacks.',
-    { name: str('The command.'), arguments: { type: 'object', description: 'Its arguments, as list_commands gives them.' } },
-    ['name']
-  ),
-  tool(
     'reload_app',
-    'Reloads the CoreCAD tab so that it runs the newest CoreCAD (get_state says under "app" when a newer one is published; a tab that has been open for a while may be older). The project is kept: it is saved in the browser. Undo history is not. The tab is back, and connected again, within some seconds; then list_commands shows what it has.'
+    'Reloads the CoreCAD tab so that it runs the newest CoreCAD (get_state says under "app" when a newer one is published; a tab that has been open for a while may be older). The project is kept: it is saved in the browser. Undo history is not. The tab is back, and connected again, within some seconds. Its commands may then be more than the tools you hold: an MCP client reads the list of tools again when the server is reconnected in it.'
   ),
   tool('cancel_edit', 'Closes a sketch or a feature dialog that is open in the page without keeping its changes. The commands that change the model need this to be closed.'),
   tool(
@@ -928,26 +917,6 @@ export function createCommands(app) {
           return dimensionsOf(f, { frame: sk ? resultOf(sk.id)?.frame ?? null : null, matrix: world.get(f.part) ?? Mat.IDENTITY, sketch: sk }).map(dimensionRow);
         });
     },
-    async list_commands(a) {
-      if (a.name !== undefined) {
-        const t = TOOLS.find((x) => x.name === String(a.name));
-        if (!t) throw Error(`There is no command "${a.name}". Commands: ${TOOLS.map((x) => x.name).join(', ')}.`);
-        return { name: t.name, description: t.description, arguments: t.input };
-      }
-      await app.checkUpdate?.();
-      return {
-        app: appInfo(),
-        commands: TOOLS.map((t) => ({
-          name: t.name,
-          about: t.description.split(/(?<=[.:])\s/)[0],
-          arguments: Object.keys(t.input.properties).map((k) => (t.input.required.includes(k) ? k : `[${k}]`)),
-        })),
-      };
-    },
-    async run_command(a) {
-      if (a.name === 'run_command') throw Error('run_command runs the other commands, not itself.');
-      return invoke(String(a.name), a.arguments ?? {});
-    },
     async reload_app() {
       app.ready();
       if (app.editing()) throw Error('A sketch or a feature dialog is open in the page: finish or cancel it there (or cancel_edit) first, or reloading would lose it.');
@@ -960,7 +929,7 @@ export function createCommands(app) {
         reloading: true,
         was: info.build,
         ...(info.newest ? { loading: info.newest } : {}),
-        note: 'The tab reloads now and connects again by itself within some seconds. Then get_state; list_commands shows the commands it has, and run_command runs those your list of tools lacks.',
+        note: 'The tab reloads now and connects again by itself within some seconds. If it then has commands that are not among your tools, the list of tools has to be read again: ask the person to reconnect CoreCAD in the client.',
       };
     },
     async get_document() {
@@ -1461,21 +1430,17 @@ export function createCommands(app) {
 
   // One command at a time, in the order they were asked: a preview of one must not meet the commit of another.
   let queue = Promise.resolve();
-  /** Checks a command's name and arguments and runs it. Throws what is wrong. */
-  async function invoke(name, args = {}) {
-    const spec = TOOLS.find((t) => t.name === name);
-    if (!spec || !impl[name]) throw Error(`Unknown command "${name}". Commands: ${TOOLS.map((t) => t.name).join(', ')}.`);
-    if (args === null || typeof args !== 'object' || Array.isArray(args)) throw Error('The arguments must be an object.');
-    const unknown = Object.keys(args).filter((k) => !(k in spec.input.properties));
-    if (unknown.length) throw Error(`${name} has no argument ${unknown.map((k) => `"${k}"`).join(', ')}. It takes: ${Object.keys(spec.input.properties).join(', ') || 'nothing'}.`);
-    const lacking = spec.input.required.filter((k) => args[k] === undefined);
-    if (lacking.length) throw Error(`${name} needs ${lacking.map((k) => `"${k}"`).join(', ')}.`);
-    return impl[name](args);
-  }
   function run(name, args = {}) {
     const job = queue.then(async () => {
+      const spec = TOOLS.find((t) => t.name === name);
+      if (!spec || !impl[name]) return { ok: false, error: `Unknown command "${name}". Commands: ${TOOLS.map((t) => t.name).join(', ')}.` };
       try {
-        return { ok: true, result: await invoke(name, args) };
+        if (args === null || typeof args !== 'object' || Array.isArray(args)) throw Error('The arguments must be an object.');
+        const unknown = Object.keys(args).filter((k) => !(k in spec.input.properties));
+        if (unknown.length) throw Error(`${name} has no argument ${unknown.map((k) => `"${k}"`).join(', ')}. It takes: ${Object.keys(spec.input.properties).join(', ') || 'nothing'}.`);
+        const lacking = spec.input.required.filter((k) => args[k] === undefined);
+        if (lacking.length) throw Error(`${name} needs ${lacking.map((k) => `"${k}"`).join(', ')}.`);
+        return { ok: true, result: await impl[name](args) };
       } catch (e) {
         return { ok: false, error: String(e?.message ?? e) };
       }

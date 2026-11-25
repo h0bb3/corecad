@@ -388,3 +388,22 @@ version of the relay on its host.
 Limits: a tab that loaded a mix of old and new files whose `version.js` is the
 new one does not know it is mixed; `reload_app` and **Update** still fix it,
 because they fetch everything.
+
+## One way to do each thing (2026-11-25)
+
+A rule for the command set, from its owner: there is only one way to do a
+thing; an agent is given primitives, not conveniences.
+
+- Removed the same day they were added: `list_commands` and `run_command`.
+  They were a second way to list and to call every command. A client whose
+  list of tools is old reads it again (reconnect the server); `reload_app`
+  and `get_state` under `app` stay, as the only way to see and to load a
+  newer CoreCAD from a command.
+- Overlaps that are older and still there, for a decision: a place given to
+  `add_box`, `add_cylinder`, `add_sphere`, `add_part`, `add_group` and
+  `copy_part` (also `move_part`); `by` beside `position` and `turn` beside
+  `rotation` in `move_part`; `parts` of `add_group` (also `move_part` with a
+  parent); `ungroup` (also `move_part` and `delete_part`); `add_part` (also
+  `add_sketch` with `part: "new"`); `hole` (also a circle and `extrude` as a
+  cut), and its `position` beside `at`; `name` when making something (also
+  `edit_part`, `edit_feature`); `origin` of the three solids.

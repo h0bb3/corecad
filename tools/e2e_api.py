@@ -528,28 +528,12 @@ def run(p, url='index.html?test=1'):
     assert p.js('corecad.dimensions') == [], p.js('corecad.dimensions')
     step('Dimensions: click a number and type; a number that cannot be built is refused; the clicked number is "this"')
 
-    # ---- the commands the tab has now, whatever list of tools a client holds
+    # ---- one command, one tool: nothing that lists or runs the others by name
     import re
     st = call('get_state')
     build = st['app']['build']
     assert re.fullmatch(r'[0-9a-f]{10}', build) and st['app'] == {'build': build, 'update_available': False} and p.js('corecad.version') == build, st['app']
-    listed = call('list_commands')
-    names = [c['name'] for c in listed['commands']]
-    assert names == p.js('corecad.tools.map(t => t.name)') and {'list_commands', 'run_command', 'reload_app', 'add_group'} <= set(names) and listed['app']['build'] == build
-    assert all(c['about'] and len(c['about']) < 400 for c in listed['commands']), [c for c in listed['commands'] if not c['about'] or len(c['about']) >= 400]
-    assert next(c for c in listed['commands'] if c['name'] == 'add_box')['arguments'][0] == 'size', 'what must be given is plain, the rest in brackets'
-    one = call('list_commands', name='add_group')
-    assert one['name'] == 'add_group' and {'name', 'parts', 'parent'} <= set(one['arguments']['properties']) and 'container' in one['description'], one
-    fails('list_commands', 'no command', name='nothing')
-    via = call('run_command', name='add_box', arguments={'size': [5, 5, 5], 'name': 'Via', 'parent': None})
-    assert via['part']['name'] == 'Via' and via['status'] == 'ok', via
-    call('run_command', name='undo')
-    assert 'Via' not in [x['name'] for x in call('run_command', name='get_state')['parts']]
-    fails('run_command', 'needs "size"', name='add_box', arguments={})
-    fails('run_command', 'unknown command', name='nothing')
-    fails('run_command', 'not itself', name='run_command', arguments={'name': 'get_state'})
-    fails('run_command', 'must be an object', name='get_state', arguments=[1])
-    step('list_commands and run_command: %d commands, each reachable by name' % len(names))
+    assert not {'list_commands', 'run_command'} & set(p.js('corecad.tools.map(t => t.name)'))
 
     # ---- a tab older than what is published: it says so, and a command (or the person) reloads it
     update = 'document.getElementById("update-button")'

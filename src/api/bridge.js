@@ -23,7 +23,7 @@ export const INSTRUCTIONS =
   'and the word "this" can be given wherever a command takes a face, edges, a part or a feature id (a hole on "this" face goes where they clicked). ' +
   'measure tells how big something is and how far apart two things are; list_dimensions lists the numbers that drive the model, each with the command that changes it. ' +
   'set_color colours a part or single faces. For printing, export as "3mf": every part is then an object of its own in the slicer, with its name and colours. ' +
-  'CoreCAD is updated often: get_state says under "app" when a newer one is published (reload_app loads it), and list_commands with run_command reach commands that are newer than your list of tools.';
+  'CoreCAD is updated often: get_state says under "app" when a newer one is published, and reload_app loads it.';
 
 /** Where the relay is. ?bridge=ws://localhost:… overrides it, for development only: never another host. */
 export function relayUrl(search = location.search) {

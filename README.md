@@ -132,8 +132,7 @@ CoreCAD is updated often. A tab that has been open for a while shows an
 **Update** button when a newer version is published (the agent can do the
 same with `reload_app`); your project is kept. If the agent does not see a
 new command after that, reconnect CoreCAD in the client so that it reads the
-list of tools again; it can also reach every command through `list_commands`
-and `run_command`.
+list of tools again.
 
 ## How it is made
 

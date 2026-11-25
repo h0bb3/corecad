@@ -214,8 +214,6 @@ Arguments in brackets are optional.
 | `export` | [format], [part], [per_part], [download] | 3MF (an object for each part, named and coloured), STL, STEP or the project. |
 | `screenshot` | [view], [fit], [max], [dimensions] | The 3D view as a PNG data URL, with the driving numbers on it if asked. |
 | `set_view` | view, [fit] | Turns the camera to a standard view. |
-| `list_commands` | [name] | The commands this tab has now; one of them in full. |
-| `run_command` | name, [arguments] | Runs a command by name: for those a client's list of tools lacks. |
 | `reload_app` | - | Reloads the tab so that it runs the newest CoreCAD; the project is kept. |
 
 ## Where the code is
@@ -256,8 +254,8 @@ Two things are kept longer than an update of CoreCAD:
   relay answers `tools/list` afresh every time, but it cannot tell a client
   that the list has changed (it holds no connection to it), so a client sees
   new commands when it reads the list again: reconnect the server in the
-  client, or start a new conversation. Until then `list_commands` shows what
-  the tab has and `run_command` runs any of it.
+  client, or start a new conversation. There is no second way to call a
+  command from here: every command is one tool, and only that.
 
 WebMCP registration (the page declaring these tools to the browser's own
 agent) is not done.

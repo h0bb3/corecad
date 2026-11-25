@@ -167,9 +167,8 @@ def run(p, relay_port=None):
     p.wait('!!document.getElementById("bridge-address")')
     step('"a hole on this face" over MCP, where it was clicked; then "this hole" wider, by pointing at it')
 
-    # ---- the agent reloads the tab itself; every command can be reached whatever list of tools it holds
-    assert [c['name'] for c in ok(mcp.call('list_commands'))['commands']] == names[1:]
-    volume_before = ok(mcp.request('tools/call', {'name': 'run_command', 'arguments': {'name': 'get_state'}}))['bodies'][0]['volume']
+    # ---- the agent reloads the tab itself
+    volume_before = ok(mcp.call('get_state'))['bodies'][0]['volume']
     p.js('window.__old = true')
     out = ok(mcp.call('reload_app'))
     assert out['reloading'] is True and out['was'] == p.js('corecad.version'), out
