@@ -19,6 +19,8 @@ import { validateFeature } from '../doc/features.js';
 import { validateDocument, serialize, upgrade } from '../doc/schema.js';
 import { partById, featuresOf, worldOf, makePart, addPart, updatePart, removePart, partDependents, setParent, copyPart, unlinkPart, sceneOf, contentOf, descendantsOf, ancestorsOf } from '../doc/parts.js';
 import * as Mat from '../core/mat.js';
+import { sizeOf, between, total } from './measure3d.js';
+import { dimensionsOf } from './dimensions.js';
 import { faceRefFrom, edgeRefFrom, topoOfBody } from '../doc/refs.js';
 import { canonicalFrame, toLocal } from '../core/plane.js';
 import { STANDARD } from '../view/camera-math.js';
@@ -72,6 +74,19 @@ const tool = (name, description, properties = {}, required = []) => ({
 export const TOOLS = [
   tool('get_state', 'The model at a glance: the parts (each with its place, its parent, and its own history of features), the features with their status and main numbers, the bodies with volume (mm³) and bounding box in space, which part is current, and whether the page is in the middle of an edit. Start here.'),
   tool('get_selection', 'What the person has clicked in the page and what their mouse last rested on: faces and edges with where they are in space, the part each is on, the point that was clicked ("point" in space, "at" in the face\'s own coordinates) and which features made a face. Call it when they say "this", "here" or "that" about the model. The word "this" can then be given wherever a command takes a face, edges, a part or a feature id.'),
+  tool(
+    'measure',
+    'How big a face or an edge is, and how far apart or at what angle two of them are, where the parts stand. Nothing given: what the person has selected (one thing: its size; two: also what lies between them). "from" alone: its size. "from" and "to": between them. Round things are measured from their axis: two holes give the distance between their centres, a hole and a flat side the distance from the hole\'s centre to that side; two parallel faces give the thickness.',
+    {
+      from: { description: 'A face or an edge: "this", "selected" or "pointed" (the person\'s); a side name such as "top"; or { "face": index } or { "edge": index } from list_faces and list_edges, each of which may say whose with "part" or "body".' },
+      to: { description: 'The other one, given the same way.' },
+    }
+  ),
+  tool(
+    'list_dimensions',
+    'The numbers that drive the model, as the Dimensions view shows them to the person on the model: every dimension of every sketch, how far each extrusion goes, hole diameters and depths, fillet radii, box and cylinder sizes. Each with what it is, where it is in space, and the command and arguments that change it.',
+    { part: str('Only those of one part, by id or name. Left out: of every part.') }
+  ),
   tool('get_document', 'The whole project as JSON: exactly what Save writes to a .corecad file.'),
   tool('load_document', 'Replaces the open project with a document in the .corecad format (as get_document returns). The history of undo steps starts over.', { document: { type: 'object', description: 'The project.' } }, ['document']),
   tool('new_document', 'Starts an empty project. The open one is replaced (it stays in the browser only if it was saved).', { name: str('The project\'s name.') }),
@@ -92,7 +107,7 @@ export const TOOLS = [
   tool(
     'set_dimension',
     'Changes the value of a driving dimension of a sketch; the sketch follows and everything built on it is rebuilt. Ids are in get_sketch.',
-    { sketch: SKETCH_ARG, dimension: str('The dimension\'s id, such as "c9".'), value: numb('Millimetres, or degrees for an angle.') },
+    { sketch: SKETCH_ARG, dimension: str('The dimension\'s id, such as "c9"; or "this": the number the person has clicked on the model (see get_selection).'), value: numb('Millimetres, or degrees for an angle.') },
     ['dimension', 'value']
   ),
   tool(
@@ -225,7 +240,7 @@ export const TOOLS = [
   tool(
     'screenshot',
     'A picture of the 3D view as a PNG data URL, to see what the model looks like.',
-    { view: str('Turn the camera first.', { enum: VIEWS }), fit: bool('Fit the model in the view first (default true).'), max: numb('The longer side in pixels at most (default 1200).') }
+    { view: str('Turn the camera first.', { enum: VIEWS }), fit: bool('Fit the model in the view first (default true).'), max: numb('The longer side in pixels at most (default 1200).'), dimensions: bool('true: with the numbers that drive the model drawn on it, as the Dimensions view shows them.') }
   ),
   tool('set_view', 'Turns the camera to a standard view and fits the model.', { view: str('The view.', { enum: VIEWS }), fit: bool('Fit the model (default true).') }, ['view']),
 ];
@@ -245,6 +260,8 @@ export const TOOLS = [
  *   what the person has clicked and what their mouse last rested on. A pick is { kind: 'face' | 'edge', index,
  *   body, part, instance, matrix, point }: `body` a built body's id, `point` in its part's frame, `matrix` where
  *   it is shown (for a linked copy, where the copy shows it); `pointed` also has `ms` (how long ago) and `over`.
+ *   Also `dimension`: the number on the model they clicked, { feature, key, value, text, what, unit, change }.
+ * @param {(on: boolean) => boolean} app.showDimensions   draws the driving numbers on the model or not; answers what it was
  * @param {(blob: Blob, name: string) => void} app.download
  * @param {(doc: object) => string} app.filename
  */
@@ -352,6 +369,7 @@ export function createCommands(app) {
       return f;
     }
     const c = app.chosen();
+    if (word !== 'pointed' && c.dimension) return featureById(doc(), c.dimension.feature); // the number they clicked on the model
     if (word !== 'pointed' && c.feature) return featureById(doc(), c.feature);
     const pointed = c.pointed ? [c.pointed] : [],
       h = (word === 'selected' ? c.selected : word === 'pointed' ? pointed : c.selected.length ? c.selected : pointed).at(-1);
@@ -371,6 +389,63 @@ export function createCommands(app) {
         : `It is not known which feature made that ${h.kind}: say which by its id.`
     );
   }
+  /** The numbers behind a size, as a row carries them. */
+  function sizeRow(body, kind, index) {
+    const s = sizeOf(body, kind, index),
+      out = { measures: s.text };
+    for (const k of ['size', 'diameter', 'radius', 'length']) if (s[k] !== undefined) out[k] = round(s[k]);
+    if (s.hole) out.hole = true;
+    return out;
+  }
+  /** What lies between two picks, as a row. */
+  function betweenRow(m) {
+    return {
+      what: m.what,
+      measures: m.text,
+      ...(m.distance !== undefined ? { distance: round(m.distance), from: round(m.from), to: round(m.to), delta: round(m.delta) } : {}),
+      ...(m.angle !== undefined ? { angle: round(m.angle) } : {}),
+    };
+  }
+  const asPick = (h) => ({ body: { ...findBody(bodies(), h.body), matrix: h.matrix }, kind: h.kind, index: h.index, point: Mat.point(h.matrix, h.point) });
+  /** Faces or edges to measure: the person's ("this"), or one described by a side, { face: index } or { edge: index }. */
+  function picksFrom(ref) {
+    const word = theirWord(ref);
+    if (word) {
+      const c = app.chosen(),
+        pointed = c.pointed ? [c.pointed] : [],
+        hits = word === 'selected' ? c.selected : word === 'pointed' ? pointed : c.selected.length ? c.selected : pointed;
+      if (!hits.length)
+        throw Error(
+          word === 'pointed'
+            ? 'The mouse has not come to rest on a face or an edge: ask the person to hold it there, or to click.'
+            : 'Nothing is selected in the page: ask the person to click a face or an edge (Shift-click a second one to measure between them), or say what to measure with "from" and "to".'
+        );
+      return hits.map(asPick);
+    }
+    if (ref && typeof ref === 'object' && !Array.isArray(ref) && ref.edge !== undefined) {
+      const sel = described(ref),
+        body = findBody(bodies(), sel.body, { ...ctx(), part: sel.part });
+      if (!Number.isInteger(ref.edge) || !topoOfBody(body).edges[ref.edge]) throw Error(`Body ${body.id} has no edge ${ref.edge} (see list_edges).`);
+      return [{ body, kind: 'edge', index: ref.edge }];
+    }
+    const { body, face } = findFace(bodies(), described(ref), ctx());
+    return [{ body, kind: 'face', index: face }];
+  }
+  /** A driving number as a row: what it is, where, and how it is changed. */
+  function dimensionRow(x) {
+    const f = featureById(doc(), x.feature);
+    return {
+      feature: x.feature,
+      feature_name: f?.name,
+      part: f?.part,
+      is: x.what,
+      value: round(x.value),
+      unit: x.unit,
+      shown_as: x.text,
+      ...(x.at ? { at: round(x.at) } : {}),
+      ...(x.edit ?? x.change ? { change_with: (x.edit ?? x.change).command, arguments: x.edit ? x.edit.args(x.value) : x.change.args } : { measured: true }),
+    };
+  }
   /** A pick as a row to read: where it is in space, on what, made by what. */
   function hitRow(h) {
     const body = { ...findBody(bodies(), h.body), matrix: h.matrix },
@@ -384,6 +459,7 @@ export function createCommands(app) {
         face,
         surface: kind,
         ...row,
+        ...sizeRow(body, 'face', h.index),
         point,
         ...(own.plane ? { at: round(toLocal(canonicalFrame(own.plane.n, own.plane.d), h.point).slice(0, 2)) } : {}),
         made_by: makers(own.labels),
@@ -391,7 +467,7 @@ export function createCommands(app) {
     }
     const { edge, kind, ...row } = describeEdges(body).find((r) => r.edge === h.index) ?? { edge: h.index },
       faces = topoOfBody(body).faces;
-    return { ...base, edge, curve: kind, ...row, point, made_by: makers((row.faces ?? []).flatMap((i) => faces[i].labels)) };
+    return { ...base, edge, curve: kind, ...row, ...sizeRow(body, 'edge', h.index), point, made_by: makers((row.faces ?? []).flatMap((i) => faces[i].labels)) };
   }
   function selectionInfo() {
     const c = app.chosen(),
@@ -399,9 +475,11 @@ export function createCommands(app) {
       f = featureById(doc(), c.feature);
     return {
       selected: c.selected.map(hitRow),
+      ...(c.selected.length === 2 ? { between: betweenRow(between(asPick(c.selected[0]), asPick(c.selected[1]))) } : {}),
       pointed: c.pointed ? { ...hitRow(c.pointed), seconds_ago: round(c.pointed.ms / 1000, 1), mouse_in_view: c.pointed.over } : null,
       part: part ? { id: part.id, name: part.name } : null,
       feature: f ? { id: f.id, type: f.type, name: f.name, part: f.part } : null,
+      ...(c.dimension ? { dimension: dimensionRow(c.dimension) } : {}),
     };
   }
   /** A face or edge description with its "part" (an id or a name) made an id. */
@@ -763,6 +841,29 @@ export function createCommands(app) {
         how: 'Give "this" (or "selected", "pointed") wherever a command takes a face, edges, a part or a feature id. A hole on "this" face goes to "point" unless told otherwise; to draw there, use "at" as sketch coordinates on that face.',
       };
     },
+    async measure(a) {
+      await settled();
+      if (a.to !== undefined && a.from === undefined) throw Error('Give "from" as well as "to".');
+      const picks = a.from === undefined ? picksFrom('selected') : [...picksFrom(a.from), ...(a.to !== undefined ? picksFrom(a.to) : [])];
+      if (a.to !== undefined && picks.length !== 2) throw Error('"from" and "to" are one face or edge each.');
+      const row = (p) => ({ kind: p.kind, part: p.body.part, body: p.body.id, [p.kind]: p.index, ...sizeRow(p.body, p.kind, p.index) });
+      return {
+        of: picks.map(row),
+        ...(picks.length === 2 ? { between: betweenRow(between(picks[0], picks[1])) } : picks.length > 2 ? { together: total(picks).text } : {}),
+      };
+    },
+    async list_dimensions(a) {
+      await settled();
+      const d = doc(),
+        world = worldOf(d),
+        only = a.part !== undefined ? partOf(a.part).id : null;
+      return d.features
+        .filter((f) => !only || f.part === only)
+        .flatMap((f) => {
+          const sk = f.type === 'sketch' ? f : f.type === 'extrude' ? featureById(d, f.sketch) : null;
+          return dimensionsOf(f, { frame: sk ? resultOf(sk.id)?.frame ?? null : null, matrix: world.get(f.part) ?? Mat.IDENTITY }).map(dimensionRow);
+        });
+    },
     async get_document() {
       return structuredClone(doc());
     },
@@ -839,8 +940,17 @@ export function createCommands(app) {
     async set_dimension(a) {
       free();
       await settled();
-      const sk = sketchOf(a.sketch),
-        c = sk.constraints.find((c) => c.id === a.dimension);
+      let sk, wanted = a.dimension;
+      if (theirWord(a.dimension)) {
+        // The number the person clicked on the model, if it is a sketch's.
+        const own = app.chosen().dimension;
+        if (!own) throw Error('No number is selected on the model: ask the person to turn on Dimensions and click the one they mean.');
+        if (own.change?.command !== 'set_dimension')
+          throw Error(`The number they clicked is the ${own.what} of ${featureById(doc(), own.feature)?.name} (${own.feature}), not a sketch dimension: change it with ${own.change ? `${own.change.command} ${JSON.stringify(own.change.args)}` : 'the feature that it measures'}.`);
+        sk = featureById(doc(), own.feature);
+        wanted = own.key;
+      } else sk = sketchOf(a.sketch);
+      const c = sk.constraints.find((c) => c.id === wanted);
       if (!c || !DIMENSIONS.includes(c.type)) throw Error(`${sk.name} has no dimension "${a.dimension}". Its dimensions: ${sk.constraints.filter((c) => DIMENSIONS.includes(c.type)).map((c) => `${c.id} = ${round(c.value)}`).join(', ') || 'none'}.`);
       const r = setDimensions(sk, [{ id: c.id, value: a.value }]);
       if (!r.ok) throw Error(r.message + (r.reached ? ` (It could go ${Math.round(r.reached * 100)} % of the way.)` : ''));
@@ -1163,8 +1273,10 @@ export function createCommands(app) {
         view.standard(a.view);
       }
       if (a.fit !== false) view.fit();
-      const shot = view.snapshot(),
-        k = Math.min(1, (a.max ?? 1200) / Math.max(shot.width, shot.height));
+      const numbers = a.dimensions === undefined ? null : app.showDimensions(a.dimensions),
+        shot = view.snapshot();
+      if (numbers !== null) app.showDimensions(numbers);
+      const k = Math.min(1, (a.max ?? 1200) / Math.max(shot.width, shot.height));
       let out = shot;
       if (k < 1) {
         out = document.createElement('canvas');

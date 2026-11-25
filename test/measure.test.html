@@ -1,0 +1,74 @@
+<!doctype html><meta charset="utf-8"><title>Measuring</title><script type="module">
+import {test,eq,ok,near,run} from './harness.js';
+import {createKernel} from '../src/kernel/client.js';
+import {createDocument,makeFeature,addFeature} from '../src/doc/model.js';
+import {makePart,addPart,updatePart,sceneOf} from '../src/doc/parts.js';
+import {edgeRefFrom} from '../src/doc/refs.js';
+import {sizeOf,between,total,boxOf,facePoints} from '../src/api/measure3d.js';
+const k=createKernel();
+const part=(d,data={})=>{const m=makePart(d,data);return [addPart(m.doc,m.part),m.part.id];};
+const feat=(d,type,p,data={})=>{const m=makeFeature(d,type,{part:p,...data});return [addFeature(m.doc,m.feature),m.feature.id];};
+// A 60 x 40 x 12 plate with two 8 mm holes 30 apart and its four upright edges rounded R3; a 10 x 30 pin
+// lying along X, 50 above; a ball of 20.
+let doc,plate,pin,ball,P,N,B;
+const face=(b,test)=>b.mesh.faces.findIndex(test),edge=(b,test)=>b.mesh.edges.findIndex(test);
+const pick=(body,kind,index,point)=>({body,kind,index,point});
+test('The model to measure builds',async()=>{
+ await k.ready;let d=createDocument('Measure'),a,b,t1,t2,f;
+ [d,plate]=part(d);[d]=feat(d,'box',plate,{size:[60,40,12]});
+ [d,t1]=part(d,{pos:[-15,0,-5]});[d]=feat(d,'cylinder',t1,{diameter:8,height:30});
+ [d,t2]=part(d,{pos:[15,0,-5]});[d]=feat(d,'cylinder',t2,{diameter:8,height:30});
+ [d]=feat(d,'combine',plate,{operation:'cut',tools:[t1,t2]});
+ let r=await k.rebuild(d);const body=r.bodies.find(x=>x.part===plate),up=body.mesh.edges.flatMap((e,i)=>e.kind==='line'&&Math.abs(e.a[2]-e.b[2])>11&&!e.seam?[i]:[]);eq(up.length,4);
+ [d]=feat(d,'fillet',plate,{edges:up.map((i,j)=>edgeRefFrom(body,i,'k'+(j+1))),radius:3,kseq:4});
+ [d,pin]=part(d,{pos:[0,0,50],rot:[0,90,0]});[d]=feat(d,'cylinder',pin,{diameter:10,height:30});
+ [d,ball]=part(d,{pos:[0,100,0]});[d]=feat(d,'sphere',ball,{diameter:20,origin:'center'});
+ doc=d;r=await k.rebuild(d);ok(r.features.every(f=>f.status==='ok'),()=>JSON.stringify(r.features));
+ const s=sceneOf(d,r.bodies,new Map(Object.entries(r.used)));eq(s.length,3);[P,N,B]=[plate,pin,ball].map(id=>s.find(b=>b.part===id));
+});
+test('How big a face is: flat, round, a hole, a fillet, a ball',()=>{
+ const top=face(P,f=>f.plane?.n[2]>.99),front=face(P,f=>f.plane?.n[1]<-.99),wall=face(P,f=>f.cyl&&!f.cyl.convex),fillet=face(P,f=>f.cyl?.convex);
+ let s=sizeOf(P,'face',top);eq(s.shape,'plane');near(s.size,[60,40],1e-6);ok(/^60 × 40 mm · [\d.]+ mm²$/.test(s.text),s.text);near(s.area,2400-2*16*Math.PI-9*(4-Math.PI),.01);
+ s=sizeOf(P,'face',front);near(s.size,[54,12],1e-6);eq(s.text,'54 × 12 mm');
+ s=sizeOf(P,'face',wall);near([s.diameter,s.length],[8,12],1e-6);ok(s.hole);eq(s.text,'Hole ⌀ 8 × 12 mm');
+ s=sizeOf(P,'face',fillet);near([s.radius,s.length],[3,12],1e-6);eq(s.text,'R 3 × 12 mm');
+ s=sizeOf(N,'face',face(N,f=>f.cyl));near([s.diameter,s.length],[10,30],1e-6);ok(!s.hole);eq(s.text,'⌀ 10 × 30 mm');
+ s=sizeOf(N,'face',face(N,f=>f.plane));eq(s.text,'⌀ 10 mm');
+ eq(sizeOf(B,'face',0).text,'⌀ 20 mm');
+ eq(facePoints(P,front).length>=4,true);
+});
+test('How big an edge is: straight, a rim, an arc',()=>{
+ eq(sizeOf(P,'edge',edge(P,e=>e.kind==='line'&&Math.abs(e.length-54)<1e-6)).text,'54 mm');
+ const rim=edge(P,e=>e.circle&&e.closed);let s=sizeOf(P,'edge',rim);near(s.diameter,8,1e-6);eq(s.text,'⌀ 8 mm');
+ s=sizeOf(P,'edge',edge(P,e=>e.circle&&!e.closed));near(s.radius,3,1e-6);eq(s.text,'R 3 · 4.71 mm long');
+});
+test('Between two: thickness, hole spacing, a hole from a side, angles',()=>{
+ const f=(test)=>pick(P,'face',face(P,test)),e=(test)=>pick(P,'edge',edge(P,test));
+ const top=f(x=>x.plane?.n[2]>.99),bottom=f(x=>x.plane?.n[2]<-.99),front=f(x=>x.plane?.n[1]<-.99),right=f(x=>x.plane?.n[0]>.99);
+ const holes=P.mesh.faces.flatMap((x,i)=>x.cyl&&!x.cyl.convex?[pick(P,'face',i)]:[]);eq(holes.length,2);
+ let m=between(top,bottom);near(m.distance,12,1e-9);eq(m.what,'between parallel faces');eq(m.text,'12 mm');near(m.delta,[0,0,-12],1e-9);eq(m.angle,undefined);
+ m=between(holes[0],holes[1]);near(m.distance,30,1e-9);eq(m.what,'between centres');near(Math.abs(m.delta[0]),30,1e-9);
+ const rims=P.mesh.edges.flatMap((x,i)=>x.circle&&x.closed&&Math.abs(x.mid[2]-12)<1e-6?[pick(P,'edge',i)]:[]);eq(rims.length,2);near(between(rims[0],rims[1]).distance,30,1e-9);
+ m=between(holes.find(h=>P.mesh.faces[h.index].cyl.p[0]>0),right);near(m.distance,15,1e-9);eq(m.what,'hole axis to face');eq(between(right,holes[0]).what,'hole axis to face');
+ m=between(top,holes[0]);eq(m.distance,undefined);eq(m.angle,90);eq(m.text,'90°');
+ m=between(front,right);eq(m.distance,undefined);near(m.angle,90,1e-9);eq(m.what,'angle between faces');
+ m=between(rims[0],bottom);near(m.distance,12,1e-9);eq(m.what,'circle centre to face');
+ const long=P.mesh.edges.flatMap((x,i)=>x.kind==='line'&&Math.abs(x.length-54)<1e-6&&Math.abs(x.mid[2]-12)<1e-6?[pick(P,'edge',i)]:[]);eq(long.length,2);
+ m=between(long[0],long[1]);near(m.distance,40,1e-9);eq(m.what,'between parallel edges');
+ const short=e(x=>x.kind==='line'&&Math.abs(x.length-34)<1e-6&&Math.abs(x.mid[2])<1e-6);m=between(long[0],short);near(m.distance,12,1e-9);near(m.angle,90,1e-9);eq(m.text,'12 mm · 90°');
+ m=between(long[0],bottom);near(m.distance,12,1e-9);eq(m.what,'edge to face');
+ m=between(rims[0],long[0]);near(m.distance,20,1e-9);eq(m.what,'centre to edge');
+});
+test('Parts are measured where they stand',()=>{
+ const top=pick(P,'face',face(P,x=>x.plane?.n[2]>.99)),axis=pick(N,'face',face(N,x=>x.cyl)),end=pick(N,'face',face(N,x=>x.plane&&Math.abs(x.center[2])<1e-6));
+ let m=between(top,axis);near(m.distance,38,1e-9);eq(m.what,'cylinder axis to face');near(m.delta,[0,0,38],1e-9);
+ const right=pick(P,'face',face(P,x=>x.plane?.n[0]>.99));m=between(right,end);near(m.distance,30,1e-9,'the pin lies along X from x = 0: its near end is 30 from the plate\'s right side');
+ m=between(top,pick(B,'face',0));near(m.distance,12,1e-9);eq(m.what,'face to sphere');
+ m=between(axis,pick(B,'face',0));near(m.distance,Math.hypot(100,50),1e-9);
+ near(boxOf([P,N,B]),[[-30,-20,-10],[30,110,55]],1e-6);eq(boxOf([]),null);
+ const t=total([pick(P,'edge',edge(P,x=>x.circle&&x.closed)),pick(N,'face',face(N,x=>x.cyl)),pick(P,'edge',edge(P,x=>x.kind==='line'&&Math.abs(x.length-54)<1e-6))]);
+ near(t.length,8*Math.PI+54,1e-6);near(t.area,Math.PI*10*30,1e-4);ok(t.text.startsWith('2 edges · ')&&t.text.includes('1 face · '),t.text);
+ k.dispose();
+});
+run();
+</script>

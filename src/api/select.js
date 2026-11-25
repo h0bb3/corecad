@@ -20,11 +20,20 @@ const AXES = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 export const SIDE_NAMES = Object.keys(SIDES);
 
+const placed = new WeakMap(); // mesh -> { key: the placement, topo }
 /** The faces and edges of a body as they stand in space. */
 export function placedTopo(body) {
   const topo = topoOfBody(body),
     m = body.matrix;
   if (!m || Mat.isIdentity(m)) return topo;
+  const key = Mat.key(m),
+    known = body.mesh && placed.get(body.mesh);
+  if (known?.key === key) return known.topo;
+  const out = placedNow(topo, m);
+  if (body.mesh) placed.set(body.mesh, { key, topo: out });
+  return out;
+}
+function placedNow(topo, m) {
   const P = (p) => Mat.point(m, p),
     D = (v) => Mat.dir(m, v);
   return {
@@ -37,6 +46,7 @@ export function placedTopo(body) {
         out.plane = { n, d: dot(n, center) };
       }
       if (f.cyl) out.cyl = { ...f.cyl, p: P(f.cyl.p), dir: D(f.cyl.dir) };
+      if (f.sphere) out.sphere = { ...f.sphere, c: P(f.sphere.c) };
       return out;
     }),
     edges: topo.edges.map((e) => ({

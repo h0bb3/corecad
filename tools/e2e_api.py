@@ -365,6 +365,106 @@ def run(p, url='index.html?test=1'):
     assert call('get_selection')['pointed'] is None and p.js('corecad.pointed') is None
     step('edges and parts that were clicked or pointed at; a linked copy says what it is; Escape lets go')
 
+    # ---- measuring, and the numbers that drive the model
+    call('new_document', name='Measuring')
+    call('add_sketch', plane='XY', shapes=[{'type': 'rectangle', 'corner': [0, 0], 'width': 60, 'height': 40},
+                                           {'type': 'circle', 'center': [15, 20], 'diameter': 8},
+                                           {'type': 'circle', 'center': [45, 20], 'diameter': 8}])
+    call('extrude', distance=12)
+    call('fillet', edges={'parallel': 'z', 'kind': 'line'}, radius=4)
+    call('hole', face='top', at=[30, 32], diameter=5, depth=6)
+    faces = call('list_faces')[0]['faces']
+    walls = [f['face'] for f in faces if f.get('hole') and f.get('radius') == 4]
+    assert len(walls) == 2 and sum(1 for f in faces if f.get('radius') == 4 and not f.get('hole')) == 4, 'holes and fillets are told apart'
+    m = call('measure', **{'from': 'top', 'to': 'bottom'})
+    assert m['between']['distance'] == 12 and m['between']['what'] == 'between parallel faces' and m['of'][0]['size'] == [60, 40], m
+    m = call('measure', **{'from': {'face': walls[0]}, 'to': {'face': walls[1]}})
+    assert m['between']['distance'] == 30 and m['between']['what'] == 'between centres' and m['of'][0]['measures'] == 'Hole \u2300 8 \u00d7 12 mm', m
+    m = call('measure', **{'from': {'face': walls[0]}, 'to': 'left'})
+    assert m['between']['distance'] in (15, 45) and m['between']['what'] == 'hole axis to face', m
+    one = call('measure', **{'from': 'front'})
+    assert one['of'][0]['size'] == [52, 12] and 'between' not in one, one
+    fails('measure', 'Nothing is selected')
+    fails('measure', 'from', to='top')
+    step('measure: thickness, hole spacing, a hole from a side, the size of a face')
+
+    # what the person sees and clicks: the size where the mouse rests, the distance between two clicked things
+    call('set_view', view='home')
+    rest([30, 6, 12])
+    shown = p.js('corecad.numbers')
+    assert [n for n in shown if n['kind'] == 'pointed' and n['text'].startswith('60 \u00d7 40 mm')], shown
+    p.click(*page([15, 24, 12]))
+    p.click(*page([45, 24, 12]), modifiers=8)
+    time.sleep(.2)
+    sel = call('get_selection')
+    assert [e['kind'] for e in sel['selected']] == ['edge', 'edge'] and sel['selected'][0]['diameter'] == 8, sel['selected']
+    assert sel['between']['distance'] == 30 and sel['between']['what'] == 'between centres' and [abs(v) for v in sel['between']['delta']] == [30, 0, 0], sel['between']
+    assert call('measure')['between'] == sel['between']
+    assert p.js('corecad.measured').startswith('Between them: 30 mm (between centres)')
+    shown = [n['text'] for n in p.js('corecad.numbers') if n['kind'] == 'measure']
+    assert '30 mm' in shown and shown.count('\u2300 8 mm') == 2, shown
+    p.key('Escape')
+    step('the size where the mouse rests; 30 mm between two clicked holes, for the person and for the agent')
+
+    # every driving number, with the command that changes it
+    dims = call('list_dimensions')
+    width = next(d for d in dims if d['is'] == 'horizontal distance' and d['value'] == 60)
+    assert width['change_with'] == 'set_dimension' and width['arguments']['sketch'] == 'f1' and width['feature_name'] == 'Sketch1', width
+    assert sorted(d['shown_as'] for d in dims if d['feature'] != 'f1') == ['12', '6', 'R 4', '\u00d8 5'], [d['shown_as'] for d in dims]
+    depth = next(d for d in dims if d['is'] == 'extrusion distance')
+    assert depth['change_with'] == 'edit_feature' and depth['arguments'] == {'id': 'f2', 'distance': 12} and depth['at'][2] == 6, depth
+    wider = call(width['change_with'], **{**width['arguments'], 'value': 80})
+    assert wider['bodies'][0]['box'][1][0] == 80, wider['bodies']
+    step('list_dimensions: %d driving numbers, each with the command that changes it' % len(dims))
+
+    # the same numbers on the model: Dimensions (D), click one, type
+    p.click('[data-part="o1"]')
+    p.key('d')
+    labels = p.js('corecad.dimensions')
+    assert sorted(l['text'] for l in labels if l['feature'] != 'f1') == ['12', '6', 'R 4', '\u00d8 5'] and all(l['editable'] for l in labels), labels
+    overall = [n['text'] for n in p.js('corecad.numbers') if n['kind'] == 'reference']
+    assert overall == ['X 80', 'Y 40', 'Z 12'], overall
+    thick = next(l for l in labels if l['feature'] == 'f2')
+    p.click(thick['x'], thick['y'])
+    p.wait('!!document.getElementById("dim-input")')
+    assert p.js('document.getElementById("dim-input").value') == '12' and p.js('!!document.getElementById("dim-input").title'), p.js('document.getElementById("dim-input").value')
+    p.key('a', modifiers=2)
+    p.type('10+5')
+    p.key('Enter')
+    p.wait('!corecad.busy && !document.getElementById("dim-input") && corecad.build.bodies[0].bbox[1][2] === 15', timeout=30)
+    assert p.js('corecad.doc.features[1].extent.distance') == 15, p.js('corecad.doc.features[1].extent')
+    # a number that cannot be built is refused, and the box stays open with the old model
+    rad = next(l for l in p.js('corecad.dimensions') if l['text'] == 'R 4')
+    p.click(rad['x'], rad['y'])
+    p.wait('!!document.getElementById("dim-input")')
+    p.key('a', modifiers=2)
+    p.type('500')
+    p.key('Enter')
+    p.wait('!corecad.busy && document.getElementById("toast").textContent.includes("cannot be built")', timeout=30)
+    assert p.js('!!document.getElementById("dim-input")') and p.js('corecad.doc.features[2].radius') == 4, 'the refused number changed nothing, and can be typed again'
+    # the clicked number is "this" for the agent
+    chosen = call('get_selection')['dimension']
+    assert chosen['is'] == 'fillet radius' and chosen['change_with'] == 'edit_feature' and chosen['arguments'] == {'id': 'f3', 'radius': 4}, chosen
+    fails('set_dimension', 'not a sketch dimension', dimension='this', value=2)
+    assert call('edit_feature', id='this', radius=2)['id'] == 'f3', 'the feature of the number that was clicked'
+    high = next(l for l in p.js('corecad.dimensions') if l['text'] == '40')
+    p.click(high['x'], high['y'])
+    p.wait('!!document.getElementById("dim-input")')
+    assert call('get_selection')['dimension']['is'] == 'vertical distance', call('get_selection')
+    taller = call('set_dimension', dimension='this', value=50)
+    assert taller['bodies'][0]['box'][1][1] == 50, taller['bodies']
+    p.key('Escape')
+    shot = call('screenshot', dimensions=False, max=500)
+    assert shot['width'] <= 500 and p.js('document.getElementById("dimensions").classList.contains("on")'), 'a picture without the numbers leaves the view as the person had it'
+    p.key('d')
+    assert not p.js('document.getElementById("dimensions").classList.contains("on")')
+    assert p.js('corecad.dimensions') == [], 'a feature that a command selected does not put its numbers over the model'
+    p.click('[data-feature="f2"]')
+    assert {l['feature'] for l in p.js('corecad.dimensions')} == {'f1', 'f2'}, 'a feature clicked in the history shows its own numbers (an extrusion with its sketch)'
+    p.click('[data-part="o1"]')
+    assert p.js('corecad.dimensions') == [], p.js('corecad.dimensions')
+    step('Dimensions: click a number and type; a number that cannot be built is refused; the clicked number is "this"')
+
     errors = p.errors()
     assert not errors, errors
     print('ALL COMMAND CHECKS PASSED')

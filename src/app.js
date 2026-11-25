@@ -38,6 +38,9 @@ import {
 } from './doc/parts.js';
 import * as Mat from './core/mat.js';
 import { gizmoArrows, hitArrow, alongAxis, drawArrows } from './view/gizmo.js';
+import { sizeOf, between, total, boxOf } from './api/measure3d.js';
+import { dimensionsOf } from './api/dimensions.js';
+import { pill, pillWidth, line as inkLine, inBox, INK } from './view/annotate.js';
 import { faceRefFrom, edgeRefFrom, frameOfSketch, resolveEdgeRef } from './doc/refs.js';
 import { canonicalFrame, basePlane, toWorld, toLocal } from './core/plane.js';
 import { parseNumber, formatNumber as fmt } from './core/num.js';
@@ -66,7 +69,32 @@ let editor = null,
   mover = null, // { id, base, doc, drag, hot }: a part being placed
   pointed = null, // the face or edge the mouse last rested on (a pick, with `when`): what "this" means to a command
   mouse = null, // where the mouse is over the view, or null when it is elsewhere
-  restTimer = 0;
+  restTimer = 0,
+  dimLabels = [], // the numbers drawn on the model in the last frame: [{ box, d }]
+  drawnNumbers = [], // every value drawn in the last frame: [{ text, kind }]
+  dimEdit = null, // { d, input }: a number being typed over
+  selectedDim = null, // { feature, key }: the number that was clicked
+  numbersFor = null, // the feature that was clicked in the history: its numbers are shown on the model
+  quietShown = false; // a change made from the view itself: the camera stays as it is
+// What the view bar's two toggles are set to, kept between visits.
+const PREF = (name) => 'corecad.' + name + (new URLSearchParams(location.search).has('test') ? '.test' : '');
+function pref(name, fallback) {
+  try {
+    const v = localStorage.getItem(PREF(name));
+    return v === null ? fallback : v === '1';
+  } catch {
+    return fallback;
+  }
+}
+function setPref(name, on) {
+  try {
+    localStorage.setItem(PREF(name), on ? '1' : '0');
+  } catch {
+    /* it is only remembered when it can be */
+  }
+}
+let measureOn = pref('measure', true), // sizes where the mouse rests or clicks
+  dimsOn = pref('dimensions', false); // every driving number of the selected part
 const REST_MS = 300; // how long the mouse must stay on something for it to be what the person points at
 const collapsed = new Set(); // the parts whose history is folded away in the browser
 const PRIMITIVES = ['box', 'cylinder', 'sphere'];
@@ -114,7 +142,11 @@ const view = createViewport(id('viewport'), {
     if (editor) editor.move(p, e);
     else if (mover) moveDrag(p, e);
     else {
-      const hit = view.pick(...p, pickFilter(), e.altKey);
+      // A number on the model is clicked, not what lies under it.
+      const label = draft ? null : labelAt(p),
+        hit = label ? null : view.pick(...p, pickFilter(), e.altKey),
+        cursor = label ? (label.d.edit ? 'pointer' : 'default') : '';
+      if (view.canvas.style.cursor !== cursor) view.canvas.style.cursor = cursor;
       view.hover(hit);
       // What the mouse comes to rest on is what the person points at; what it only passes over
       // on its way out of the view is not.
@@ -152,10 +184,238 @@ view.overlay((ctx) => {
   if (editor) editor.draw(ctx);
   else {
     drawProfiles(ctx);
+    drawNumbers(ctx);
     if (mover) drawArrows(ctx, moveArrows(), mover.drag?.axis ?? mover.hot ?? -1);
     else if (!draft && bridgeOn()) drawPointed(ctx);
   }
 });
+// ------------------------------------------------------------------ numbers on the model
+const mm = (v) => fmt(v, Math.abs(v) >= 100 ? 1 : 2);
+/** A pick as the measuring functions take it: the body as it is shown, and the clicked point in space. */
+function asPick(hit) {
+  const b = pickedBody(hit);
+  return { body: b, kind: hit.type, index: hit.face ?? hit.edge, point: b.matrix ? Mat.point(b.matrix, hit.point) : hit.point };
+}
+/** The numbers that drive the model and are to be seen: with Dimensions on, all of the selected part and
+ *  its tools (of every part, when none is selected); otherwise those of the feature clicked in the history. */
+function shownDimensions() {
+  if (draft || mover || editor) return [];
+  const d = store.state.doc,
+    results = store.state.build?.features ?? [],
+    built = (f) => ['ok', 'warning'].includes(results.find((r) => r.id === f.id)?.status);
+  let features = [];
+  if (dimsOn) {
+    const used = usedParts(),
+      own = partById(d, selectedPart),
+      hidden = (pid) => [pid, ...ancestorsOf(d, pid)].some((x) => partById(d, x)?.hidden),
+      scope = new Set(own ? [own.id, ...descendantsOf(d, own.id).filter((x) => used.has(x))] : d.parts.filter((p) => !hidden(p.id)).map((p) => p.id));
+    features = d.features.filter((f) => scope.has(f.part));
+  } else if (numbersFor === selectedFeature) {
+    // Only a feature the person clicked in the history: one that was just made is selected too, and its
+    // numbers would lie over the very geometry that is clicked next.
+    const f = featureById(d, selectedFeature);
+    if (f) features = f.type === 'extrude' ? [featureById(d, f.sketch), f].filter(Boolean) : [f];
+  }
+  return features.filter(built).flatMap((f) => {
+    const sketch = f.type === 'sketch' ? f : f.type === 'extrude' ? featureById(d, f.sketch) : null;
+    return dimensionsOf(f, { frame: sketch ? sketchFrame(sketch) : null, matrix: placementOf(f.part) });
+  });
+}
+const labelAt = (p) => dimLabels.findLast((l) => inBox(l.box, p)) ?? null;
+function drawNumbers(ctx) {
+  dimLabels = [];
+  drawnNumbers = [];
+  if (draft || mover) return;
+  // Lines first; the values are collected and drawn last, on top, moved off each other where they would overlap.
+  const S = (p) => view.project(p),
+    driving = [],
+    measured = [],
+    overall = [];
+  for (const d of shownDimensions()) {
+    const picked = selectedDim?.feature === d.feature && selectedDim.key === d.key,
+      style = d.edit ? INK.driving : INK.reference,
+      pts = d.line.map(S);
+    inkLine(ctx, pts, style, { ticks: pts.length === 4 ? [1, 2] : [0, 1] });
+    driving.push({ text: d.text, at: S(d.at), style: picked ? INK.chosen : style, d });
+  }
+  if (dimsOn) drawOverall(ctx, overall);
+  if (measureOn) drawMeasured(ctx, measured);
+  const placed = [],
+    clash = (box) => placed.some((o) => box.x < o.x + o.w + 2 && o.x < box.x + box.w + 2 && box.y < o.y + o.h + 2 && o.y < box.y + box.h + 2);
+  for (const l of [...measured, ...driving, ...overall]) {
+    const w = pillWidth(ctx, l.text);
+    let y = l.at[1];
+    for (const dy of [0, 21, -21, 42, -42, 63, -63, 84]) {
+      y = l.at[1] + dy;
+      if (!clash({ x: l.at[0] - w / 2, y: y - 9, w, h: 18 })) break;
+    }
+    if (y !== l.at[1]) inkLine(ctx, [l.at, [l.at[0], y]], l.style === INK.chosen ? INK.driving : l.style, { width: 0.5 });
+    const box = pill(ctx, l.text, l.at[0], y, l.style);
+    placed.push(box);
+    drawnNumbers.push({ text: l.text, kind: Object.keys(INK).find((k) => INK[k] === l.style) });
+    if (l.d) dimLabels.push({ box, d: l.d });
+  }
+}
+/** The overall size of the selected part (of everything, when none is): three lines along the box round it. */
+function drawOverall(ctx, labels) {
+  const d = store.state.doc,
+    own = partById(d, selectedPart),
+    scope = own ? new Set([own.id, ...descendantsOf(d, own.id)]) : null,
+    box = boxOf(sceneFor(store.state.build?.bodies).filter((b) => !scope || scope.has(b.part)));
+  if (!box) return;
+  const [lo, hi] = box,
+    S = (p) => view.project(p),
+    c = S([0, 1, 2].map((i) => (lo[i] + hi[i]) / 2));
+  for (let axis = 0; axis < 3; axis++) {
+    const size = hi[axis] - lo[axis],
+      [j, k] = [0, 1, 2].filter((i) => i !== axis);
+    if (size < 1e-6) continue;
+    // Of the four edges of the box along this axis: the highest on the screen for X and Y, the rightmost
+    // for Z. The numbers that drive a part are mostly low and in front, where its sketches lie.
+    let best = null;
+    for (const vj of [lo[j], hi[j]])
+      for (const vk of [lo[k], hi[k]]) {
+        const a = [0, 0, 0],
+          b = [0, 0, 0];
+        a[axis] = lo[axis];
+        b[axis] = hi[axis];
+        a[j] = b[j] = vj;
+        a[k] = b[k] = vk;
+        const sa = S(a),
+          sb = S(b),
+          score = axis === 2 ? sa[0] + sb[0] : -(sa[1] + sb[1]);
+        if (!best || score > best.score) best = { sa, sb, score };
+      }
+    const { sa, sb } = best,
+      l = Math.hypot(sb[0] - sa[0], sb[1] - sa[1]);
+    if (l < 26) continue; // seen end-on
+    // Set off from the box, away from its middle.
+    const mid = [(sa[0] + sb[0]) / 2, (sa[1] + sb[1]) / 2];
+    let nx = -(sb[1] - sa[1]) / l,
+      ny = (sb[0] - sa[0]) / l;
+    if ((mid[0] - c[0]) * nx + (mid[1] - c[1]) * ny < 0) {
+      nx = -nx;
+      ny = -ny;
+    }
+    const off = (p, o) => [p[0] + nx * o, p[1] + ny * o];
+    inkLine(ctx, [sa, off(sa, 29)], INK.reference, { width: 0.6 });
+    inkLine(ctx, [sb, off(sb, 29)], INK.reference, { width: 0.6 });
+    inkLine(ctx, [off(sa, 24), off(sb, 24)], INK.reference, { ticks: [0, 1] });
+    labels.push({ text: `${'XYZ'[axis]} ${mm(size)}`, at: off(mid, 24), style: INK.reference });
+  }
+}
+/** How big what was clicked is, how far apart two clicked things are, and how big what the mouse rests on is. */
+function drawMeasured(ctx, labels) {
+  const S = (p) => view.project(p),
+    sel = selection.filter(stillThere).map(asPick);
+  if (sel.length === 2) {
+    const m = between(sel[0], sel[1]),
+      real = m.from && m.distance > 1e-7,
+      a = S(real ? m.from : sel[0].point),
+      b = S(real ? m.to : sel[1].point);
+    inkLine(ctx, [a, b], INK.measure, real ? { width: 1.6, ticks: [0, 1] } : { width: 1, dash: [4, 3] });
+    labels.push({ text: m.text, at: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], style: INK.measure });
+  }
+  if (sel.length <= 2)
+    for (const p of sel) {
+      const s = S(p.point);
+      labels.push({ text: sizeOf(p.body, p.kind, p.index).text, at: [s[0], s[1] - 20], style: INK.measure });
+    }
+  const at = stillThere(pointed),
+    same = (h) => h.body === at.body && h.type === at.type && (h.face ?? h.edge) === (at.face ?? at.edge);
+  if (at && (mouse || bridgeOn()) && !selection.some(same)) {
+    const p = asPick(at),
+      s = S(p.point);
+    labels.push({ text: sizeOf(p.body, p.kind, p.index).text, at: [s[0], s[1] - 22], style: INK.pointed });
+  }
+}
+/** What the line under the view bar says about the selection: its size, or what lies between two. */
+function selectionNote() {
+  const sel = selection.filter(stillThere).map(asPick);
+  if (!sel.length) return '';
+  if (sel.length === 1) {
+    const p = sel[0],
+      size = sizeOf(p.body, p.kind, p.index).text;
+    return p.kind === 'edge'
+      ? `Edge · ${size} · Shift-click more edges, then Fillet or Chamfer; a second one gives the distance between them.`
+      : p.body.mesh.faces[p.index].plane
+      ? `Flat face · ${size} · Sketch or Hole to continue; Shift-click another face or edge to measure between them.`
+      : `${size} · Shift-click another face or edge to measure between them.`;
+  }
+  if (sel.length === 2) {
+    const m = between(sel[0], sel[1]);
+    return `Between them: ${m.text} (${m.what})` + (m.delta ? ` · ΔX ${mm(Math.abs(m.delta[0]))}  ΔY ${mm(Math.abs(m.delta[1]))}  ΔZ ${mm(Math.abs(m.delta[2]))}` : '');
+  }
+  return total(sel).text;
+}
+/** A number on the model was clicked: it is the chosen one, and if it drives the model it can be typed over. */
+function editDimension({ box, d }) {
+  closeDimEdit();
+  selectedDim = { feature: d.feature, key: d.key };
+  view.dirty();
+  if (!d.edit) {
+    toast('This number is measured: it follows the model.');
+    return;
+  }
+  const input = document.createElement('input');
+  input.className = 'dim-input';
+  input.id = 'dim-input';
+  input.value = fmt(d.value, 6);
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.title = `The ${d.what}, in ${d.unit === '°' ? 'degrees' : 'millimetres'}. Type a value or arithmetic: Enter applies it, Esc leaves it.`;
+  input.style.left = box.x + box.w / 2 + 'px';
+  input.style.top = box.y + box.h / 2 + 'px';
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') applyDimEdit();
+    else if (e.key === 'Escape') {
+      closeDimEdit();
+      view.canvas.focus();
+    }
+  });
+  input.addEventListener('blur', () => dimEdit?.input === input && !dimEdit.busy && closeDimEdit());
+  id('viewport').append(input);
+  dimEdit = { d, input, busy: false };
+  input.focus();
+  input.select();
+}
+function closeDimEdit() {
+  const open = dimEdit;
+  dimEdit = null;
+  open?.input.remove();
+}
+async function applyDimEdit() {
+  const { d, input } = dimEdit,
+    value = parseNumber(input.value);
+  if (value === null) {
+    toast('Enter a number or arithmetic, such as 60/2.');
+    return;
+  }
+  if (Math.abs(value - d.value) < 1e-9) {
+    closeDimEdit();
+    return;
+  }
+  // Through the command set: tried first, kept only if the model can be built with it, one undo step.
+  dimEdit.busy = true;
+  quietShown = true;
+  const r = await api.run(d.edit.command, d.edit.args(value));
+  quietShown = false;
+  if (dimEdit?.input !== input) return;
+  dimEdit.busy = false;
+  if (r.ok) {
+    closeDimEdit();
+    view.canvas.focus();
+  } else {
+    toast(r.error);
+    input.focus();
+    input.select();
+  }
+}
+function renderToggles() {
+  id('dimensions').classList.toggle('on', dimsOn);
+  id('measure').classList.toggle('on', measureOn);
+}
 // ------------------------------------------------------------------ what the person points at
 const bridgeOn = () => {
   try {
@@ -222,7 +482,14 @@ function chosen() {
     pointed: at && !editor && !draft && !mover ? { ...row(at), ms: Date.now() - at.when, over: !!mouse } : null,
     part: partById(d, selectedPart) ? selectedPart : null,
     feature: featureById(d, selectedFeature) ? selectedFeature : null,
+    dimension: chosenDimension(),
   };
+}
+/** The number on the model that was clicked, if it is still shown: what it is and how it is changed. */
+function chosenDimension() {
+  if (!selectedDim) return null;
+  const d = shownDimensions().find((x) => x.feature === selectedDim.feature && x.key === selectedDim.key);
+  return d && { feature: d.feature, key: d.key, value: d.value, text: d.text, what: d.what, unit: d.unit, change: d.edit ? { command: d.edit.command, args: d.edit.args(d.value) } : null };
 }
 /** The document that is on screen: with the feature, the sketch's new part or the placement being edited. */
 function viewDoc() {
@@ -348,6 +615,12 @@ function drawProfiles(ctx) {
 }
 function modelClick(p, e) {
   if (modal) return;
+  const label = draft || replaneId ? null : labelAt(p);
+  if (label) {
+    editDimension(label);
+    return;
+  }
+  selectedDim = null;
   if (replaneId) {
     const h = view.pick(...p, 'face');
     if (h) {
@@ -406,12 +679,7 @@ function modelClick(p, e) {
   view.select(selection);
   view.dirty();
   renderBrowser();
-  id('context-note').textContent =
-    hit.type === 'face'
-      ? b.mesh.faces[hit.face].plane
-        ? 'Flat face selected · Sketch or Hole to continue.'
-        : 'Curved face selected. Sketches and holes need a flat face.'
-      : 'Edge selected · Shift-click more edges, then Fillet or Chamfer.';
+  id('context-note').textContent = selectionNote();
 }
 function renderTools() {
   if (editor) {
@@ -1837,6 +2105,24 @@ function duplicatePart(linked) {
 }
 const actions = {
   connect: openConnect,
+  dimensions: () => {
+    dimsOn = !dimsOn;
+    setPref('dimensions', dimsOn);
+    renderToggles();
+    view.dirty();
+    if (dimsOn)
+      toast(
+        partById(store.state.doc, selectedPart)
+          ? `The numbers that drive ${partById(store.state.doc, selectedPart).name}. Click one to change it.`
+          : 'The numbers that drive the model. Click one to change it.'
+      );
+  },
+  measure: () => {
+    measureOn = !measureOn;
+    setPref('measure', measureOn);
+    renderToggles();
+    view.dirty();
+  },
   box: () => beginFeature('box'),
   cylinder: () => beginFeature('cylinder'),
   sphere: () => beginFeature('sphere'),
@@ -2099,6 +2385,7 @@ const actions = {
           ['S / E / H', 'Sketch / Extrude / Hole'],
           ['F / Shift+F', 'Fillet / Chamfer'],
           ['B / M', 'Box as a new part / Move the selected part'],
+          ['D', 'Dimensions: the numbers that drive the model, to click and change'],
           ['L / R / C / A / P', 'Line / Rectangle / Circle / Arc / Point'],
           ['D / X', 'Dimension / Construction'],
           ['Shift-click', 'Add or remove a selection'],
@@ -2115,7 +2402,7 @@ const actions = {
         ]
           .map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`)
           .join('') +
-        '</table><p>Number fields accept arithmetic, decimals with a dot or comma, and a trailing mm. Blue geometry can move; green geometry is constrained. Dimensions in parentheses are measurements. Double-click history entries to edit them.</p><p>A project is made of parts. Each part has its own history and its own place: select one in the list or in the view, and Move places it, Copy and Linked copy repeat it, Combine joins another part to it or cuts one out of it. Box, Cylinder and Sphere start a part without a sketch.</p>',
+        '</table><p>Number fields accept arithmetic, decimals with a dot or comma, and a trailing mm. Blue geometry can move; green geometry is constrained. Dimensions in parentheses are measurements. Double-click history entries to edit them.</p><p>A project is made of parts. Each part has its own history and its own place: select one in the list or in the view, and Move places it, Copy and Linked copy repeat it, Combine joins another part to it or cuts one out of it. Box, Cylinder and Sphere start a part without a sketch.</p><p>Rest the mouse on a face or an edge to see how big it is; click one and Shift-click another for the distance or the angle between them. Dimensions (D) shows the numbers that drive the selected part where they are: click one, type, Enter.</p>',
       '<button class="primary" data-modal="close" title="Close help">Got it</button>',
       closeModal,
       true
@@ -2167,7 +2454,7 @@ document.addEventListener('click', (e) => {
   if (d.action) {
     if (
       mover &&
-      !['apply-move', 'cancel-move', 'fit', 'projection', 'planes', 'help', 'undo', 'connect'].includes(d.action)
+      !['apply-move', 'cancel-move', 'fit', 'projection', 'planes', 'help', 'undo', 'connect', 'dimensions', 'measure'].includes(d.action)
     ) {
       toast('Apply or cancel the move first.');
       return;
@@ -2217,6 +2504,7 @@ document.addEventListener('click', (e) => {
   if (d.feature) {
     if (editor || draft || mover) return;
     selectedFeature = d.feature;
+    numbersFor = d.feature;
     selectedPart = featureById(store.state.doc, d.feature)?.part ?? selectedPart;
     selection = [];
     view.select([]);
@@ -2383,6 +2671,7 @@ document.addEventListener('keydown', (e) => {
       actions['close-panel']();
       selection = [];
       pointed = null;
+      selectedDim = null;
       view.select([]);
       view.hover(null);
     }
@@ -2441,6 +2730,7 @@ document.addEventListener('keydown', (e) => {
       f: e.shiftKey ? 'chamfer' : 'fillet',
       b: 'box',
       m: 'move-part',
+      d: 'dimensions',
     }[key];
     if (action) {
       e.preventDefault();
@@ -2450,6 +2740,7 @@ document.addEventListener('keydown', (e) => {
 });
 renderTools();
 renderBrowser();
+renderToggles();
 // The command set for scripts and agents (src/api/commands.js): it changes the model through
 // the same store as the controls above, so what it does is undoable, autosaved and shown.
 const api = createCommands({
@@ -2460,6 +2751,14 @@ const api = createCommands({
   currentPart: () => (partById(store.state.doc, selectedPart) ? selectedPart : homePart()),
   /** What the person has clicked, and what their mouse last rested on. */
   chosen,
+  /** Shows or hides the numbers that drive the model (for a picture); answers what it was. */
+  showDimensions: (on) => {
+    const was = dimsOn;
+    dimsOn = !!on;
+    renderToggles();
+    view.dirty();
+    return was;
+  },
   homePart: () => homePart(),
   cancelEdit: () => {
     if (editor) finishSketch(true);
@@ -2473,6 +2772,12 @@ const api = createCommands({
     }
   },
   shown: (fid, pid = null) => {
+    if (quietShown) {
+      // A number typed over in the view: what is selected and where the camera looks stay as they are.
+      refreshScene();
+      renderBrowser();
+      return;
+    }
     selectedFeature = fid;
     selectedPart = featureById(store.state.doc, fid)?.part ?? pid ?? (partById(store.state.doc, selectedPart) ? selectedPart : null);
     selection = [];
@@ -2584,6 +2889,21 @@ window.corecad = {
   },
   get selectedPart() {
     return selectedPart;
+  },
+  /** The numbers drawn on the model, with where each is on the page: [{ feature, key, text, value, what, x, y, editable }]. */
+  get dimensions() {
+    view.snapshot(); // drawn now, so that the list is of this moment
+    const r = view.canvas.getBoundingClientRect();
+    return dimLabels.map(({ box, d }) => ({ feature: d.feature, key: d.key, text: d.text, value: d.value, what: d.what, x: box.x + box.w / 2 + r.left, y: box.y + box.h / 2 + r.top, editable: !!d.edit }));
+  },
+  /** What the line under the view bar says about the selection. */
+  get measured() {
+    return selectionNote();
+  },
+  /** Every value drawn on the model right now: [{ text, kind }], kind 'driving', 'reference', 'measure', 'pointed' or 'chosen'. */
+  get numbers() {
+    view.snapshot();
+    return structuredClone(drawnNumbers);
   },
   /** The face or edge the mouse last rested on, if it is still there: { type, body, face | edge, point, world, when }. */
   get pointed() {

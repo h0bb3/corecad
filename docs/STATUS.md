@@ -186,3 +186,46 @@ Limits: only faces and edges of solids are pointed at, not sketch geometry or
 empty space. Resting takes a third of a second; a mouse that is moved away
 quickly keeps the earlier thing. Nothing tells the agent when the selection
 changes: it asks. Not tried with Claude itself.
+
+## Measurements and dimensions on the model (2026-11-25)
+
+A first proposal for seeing sizes quickly; it is there to be discussed.
+
+- **Where the mouse rests**: a small label says how big the face or edge is
+  (`60 × 40 mm`, `Hole ⌀ 8 × 12 mm`, `R 4`, `54 mm`). The Measure button in
+  the view bar turns it off.
+- **Between two**: click one thing and Shift-click another. A line with the
+  value is drawn between them and the note under the view bar gives the
+  distance, what it is (between centres, between parallel faces, hole axis to
+  face) and the differences along X, Y and Z. Faces that are not parallel
+  give their angle. Three or more give the total length and area.
+- **Dimensions (D)**: the numbers that drive the selected part are drawn
+  where they are: sketch dimensions in their planes, extrusion distances,
+  hole diameters and depths, fillet radii, box and cylinder sizes; and in
+  grey the overall size along X, Y and Z. Click a number, type, Enter: it
+  goes through the command set, so a value that cannot be built is refused
+  and nothing changes. Labels that would overlap are moved apart.
+- With Dimensions off, a feature clicked in the history shows its own
+  numbers the same way (an extrusion with those of its sketch). A feature
+  that was just made does not: its numbers would lie over what is clicked
+  next.
+- For an agent: `measure`, `list_dimensions`, sizes in `get_selection`, the
+  clicked number as `"this"`, and `screenshot { dimensions: true }` (38
+  commands now).
+- The kernel reports the axis and radius of cylindrical faces (and whether
+  one is a hole or a boss), the centre and radius of spheres, and the circle
+  of arcs as well as of full circles.
+
+Verification: `test/measure.test.html` (5 tests on a model built by the real
+kernel: sizes of flat and round faces, edges, thirteen cases of what lies
+between two, placed parts); `python tools/e2e_api.py` (measure by
+description; the label where the mouse rests; two clicked holes 30 mm apart
+for the person and for the agent; `list_dimensions` and changing one through
+its command; in the Dimensions view clicking a number and typing, a refused
+value, the clicked number as "this"). 97 page tests in all.
+
+Limits: points cannot be picked, only faces and edges, so a distance is
+between those (round ones by their axis). Dimension labels are placed by
+simple rules and can still crowd on a busy part. The numbers of a sketch are
+drawn in the sketch's plane, which may be under the solid. Overall sizes
+follow the axes of space, not of a turned part. Not tried by a person yet.

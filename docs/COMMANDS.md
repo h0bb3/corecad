@@ -115,6 +115,30 @@ bigger". The page keeps track of what they mean, and the commands can use it.
 - When there is nothing to go by, the command says so in a sentence to pass
   on ("ask the person to click or point at a face"), and changes nothing.
 
+## Measuring, and the numbers that drive the model
+
+The person sees sizes on the model (see the README: where the mouse rests,
+between two clicked things, and the Dimensions view). An agent gets the same:
+
+- `measure` tells how big a face or an edge is and what lies between two:
+  `measure { from: "top", to: "bottom" }` is the thickness; two holes give
+  the distance between their centres; a hole and a flat side the distance
+  from the hole's centre to that side; faces that are not parallel give
+  their angle. With nothing given it measures what the person has selected.
+  `from` and `to` take `"this"`, a side name, or `{ face: index }` /
+  `{ edge: index }`.
+- `get_selection` carries the same sizes for what is selected or pointed at,
+  and `between` when two things are selected.
+- `list_dimensions` lists every number that drives the model: sketch
+  dimensions, extrusion distances, hole diameters and depths, fillet radii,
+  box and cylinder sizes. Each row says what it is, where it is in space,
+  and `change_with` and `arguments`: the command that changes it, with the
+  value it has now.
+- A number the person clicked in the Dimensions view is in `get_selection`
+  as `dimension`, and is what `set_dimension { dimension: "this" }` and
+  `edit_feature { id: "this" }` mean.
+- `screenshot { dimensions: true }` draws the driving numbers on the picture.
+
 ## The commands
 
 Arguments in brackets are optional.
@@ -123,6 +147,8 @@ Arguments in brackets are optional.
 |---|---|---|
 | `get_state` | - | The model at a glance: parts with their place, parent and history; features with status and main numbers; bodies with volume and bounding box in space; the current part. Start here. |
 | `get_selection` | - | What the person has clicked and what their mouse rests on: faces, edges, part and feature, with where they are and what made them. |
+| `measure` | [from], [to] | How big a face or an edge is; how far apart or at what angle two are. |
+| `list_dimensions` | [part] | Every number that drives the model, with where it is and the command that changes it. |
 | `get_document` | - | The whole project as JSON, as Save writes it. |
 | `load_document` | document | Replaces the open project. |
 | `new_document` | [name] | Starts an empty project. |
@@ -154,7 +180,7 @@ Arguments in brackets are optional.
 | `undo`, `redo` | - | As the buttons. |
 | `cancel_edit` | - | Closes a sketch or dialog that is open in the page, discarding. |
 | `export` | [format], [download] | STEP or the project as text, STL as base64, or a browser download. |
-| `screenshot` | [view], [fit], [max] | The 3D view as a PNG data URL. |
+| `screenshot` | [view], [fit], [max], [dimensions] | The 3D view as a PNG data URL, with the driving numbers on it if asked. |
 | `set_view` | view, [fit] | Turns the camera to a standard view. |
 
 ## Where the code is
@@ -164,6 +190,8 @@ Arguments in brackets are optional.
 - `src/api/select.js`: faces and edges by description, where the part
   stands (pure).
 - `src/doc/parts.js`: parts, their hierarchy, copies and what is shown (pure).
+- `src/api/measure3d.js`: sizes of faces and edges, and what lies between two (pure).
+- `src/api/dimensions.js`: the driving numbers of a feature and where they are (pure).
 - `test/api-shapes.test.html`: tests of the pure modules.
 - `tools/e2e_api.py`: every command against the real kernel, with expected
   volumes and boxes; run it with `python tools/e2e_api.py`.

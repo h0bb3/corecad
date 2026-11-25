@@ -1130,3 +1130,24 @@ main {
 #browser-content.drop {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
+
+/* Numbers on the model: the toggles in the view bar, and the box a number is typed over in. */
+.viewbar button.on {
+  background: #dfefea;
+  color: #0e7b68;
+}
+.dim-input {
+  position: absolute;
+  z-index: 4;
+  transform: translate(-50%, -50%);
+  width: 92px;
+  padding: 4px 6px;
+  font: 12px 'SFMono-Regular', Consolas, monospace;
+  text-align: center;
+  color: #17443d;
+  background: #fff;
+  border: 2px solid var(--accent);
+  border-radius: 5px;
+  outline: none;
+  box-shadow: 0 3px 12px #1d3b3b33;
+}
