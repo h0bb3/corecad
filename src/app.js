@@ -1667,9 +1667,10 @@ const api = createCommands({
   filename,
 });
 // The bridge to an MCP client (src/api/bridge.js). It connects only when the person chooses to.
-// BRIDGE_LIVE: the relay at vibedit.app is deployed. Until it is, the Connect button is only shown
-// with ?connect in the address (or ?bridge= for a relay on localhost), so nobody meets a dead button.
-const BRIDGE_LIVE = false;
+// BRIDGE_LIVE: the relay at vibedit.app is deployed (since 2026-11-25). Set it to false if the relay
+// is ever taken down: the Connect button is then only shown with ?connect in the address (or ?bridge=
+// for a relay on localhost), so nobody meets a dead button.
+const BRIDGE_LIVE = true;
 const bridgeAsked = ['connect', 'bridge'].some((k) => new URLSearchParams(location.search).has(k));
 const bridge = createBridge({
   run: api.run,

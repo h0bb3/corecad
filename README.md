@@ -71,8 +71,7 @@ explains them.
 relay: the tab names a code, you give Claude the address that ends in that
 code as a custom connector, and Claude can then build and change the model in
 your open tab while you watch. How it works and what the code protects:
-[bridge/README.md](bridge/README.md). (Until the relay is deployed the button
-is only shown with `?connect` in the address.)
+[bridge/README.md](bridge/README.md).
 
 ## How it is made
 

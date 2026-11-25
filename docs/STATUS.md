@@ -87,7 +87,13 @@ hole and four fillets at 23,360 mm3, refusals, a screenshot as a picture,
 disconnect, new address, reload). The same chain also passed through the relay
 as mounted in the vibedit server, run locally.
 
-Not yet true: the relay is not deployed at vibedit.app (it is a pull request in
-that repository), so the public page cannot connect; the Connect button is
-hidden unless `?connect` is in the address. It has not been tried with Claude
-itself, only with the SDK's client and a hand-written one.
+The relay was deployed at vibedit.app/CoreCAD on 2026-11-25 and the Connect
+button is shown to everyone. `python tools/e2e_bridge.py --live` runs the same
+chain against the public page and the public relay, through Cloudflare, and
+passed that day.
+
+Not yet verified: Claude's own connector. Only the MCP SDK's client and the
+test's hand-written one have spoken to it. One thing seen on the way:
+Cloudflare refused requests with Python's default user agent (error 1010), so
+if a client cannot reach `/CoreCAD/mcp`, the zone's bot rules are the first
+place to look.

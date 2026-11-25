@@ -6,7 +6,8 @@ speaks MCP over HTTP to the address the dialog shows, the way Claude's connector
 
 Needs Node (the relay): on the PATH, or its path in the NODE environment variable.
 With --port N it uses a relay that is already listening on 127.0.0.1:N instead (it must
-allow pages on localhost).
+allow pages on localhost). With --live it uses the public page and the public relay:
+the deployed chain, through whatever stands in front of it.
 """
 import base64
 import json
@@ -40,7 +41,8 @@ class Mcp:
 
     def post(self, message):
         req = urllib.request.Request(self.address, data=json.dumps(message).encode(), method='POST', headers={
-            'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream'})
+            'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream',
+            'User-Agent': 'corecad-e2e/1'})   # a front such as Cloudflare refuses Python's default one
         try:
             with urllib.request.urlopen(req, timeout=120) as r:
                 body, kind, status = r.read().decode(), r.headers.get('Content-Type', ''), r.status
@@ -70,7 +72,12 @@ class Mcp:
         return self.request('tools/call', {'name': name, 'arguments': arguments})
 
 
-def run(p, relay_port):
+LIVE_PAGE = 'https://h0bb3.github.io/corecad/?test=1&connect'
+LIVE_PREFIX = 'https://vibedit.app/CoreCAD/mcp/'
+
+
+def run(p, relay_port=None):
+    """relay_port: a relay on this machine; None: the public page and relay."""
     def step(text):
         print('PASS ' + text)
 
@@ -78,9 +85,17 @@ def run(p, relay_port):
         assert not result.get('isError'), result
         return json.loads(result['content'][-1]['text'])
 
-    ws = f'ws://127.0.0.1:{relay_port}/CoreCAD/ws'
-    p.goto('index.html?test=1&bridge=' + ws)
+    local = relay_port is not None
+    page = f'index.html?test=1&bridge=ws://127.0.0.1:{relay_port}/CoreCAD/ws' if local else LIVE_PAGE
+    prefix = f'http://127.0.0.1:{relay_port}/CoreCAD/mcp/' if local else LIVE_PREFIX
+    p.goto(page)
     p.wait('window.corecadReady && window.corecad && !corecad.busy', timeout=120)
+    if p.js('corecad.bridge.status') != 'off':      # left on by an earlier run in this browser profile
+        p.js('document.getElementById("connect-button").click()')
+        p.wait('!!document.querySelector("[data-modal=toggle]")')
+        p.click('[data-modal="toggle"]')
+        p.wait('corecad.bridge.status === "off"')
+        p.click('[data-modal="close"]')
     p.js('corecad.run("new_document", {})')
     assert p.js('corecad.bridge.status') == 'off', 'nothing connects until the person says so'
 
@@ -91,7 +106,7 @@ def run(p, relay_port):
     p.click('[data-modal="toggle"]')
     p.wait('corecad.bridge.status === "on"', timeout=20)
     address = p.js('document.getElementById("bridge-address").value')
-    assert address.startswith(f'http://127.0.0.1:{relay_port}/CoreCAD/mcp/') and len(address.rsplit('/', 1)[1]) == 24, address
+    assert address.startswith(prefix) and len(address.rsplit('/', 1)[1]) == 24, address
     assert p.js('document.getElementById("connect-button").textContent.trim()') == 'Connected'
     assert all(p.js('[...document.querySelectorAll("#modal-root button, #modal-root input")].map(e => !!e.title)')), 'every control explains itself'
     step('Connect dialog: connected, address shown')
@@ -149,7 +164,7 @@ def run(p, relay_port):
 
     # ---- it stays connected over a reload, because the person left it on
     p.click('[data-modal="close"]')
-    p.goto('index.html?test=1&bridge=' + ws)
+    p.goto(page)
     p.wait('window.corecad && corecad.bridge.status === "on"', timeout=120)
     p.wait('!corecad.busy', timeout=120)
     assert p.js('corecad.bridge.address') == fresh
@@ -158,17 +173,18 @@ def run(p, relay_port):
     p.wait('!!document.querySelector("[data-modal=toggle]")')
     p.click('[data-modal="toggle"]')
     p.wait('corecad.bridge.status === "off"')
-    p.goto('index.html?test=1&bridge=' + ws)
+    p.goto(page)
     p.wait('!!(window.corecadReady && window.corecad)')
     time.sleep(0.5)
     assert p.js('corecad.bridge.status') == 'off', 'and stays off once switched off'
     step('left on: reconnects after a reload; switched off: stays off')
 
-    # ---- an address for another host is never taken from the page's address
-    p.goto('index.html?test=1&bridge=wss://example.com/x/ws')
-    p.wait('!!(window.corecad && corecad.bridge)')
-    assert p.js('corecad.bridge.address').startswith('https://vibedit.app/CoreCAD/mcp/'), p.js('corecad.bridge.address')
-    step('?bridge= is honoured for localhost only')
+    if local:
+        # ---- an address for another host is never taken from the page's address
+        p.goto('index.html?test=1&bridge=wss://example.com/x/ws')
+        p.wait('!!(window.corecad && corecad.bridge)')
+        assert p.js('corecad.bridge.address').startswith(LIVE_PREFIX), p.js('corecad.bridge.address')
+        step('?bridge= is honoured for localhost only')
 
     errors = [e for e in p.errors() if 'WebSocket' not in e]
     assert not errors, errors
@@ -176,10 +192,10 @@ def run(p, relay_port):
 
 
 def main():
-    if '--port' in sys.argv:    # a relay that is already running (for instance the one mounted in another server)
+    if '--port' in sys.argv or '--live' in sys.argv:    # a relay that is already running, here or in public
         with Browser(size=(1400, 900)) as b:
             try:
-                run(b.page, int(sys.argv[sys.argv.index('--port') + 1]))
+                run(b.page, None if '--live' in sys.argv else int(sys.argv[sys.argv.index('--port') + 1]))
             except Exception as e:
                 b.page.screenshot(ROOT / '.scratch' / 'e2e_bridge_failure.png')
                 print('FAILED:', e)
