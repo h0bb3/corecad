@@ -213,7 +213,13 @@ class Page:
         return path if path.split('?')[0].split('#')[0].count('://') else f'{self.base}/{path.lstrip("/")}'
 
     def goto(self, path, timeout=30):
-        self.call('Page.navigate', url=self.url(path))
+        url = self.url(path)
+        if not url.startswith(self.base):
+            # A site somewhere else (the published one): the profile's cache may hold files from a run a few
+            # minutes ago that the site still lets a browser reuse. Test what is published now.
+            self.call('Network.enable')
+            self.call('Network.setCacheDisabled', cacheDisabled=True)
+        self.call('Page.navigate', url=url)
         end = time.time() + timeout
         while time.time() < end:
             try:
