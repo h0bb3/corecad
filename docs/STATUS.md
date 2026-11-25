@@ -283,3 +283,30 @@ dialog, or `export { part }`. The file is named after the project and the
 part. A part that shows nothing (empty, hidden, or used up as a tool) is
 refused with that reason. Verified in `test/export.test.html` (6 tests now)
 and `tools/e2e_export.py`.
+
+## Turning a part: rings (2026-11-25)
+
+The Move panel had three fields for the angles about X, Y and Z. Those are
+applied one after another, so with the middle one at 90° the first and the
+last turn about the same line (gimbal lock): X and Z did the same thing.
+
+- The gizmo now has three **rings** besides the arrows. Dragging a ring turns
+  the part about that axis of its parent, round the middle of the part, from
+  where it stood when the ring was taken hold of. Steps of 15°; Shift single
+  degrees; Ctrl freely. A ring that is seen squarely is followed round with
+  the mouse; one seen edge-on is dragged along. The angle is shown while
+  dragging.
+- The panel has **Turn by** an angle **about X / Y / Z** (the same turn, by a
+  typed amount; negative turns back) and **Upright** (no turn at all, the
+  middle staying where it is). The three angle fields are gone; how the part
+  is turned is shown as text.
+- The placement is still stored as three angles: any way a part can stand can
+  be written so. It was only editing them one by one that was the trouble.
+
+Verification: `python tools/e2e_parts.py` drags the Z ring with the mouse (45°
+in steps, 5° not yet a step, a degree at a time with Shift), a ring seen
+edge-on from above, Upright, and checks that at a quarter turn about Y a turn
+about X and a turn about Z are two different turns, each the one asked for.
+
+Limits: the rings turn about the parent's axes (the axes of space for a part
+that stands on its own), not about the part's own axes once it is turned.

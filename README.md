@@ -38,9 +38,12 @@ and its own place.
 - **Box**, **Cylinder** and **Sphere** start a part without a sketch.
   **Part** starts an empty one: the next sketch goes into it.
 - Select a part in the list or by clicking it in the view. **Move** (or a
-  double-click on it in the list) places it: drag an arrow, type a position
-  and a rotation, or turn it a quarter. Its parent is chosen there too, or by
-  dragging the part onto another in the list; a part moves with its parent.
+  double-click on it in the list) places it: drag an arrow to move it in
+  steps of 1 mm, drag a ring to turn it in steps of 15° (Shift: single
+  degrees, Ctrl: freely), or type a position, or an angle to turn by about X,
+  Y or Z. Each ring and button always turns about its own axis, round the
+  middle of the part. Its parent is chosen there too, or by dragging the part
+  onto another in the list; a part moves with its parent.
 - **Copy** makes a part with its own history. **Linked copy** shows the
   original in another place and changes with it.
 - **Combine** joins other parts to the selected part, cuts them out of it, or

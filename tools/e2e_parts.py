@@ -73,6 +73,48 @@ def run(p, url='index.html?test=1'):
         o, u = p.js('corecad.screen([0,0,0])'), p.js('corecad.screen(' + json.dumps(unit) + ')')
         p.drag(x0, y0, x0 + (u[0] - o[0]) * mm, y0 + (u[1] - o[1]) * mm, steps=14)
 
+    def to_segment(q, a, b):
+        ux, uy = b[0] - a[0], b[1] - a[1]
+        uu = ux * ux + uy * uy
+        k = max(0, min(1, ((q[0] - a[0]) * ux + (q[1] - a[1]) * uy) / uu)) if uu else 0
+        return math.hypot(a[0] + ux * k - q[0], a[1] + uy * k - q[1])
+
+    def ring_points(axis, free=lambda q, centre: True):
+        """The points of a ring, and where on it it can be taken hold of: away from the arrows and the other rings."""
+        rings, arrows = p.js('corecad.rings'), p.js('corecad.arrows')
+        pts = next(r for r in rings if r['axis'] == axis)['points']
+        centre = arrows[0]['a']
+        others = [r['points'] for r in rings if r['axis'] != axis]
+        def clear(q):
+            return (all(to_segment(q, a['a'], a['b']) > 22 for a in arrows) and free(q, centre)
+                    and all(min(to_segment(q, o[i], o[i + 1]) for i in range(len(o) - 1)) > 14 for o in others))
+        return pts, clear
+
+    def turn_ring(axis, count, modifiers=0):
+        """Takes hold of a ring and follows it round by `count` of its points: 5 degrees each."""
+        pts, clear = ring_points(axis)
+        n = len(pts) - 1
+        i0 = next(i for i in range(n) if clear(pts[i]))
+        p.move(*pts[i0][:2])
+        p.down()
+        for k in range(1, count + 1):
+            p.move(*pts[(i0 + k) % n][:2], buttons=1, modifiers=modifiers)
+        p.up()
+
+    def rot_matrix(rot):
+        """The rotation of a placement: degrees about X, then Y, then Z."""
+        (cx, sx), (cy, sy), (cz, sz) = [(math.cos(math.radians(a)), math.sin(math.radians(a))) for a in rot]
+        return [[cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx], [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx], [-sy, cy * sx, cy * cx]]
+
+    def same(a, b):
+        return all(abs(a[i][j] - b[i][j]) < 1e-6 for i in range(3) for j in range(3))
+
+    def times(a, b):
+        return [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+
+    def untitled_now():
+        return p.js('[...document.querySelectorAll("button,input,select,a")].filter(e=>e.getClientRects().length&&!e.closest("[title]")).map(e=>e.outerHTML)')
+
     def step(text):
         print('PASS ' + text)
 
@@ -162,6 +204,58 @@ def run(p, url='index.html?test=1'):
     assert part('o2') == {'id': 'o2', 'name': 'Cylinder 1', 'parent': 'o1', 'pos': [-5, 0, -5], 'rot': [0, 0, 0]}
     near(body_of('o1')['volume'], 28800 - PI * 25 * 12, .02)
     step('typed placement with arithmetic, a quarter turn on the spot, a new parent; Escape restores')
+
+    # ---- rings: a turn about one axis, in steps, whatever way the part already stands
+    p.click('[data-part="o1"]')
+    p.key('m')
+    wait('!!corecad.moving')
+    assert p.js('document.getElementById("move-rot").textContent') == 'Not turned' and not p.js('!!document.getElementById("move-rx")')
+    turn_ring(2, 9)
+    assert p.js('corecad.moving.rot') == [0, 0, 45], p.js('corecad.moving')
+    assert [round(v, 6) for v in p.js('corecad.moving.pos')] == [0, 0, 0], 'the box turns about its middle, which is over its origin'
+    assert p.js('document.getElementById("move-rot").textContent') == 'Turned X 0° · Y 0° · Z 45°'
+    turn_ring(2, 1)
+    assert p.js('corecad.moving.rot') == [0, 0, 45], 'five degrees is not yet a step of fifteen'
+    turn_ring(2, 1, modifiers=8)
+    assert p.js('corecad.moving.rot') == [0, 0, 50], 'with Shift it turns by single degrees'
+    p.screenshot('.scratch/e2e-parts-rings.png')
+    p.click('[data-action="upright"]')
+    assert p.js('corecad.moving.rot') == [0, 0, 0] and p.js('document.getElementById("move-rot").textContent') == 'Not turned'
+    # a ring seen edge-on is dragged along: from above, the X ring is a line
+    p.click('[data-view="top"]')
+    pts, clear = ring_points(0, lambda q, centre: 35 < q[1] - centre[1] < 70)
+    grab = next(q for q in pts if clear(q))
+    p.move(*grab[:2])
+    p.down()
+    for k in range(1, 9):
+        p.move(grab[0], grab[1] + k * 98 * math.pi / 6 / 8, buttons=1)
+    p.up()
+    edge_on = p.js('corecad.moving.rot')
+    assert abs(edge_on[0]) == 30 and edge_on[1:] == [0, 0], edge_on
+    p.click('[data-action="upright"]')
+    p.click('[data-view="home"]')
+    # no gimbal lock: with the part a quarter about Y, X and Z are still two different turns
+    p.click('[data-turn="1"]')
+    assert p.js('corecad.moving.rot') == [0, 90, 0]
+    fill('#move-angle', 30)
+    quarter = rot_matrix([0, 90, 0])
+    p.click('[data-turn="0"]')
+    about_x = rot_matrix(p.js('corecad.moving.rot'))
+    assert same(about_x, times(rot_matrix([30, 0, 0]), quarter)), p.js('corecad.moving.rot')
+    fill('#move-angle', -30)
+    p.click('[data-turn="0"]')
+    assert same(rot_matrix(p.js('corecad.moving.rot')), quarter), 'and back'
+    fill('#move-angle', 30)
+    p.click('[data-turn="2"]')
+    about_z = rot_matrix(p.js('corecad.moving.rot'))
+    assert same(about_z, times(rot_matrix([0, 0, 30]), quarter)) and not same(about_z, about_x), p.js('corecad.moving.rot')
+    turn_ring(0, 3)
+    assert same(rot_matrix(p.js('corecad.moving.rot')), times(rot_matrix([15, 0, 0]), about_z)), 'the X ring turns about X from there too'
+    assert not untitled_now(), untitled_now()
+    p.key('Escape')
+    wait('!corecad.busy && !corecad.editing')
+    assert part('o1')['rot'] == [0, 0, 0]
+    step('rings turn about their own axis in steps of 15 (Shift: 1); edge-on too; X and Z stay apart at a quarter about Y')
 
     # ---- a copy of its own, and a linked copy
     p.click('[data-part="o1"]')
@@ -317,21 +411,21 @@ def run(p, url='index.html?test=1'):
     p.key('m')
     wait('!!corecad.moving')
     fill('#move-x', 80)
-    fill('#move-rz', 90)
+    p.click('[data-turn="2"]')
     apply_move()
-    assert part(nid)['pos'] == [80, 0, 0] and part(nid)['rot'] == [0, 0, 90]
+    assert part(nid)['rot'] == [0, 0, 90], part(nid)
     p.click('[data-view="top"]')
     p.click('[data-action="fit"]')
     lo, hi = made['bbox']
     mid = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2]
-    at([80 - mid[1], mid[0], 10])       # the middle of its top face, a quarter turn about Z round x = 80
+    at([80 + mid[0], mid[1], 10])       # the middle of its top face: it turned about its own middle, which stayed
     assert p.js('corecad.selection[0]?.type') == 'face' and p.js('corecad.selectedPart') == nid
     p.key('s')
     wait('!!corecad.sketch')
     hit = p.js('corecad.pick(corecad.screen(' + json.dumps(mid) + '), "face")')
     assert hit and hit['body'] == made['id'], hit
     assert all(abs(a - b) < 1e-3 for a, b in zip(hit['point'], [mid[0], mid[1], 10])), hit
-    assert all(abs(a - b) < 1e-3 for a, b in zip(hit['world'], [80 - mid[1], mid[0], 10])), hit
+    assert all(abs(a - b) < 1e-3 for a, b in zip(hit['world'], [80 + mid[0], mid[1], 10])), hit
     p.click('[data-action="discard-sketch"]')
     wait('!corecad.busy && !corecad.editing')
     p.click('[data-view="home"]')

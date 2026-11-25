@@ -59,6 +59,12 @@ class Quiet(SimpleHTTPRequestHandler):
         pass
 
 
+class Server(ThreadingHTTPServer):
+    # A page asks for some fifty modules at once; the usual queue of five waiting connections refuses some.
+    request_queue_size = 128
+    daemon_threads = True
+
+
 def alive(pid):
     if os.name == 'nt':
         h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
@@ -339,7 +345,7 @@ class Browser:
         self.server = self.chrome = self.lock = self.page = None
 
     def __enter__(self):
-        self.server = ThreadingHTTPServer(('127.0.0.1', 0), partial(Quiet, directory=str(self.root)))
+        self.server = Server(('127.0.0.1', 0), partial(Quiet, directory=str(self.root)))
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         profile, self.lock = claim_profile()
         port_file = profile / 'DevToolsActivePort'

@@ -41,7 +41,7 @@ import {
 } from './doc/parts.js';
 import { PALETTE } from './api/colors.js';
 import * as Mat from './core/mat.js';
-import { gizmoArrows, hitArrow, alongAxis, drawArrows } from './view/gizmo.js';
+import { gizmoArrows, hitArrow, alongAxis, drawArrows, gizmoRings, hitRing, ringAngle, ringTangent, drawRings } from './view/gizmo.js';
 import { sizeOf, spansOf, between, total, boxOf } from './api/measure3d.js';
 import { dimensionsOf } from './api/dimensions.js';
 import { pill, pillWidth, line as inkLine, inBox, INK } from './view/annotate.js';
@@ -197,7 +197,7 @@ view.overlay((ctx) => {
   else {
     drawProfiles(ctx);
     drawNumbers(ctx);
-    if (mover) drawArrows(ctx, moveArrows(), mover.drag?.axis ?? mover.hot ?? -1);
+    if (mover) drawGizmo(ctx);
     else if (!draft && bridgeOn()) drawPointed(ctx);
   }
 });
@@ -2053,7 +2053,7 @@ function startMove(pid) {
     store.cancelPreview();
     rolled = false;
   }
-  mover = { id: p.id, base: d, doc: d, drag: null, hot: -1 };
+  mover = { id: p.id, base: d, doc: d, drag: null, hot: null, angle: 90 };
   selectedPart = p.id;
   selectedFeature = null;
   selection = [];
@@ -2071,17 +2071,21 @@ function renderMovePanel() {
     under = new Set([p.id, ...descendantsOf(d, p.id)]);
   id('panel').innerHTML =
     head(p.name, 'MOVE') +
-    `<div class="panel-body"><p>Drag an arrow in the view, or type. Ctrl drags without the 1 mm steps.</p><h3>POSITION${
+    `<div class="panel-body"><p>Drag an arrow to move it, a ring to turn it. It moves in steps of 1 mm and turns in steps of 15°; Shift turns by single degrees, Ctrl lets go of the steps.</p><h3>POSITION${
       parent ? ' IN ' + esc(parent.name.toUpperCase()) : ''
     }</h3><div class="fields">${['x', 'y', 'z']
       .map((a, i) => field('move-' + a, a.toUpperCase(), fmt(p.pos[i], 4), `Where the origin of the part is, along ${a.toUpperCase()}${parent ? ' of its parent' : ''}.`))
-      .join('')}</div><h3>ROTATION</h3><div class="fields">${['x', 'y', 'z']
-      .map((a, i) =>
-        field('move-r' + a, 'About ' + a.toUpperCase(), fmt(p.rot[i], 4), `Degrees about ${a.toUpperCase()}. The turns are made about X, then Y, then Z, round the origin of the part.`, '°')
-      )
-      .join('')}</div><div class="turns">${['X', 'Y', 'Z']
-      .map((a, i) => `<button data-turn="${i}" title="Turn a quarter about ${a}, round the middle of the part">⟳ ${a} 90°</button>`)
-      .join('')}</div>${selectField(
+      .join('')}</div><h3>TURN</h3><div class="turn-row">${field(
+      'move-angle',
+      'By',
+      fmt(mover.angle, 4),
+      'How far the three buttons turn the part, in degrees. A negative angle turns the other way.',
+      '°'
+    )}<div class="turns">${['X', 'Y', 'Z']
+      .map((a, i) => `<button data-turn="${i}" title="Turn the part by this angle about ${a}, round its middle: it turns on the spot">about ${a}</button>`)
+      .join('')}</div></div><p class="turned"><span id="move-rot" title="How the part is turned now, as angles about X, then Y, then Z. Turn it with the rings or the buttons: each always turns about its own axis.">${turnedText(
+      p.rot
+    )}</span><button data-action="upright" title="Take every turn away again: the part stands as it was made, in the same place">Upright</button></p>${selectField(
       'move-parent',
       'Parent',
       [['', 'None: it stands on its own'], ...d.parts.filter((x) => !under.has(x.id)).map((x) => [x.id, x.name])],
@@ -2092,10 +2096,12 @@ function renderMovePanel() {
   for (const input of id('panel').querySelectorAll('input,select'))
     input.addEventListener(input.tagName === 'SELECT' ? 'change' : 'input', readMoveForm);
 }
-const MOVE_FIELDS = ['move-x', 'move-y', 'move-z', 'move-rx', 'move-ry', 'move-rz'];
+const MOVE_FIELDS = ['move-x', 'move-y', 'move-z'];
+const turnedText = (rot) => (rot.some((v) => Math.abs(v) > 1e-9) ? `Turned X ${fmt(rot[0], 2)}° · Y ${fmt(rot[1], 2)}° · Z ${fmt(rot[2], 2)}°` : 'Not turned');
 function fillMoveForm() {
   const p = partById(mover.doc, mover.id);
-  MOVE_FIELDS.forEach((k, i) => (id(k).value = fmt(i < 3 ? p.pos[i] : p.rot[i - 3], 4)));
+  MOVE_FIELDS.forEach((k, i) => (id(k).value = fmt(p.pos[i], 4)));
+  id('move-rot').textContent = turnedText(p.rot);
   id('apply-move').disabled = false;
 }
 function readMoveForm(e) {
@@ -2107,11 +2113,15 @@ function readMoveForm(e) {
       toast(error.message);
     }
     renderMovePanel(); // the numbers are now given in the new parent
+  } else if (e?.target?.id === 'move-angle') {
+    const angle = parseNumber(id('move-angle').value);
+    if (angle !== null) mover.angle = angle; // how far the buttons turn; nothing moves yet
+    return;
   } else {
     const values = MOVE_FIELDS.map((k) => parseNumber(id(k).value));
     id('apply-move').disabled = values.includes(null);
     if (values.includes(null)) return;
-    mover.doc = updatePart(mover.doc, mover.id, { pos: values.slice(0, 3), rot: values.slice(3) });
+    mover.doc = updatePart(mover.doc, mover.id, { pos: values });
   }
   moved();
 }
@@ -2123,7 +2133,8 @@ function moved() {
   if (mover.doc.features.some((f) => f.type === 'combine' && !f.suppressed))
     previewTimer = setTimeout(() => mover && store.preview(mover.doc, { tag: 'move' }), 130);
 }
-/** The middle of what the part being placed shows (its origin when it shows nothing), and the axes of its parent. */
+/** The middle of what the part being placed shows (its origin when it shows nothing), and the axes of its parent.
+ *  While a ring is dragged the middle is where it was when the drag began: that is what the part turns about. */
 function moveFrame() {
   const d = mover.doc,
     p = partById(d, mover.id),
@@ -2133,54 +2144,130 @@ function moveFrame() {
   const boxes = contentOf(d, p.id).flatMap((item) =>
     bodies.filter((b) => b.part === item.from).map((b) => Mat.box(Mat.mul(W, item.rel), b.bbox))
   );
-  const anchor = boxes.length
-    ? [0, 1, 2].map((i) => (Math.min(...boxes.map((b) => b[0][i])) + Math.max(...boxes.map((b) => b[1][i]))) / 2)
-    : Mat.point(W, [0, 0, 0]);
+  const anchor =
+    mover.drag?.kind === 'ring'
+      ? mover.drag.anchor
+      : boxes.length
+      ? [0, 1, 2].map((i) => (Math.min(...boxes.map((b) => b[0][i])) + Math.max(...boxes.map((b) => b[1][i]))) / 2)
+      : Mat.point(W, [0, 0, 0]);
   return { anchor, parentW, axes: [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map((a) => Mat.dir(parentW, a)) };
 }
 function moveArrows() {
   const f = moveFrame();
   return gizmoArrows(view.view, view.vp, f.anchor, f.axes);
 }
+function moveRings() {
+  const f = moveFrame();
+  return gizmoRings(view.view, view.vp, f.anchor, f.axes);
+}
+/** The arrows and the rings, the one in hand heavier; a turn in progress says how far it has gone. */
+function drawGizmo(ctx) {
+  const hot = mover.drag ?? mover.hot,
+    g = mover.drag?.kind === 'ring' ? mover.drag : null;
+  drawRings(ctx, moveRings(), hot?.kind === 'ring' ? hot.axis : -1, g ? { axis: g.axis, from: g.grab, to: g.grab + (g.degrees * Math.PI) / 180 } : null);
+  drawArrows(ctx, moveArrows(), hot?.kind === 'arrow' ? hot.axis : -1);
+  if (g) pill(ctx, `${fmt(g.degrees, 1)}°`, g.at[0], g.at[1] - 26, INK.measure);
+}
+/** What of the gizmo is under a pixel: an arrow before a ring. */
+function gizmoAt(p) {
+  const axis = hitArrow(moveArrows(), p[0], p[1]);
+  if (axis >= 0) return { kind: 'arrow', axis };
+  const ring = hitRing(moveRings(), p[0], p[1]);
+  return ring ? { kind: 'ring', axis: ring.axis, t: ring.t } : null;
+}
 function moveDown(p, e) {
   if (e.button !== 0) return;
   const f = moveFrame(),
-    axis = hitArrow(gizmoArrows(view.view, view.vp, f.anchor, f.axes), p[0], p[1]);
-  if (axis < 0) return;
-  const s0 = alongAxis(view.view, view.vp, f.anchor, f.axes[axis], p[0], p[1]);
-  if (s0 !== null)
-    mover.drag = { axis, s0, anchor: f.anchor, dir: f.axes[axis], pos: [...partById(mover.doc, mover.id).pos] };
+    hit = gizmoAt(p),
+    part = partById(mover.doc, mover.id);
+  if (!hit) return;
+  if (hit.kind === 'arrow') {
+    const s0 = alongAxis(view.view, view.vp, f.anchor, f.axes[hit.axis], p[0], p[1]);
+    if (s0 !== null) mover.drag = { kind: 'arrow', axis: hit.axis, s0, anchor: f.anchor, dir: f.axes[hit.axis], pos: [...part.pos] };
+    return;
+  }
+  // A ring: the part turns about that axis of its parent, round its middle. Where the ring is seen
+  // squarely the turn follows the mouse round it; seen edge-on, it follows the mouse along it.
+  const ring = gizmoRings(view.view, view.vp, f.anchor, f.axes)[hit.axis],
+    a0 = ringAngle(view.view, view.vp, ring, f.anchor, p[0], p[1]);
+  mover.drag = {
+    kind: 'ring',
+    axis: hit.axis,
+    ring,
+    anchor: f.anchor,
+    grab: hit.t,
+    last: a0,
+    tangent: a0 === null ? ringTangent(view.view, view.vp, ring, f.anchor, hit.t) : null,
+    radiusPx: ring.radius / view.mmPerPx,
+    down: p,
+    at: p,
+    turned: 0,
+    degrees: 0,
+    local: Mat.fromPlacement(part.pos, part.rot),
+    pivot: Mat.point(Mat.invert(f.parentW), f.anchor),
+  };
+  view.dirty();
 }
 function moveDrag(p, e) {
-  if (!mover.drag) {
-    const hot = hitArrow(moveArrows(), p[0], p[1]);
-    if (hot !== mover.hot) {
+  const g = mover.drag;
+  if (!g) {
+    const hot = gizmoAt(p);
+    if (hot?.kind !== mover.hot?.kind || hot?.axis !== mover.hot?.axis) {
       mover.hot = hot;
-      view.canvas.style.cursor = hot >= 0 ? 'grab' : '';
+      view.canvas.style.cursor = hot ? 'grab' : '';
       view.dirty();
     }
     return;
   }
-  const { axis, s0, anchor, dir, pos } = mover.drag,
-    s = alongAxis(view.view, view.vp, anchor, dir, p[0], p[1]);
-  if (s === null) return;
-  const next = [...pos],
-    value = pos[axis] + s - s0;
-  next[axis] = e.ctrlKey ? +value.toFixed(3) : Math.round(value);
-  mover.doc = updatePart(mover.doc, mover.id, { pos: next });
+  if (g.kind === 'arrow') {
+    const s = alongAxis(view.view, view.vp, g.anchor, g.dir, p[0], p[1]);
+    if (s === null) return;
+    const next = [...g.pos],
+      value = g.pos[g.axis] + s - g.s0;
+    next[g.axis] = e.ctrlKey ? +value.toFixed(3) : Math.round(value);
+    mover.doc = updatePart(mover.doc, mover.id, { pos: next });
+  } else {
+    if (g.tangent) g.turned = ((p[0] - g.down[0]) * g.tangent[0] + (p[1] - g.down[1]) * g.tangent[1]) / g.radiusPx;
+    else {
+      const a = ringAngle(view.view, view.vp, g.ring, g.anchor, p[0], p[1]);
+      if (a === null) return;
+      let d = a - g.last;
+      d -= 2 * Math.PI * Math.round(d / (2 * Math.PI)); // the short way round, so that a turn can go past half a circle
+      g.turned += d;
+      g.last = a;
+    }
+    const step = e.ctrlKey ? 0.1 : e.shiftKey ? 1 : 15;
+    g.degrees = +(Math.round(((g.turned * 180) / Math.PI) / step) * step).toFixed(1);
+    g.at = p;
+    // always from where the part stood when the ring was taken hold of: nothing adds up
+    mover.doc = updatePart(mover.doc, mover.id, Mat.toPlacement(Mat.mul(Mat.turn([0, 1, 2].map((i) => +(i === g.axis)), g.degrees, g.pivot), g.local)));
+  }
   fillMoveForm();
   moved();
 }
 function moveUp() {
-  if (mover) mover.drag = null;
+  if (!mover) return;
+  mover.drag = null;
+  view.dirty();
 }
-/** A quarter turn about an axis of the parent, through the middle of the part (so it turns on the spot). */
-function quarterTurn(axis) {
+/** A turn about an axis of the parent, through the middle of the part (so it turns on the spot). */
+function turnBy(axis, degrees) {
   const p = partById(mover.doc, mover.id),
     f = moveFrame(),
     pivot = Mat.point(Mat.invert(f.parentW), f.anchor),
-    local = Mat.mul(Mat.turn([0, 1, 2].map((i) => +(i === axis)), 90, pivot), Mat.fromPlacement(p.pos, p.rot));
+    local = Mat.mul(Mat.turn([0, 1, 2].map((i) => +(i === axis)), degrees, pivot), Mat.fromPlacement(p.pos, p.rot));
   mover.doc = updatePart(mover.doc, mover.id, Mat.toPlacement(local));
+  fillMoveForm();
+  moved();
+}
+/** Takes every turn away: the part stands as it was made, with its middle where it is. */
+function upright() {
+  const p = partById(mover.doc, mover.id),
+    f = moveFrame(),
+    local = Mat.fromPlacement(p.pos, p.rot),
+    middle = Mat.point(Mat.invert(f.parentW), f.anchor), // in the parent
+    own = Mat.point(Mat.invert(local), middle); // the same point in the part itself
+  mover.doc = updatePart(mover.doc, mover.id, Mat.toPlacement(Mat.shift([middle[0] - own[0], middle[1] - own[1], middle[2] - own[2]])));
   fillMoveForm();
   moved();
 }
@@ -2313,6 +2400,7 @@ const actions = {
       }
     );
   },
+  upright: () => mover && upright(),
   'cancel-move': () => endMove(false),
   'apply-move': () => endMove(true),
   sketch: startSketch,
@@ -2531,7 +2619,7 @@ const actions = {
         ]
           .map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`)
           .join('') +
-        '</table><p>Number fields accept arithmetic, decimals with a dot or comma, and a trailing mm. Blue geometry can move; green geometry is constrained. Dimensions in parentheses are measurements. Double-click history entries to edit them.</p><p>A project is made of parts. Each part has its own history and its own place: select one in the list or in the view, and Move places it, Copy and Linked copy repeat it, Combine joins another part to it or cuts one out of it. Box, Cylinder and Sphere start a part without a sketch.</p><p>Rest the mouse on a face or an edge to see how big it is; click one and Shift-click another for the distance or the angle between them. Dimensions (D) shows the numbers that drive the selected part where they are: click one, type, Enter.</p>',
+        '</table><p>Number fields accept arithmetic, decimals with a dot or comma, and a trailing mm. Blue geometry can move; green geometry is constrained. Dimensions in parentheses are measurements. Double-click history entries to edit them.</p><p>A project is made of parts. Each part has its own history and its own place: select one in the list or in the view, and Move places it (arrows to move it, rings to turn it), Copy and Linked copy repeat it, Combine joins another part to it or cuts one out of it. Box, Cylinder and Sphere start a part without a sketch.</p><p>Rest the mouse on a face or an edge to see how big it is; click one and Shift-click another for the distance or the angle between them. Dimensions (D) shows the numbers that drive the selected part where they are: click one, type, Enter.</p>',
       '<button class="primary" data-modal="close" title="Close help">Got it</button>',
       closeModal,
       true
@@ -2550,7 +2638,11 @@ document.addEventListener('click', (e) => {
   }
   if (modal) return;
   if (d.turn !== undefined) {
-    if (mover) quarterTurn(Number(d.turn));
+    if (mover) {
+      const angle = parseNumber(id('move-angle').value);
+      if (angle === null) toast('Enter the angle to turn by, in degrees.');
+      else turnBy(Number(d.turn), angle);
+    }
     return;
   }
   const busy = editor || draft || mover;
@@ -2595,7 +2687,7 @@ document.addEventListener('click', (e) => {
   if (d.action) {
     if (
       mover &&
-      !['apply-move', 'cancel-move', 'fit', 'projection', 'planes', 'help', 'undo', 'connect', 'dimensions', 'measure'].includes(d.action)
+      !['apply-move', 'cancel-move', 'upright', 'fit', 'projection', 'planes', 'help', 'undo', 'connect', 'dimensions', 'measure'].includes(d.action)
     ) {
       toast('Apply or cancel the move first.');
       return;
@@ -3058,6 +3150,13 @@ window.corecad = {
   /** The part being placed, as it would be kept; null when none is. */
   get moving() {
     return mover ? structuredClone(partById(mover.doc, mover.id)) : null;
+  },
+  /** The rings of the part being placed: [{ axis, facing, points: [[x, y, angle], ...] }], in page coordinates;
+   *  angle in radians, growing the way a turn about that axis goes. */
+  get rings() {
+    if (!mover) return null;
+    const r = view.canvas.getBoundingClientRect();
+    return moveRings().map(({ axis, facing, points }) => ({ axis, facing, points: points.map(([x, y, t]) => [x + r.left, y + r.top, t]) }));
   },
   /** The arrows of the part being placed, in page coordinates: [{ axis, a, b }]. */
   get arrows() {

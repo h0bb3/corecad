@@ -1183,3 +1183,32 @@ main {
   height: 30px;
   padding: 2px;
 }
+
+/* Turning a part: an angle and the three axes to turn it about; how it is turned now. */
+.turn-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+.turn-row > .field {
+  flex: 0 0 88px;
+  margin-bottom: 0;
+}
+.turn-row > .turns {
+  flex: 1;
+  margin: 0;
+}
+.turned {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 10px 0 14px;
+  font-size: 11px;
+  color: #6a7f83;
+}
+.turned button {
+  font-size: 11px;
+  padding: 4px 8px;
+  border: 1px solid #dce5e3;
+}
