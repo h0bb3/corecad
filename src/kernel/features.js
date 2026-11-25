@@ -2,9 +2,10 @@ import { FeatureError } from '../core/errors.js';
 import { validateFeature, extentInterval } from '../doc/features.js';
 import { frameOfSketch, resolveFaceRef, resolveEdgeRef } from '../doc/refs.js';
 import { findRegions, resolveProfile } from '../sketch/profiles.js';
+import { indexSketch } from '../sketch/model.js';
 import { canonicalFrame, toWorld } from '../core/plane.js';
 import { sub, mul, dot } from '../core/vec.js';
-import { prism, boolean, cylinder, blend, edgesOf, bounds, volume, countSolids, boxSolid, cylinderSolid, sphereSolid, placed } from './shapes.js';
+import { prism, revolved, boolean, cylinder, blend, edgesOf, bounds, volume, countSolids, boxSolid, cylinderSolid, sphereSolid, placed } from './shapes.js';
 import { topoOf } from './topo.js';
 import { errorText } from './occ.js';
 
@@ -36,6 +37,12 @@ const WORDS = {
     madeBody: 'The extrusion touches no target body. A new body was created.',
     removesAll: 'This cut would remove an entire body. Reduce the size or depth.',
     empty: 'The selected profiles and bodies have no common volume.',
+    noEffect: 'The cut does not remove material from any target body.',
+  },
+  revolve: {
+    madeBody: 'The revolve touches no target body. A new body was created.',
+    removesAll: 'This cut would remove an entire body. Reduce the profile.',
+    empty: 'The revolved profiles and the bodies have no common volume.',
     noEffect: 'The cut does not remove material from any target body.',
   },
   combine: {
@@ -87,6 +94,35 @@ function applyTool(fid, operation, all, targets, tool, own, body, words) {
   return { bodies, result };
 }
 
+/** The closed areas a feature names in its sketch, as they are now. */
+function regionsOf(f, sk, what) {
+  let guessed = false;
+  const regions = [
+    ...new Set(
+      f.profiles.map((ref) => {
+        const r = resolveProfile(sk.regions, ref);
+        if (!r) fail('profile-lost', `A selected profile no longer exists. Edit the ${what} to choose its closed areas.`);
+        guessed ||= r.status === 'guessed';
+        return r.region;
+      })
+    ),
+  ];
+  if (!regions.length) fail('profile-empty', 'Choose a closed area of the sketch.');
+  return { regions, guessed };
+}
+/** The lines of a sketch by id, each as its two ends in the sketch plane: what a revolve can turn about. */
+function linesOf(f) {
+  const ix = indexSketch(f),
+    out = new Map();
+  for (const e of f.entities) {
+    if (e.type !== 'line') continue;
+    const a = ix.point(e.a),
+      b = ix.point(e.b);
+    if (a && b) out.set(e.id, [[a.x, a.y], [b.x, b.y]]);
+  }
+  return out;
+}
+
 /** Each feature is atomic: only the returned state is installed by the engine. */
 export function evaluate(f, state, ctx) {
   const errors = validateFeature(f);
@@ -103,7 +139,7 @@ export function evaluate(f, state, ctx) {
       );
     const sketches = new Map(state.sketches),
       regions = findRegions(f);
-    sketches.set(f.id, { frame: frame.frame, regions });
+    sketches.set(f.id, { frame: frame.frame, regions, lines: linesOf(f) });
     return {
       state: { ...state, sketches },
       result: {
@@ -122,22 +158,7 @@ export function evaluate(f, state, ctx) {
     const sk = state.sketches.get(f.sketch);
     if (!sk)
       fail('sketch-error', 'The extrusion sketch is missing, suppressed or could not be built.');
-    let guessed = false;
-    const regions = [
-      ...new Set(
-        f.profiles.map((ref) => {
-          const r = resolveProfile(sk.regions, ref);
-          if (!r)
-            fail(
-              'profile-lost',
-              'A selected profile no longer exists. Edit the extrusion to choose its closed areas.'
-            );
-          guessed ||= r.status === 'guessed';
-          return r.region;
-        })
-      ),
-    ];
-    if (!regions.length) fail('profile-empty', 'Choose a closed area of the sketch.');
+    const { regions, guessed } = regionsOf(f, sk, 'extrusion');
     const targets = state.bodies.filter((b) => f.targets === null || f.targets.includes(b.id));
     if (!targets.length && ['cut', 'intersect'].includes(f.operation))
       fail('no-target', 'There is no body to cut or intersect.');
@@ -157,6 +178,27 @@ export function evaluate(f, state, ctx) {
         code: 'profile-guessed',
         message: 'The profile outline changed. The area under the original selection was used.',
       };
+    return { state: { ...state, bodies }, result, tool };
+  }
+  if (f.type === 'revolve') {
+    const sk = state.sketches.get(f.sketch);
+    if (!sk) fail('sketch-error', 'The sketch of this revolve is missing, suppressed or could not be built.');
+    const line = sk.lines.get(f.axis);
+    if (!line) fail('axis-lost', 'The line this revolve turns about is no longer in its sketch. Give it another line as its axis.');
+    const [a, b] = line,
+      length = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (!(length > 1e-9)) fail('axis-lost', 'The line this revolve turns about has no length.');
+    const { regions, guessed } = regionsOf(f, sk, 'revolve');
+    const targets = state.bodies.filter((b) => f.targets === null || f.targets.includes(b.id));
+    if (!targets.length && ['cut', 'intersect'].includes(f.operation)) fail('no-target', 'There is no body to cut or intersect.');
+    const axis = { p: a, d: [(b[0] - a[0]) / length, (b[1] - a[1]) / length] };
+    let tool = null;
+    for (const region of regions) {
+      const shape = own(revolved(f.id, sk.frame, region, axis, f.angle, f.flip));
+      tool = tool ? own(boolean('fuse', tool, shape, f.id)) : shape;
+    }
+    let { bodies, result } = applyTool(f.id, f.operation, state.bodies, targets, tool, own, body, WORDS.revolve);
+    if (guessed) result = { code: 'profile-guessed', message: 'The profile outline changed. The area under the original selection was used.' };
     return { state: { ...state, bodies }, result, tool };
   }
   if (f.type === 'hole') {

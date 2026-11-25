@@ -2,7 +2,7 @@ import { kernel, scope, hashOf, listToArray } from './occ.js';
 import { FeatureError } from '../core/errors.js';
 import { add, sub, mul, len, dot, unit } from '../core/vec.js';
 import { toWorld } from '../core/plane.js';
-import { loopArea, pieceMid } from '../sketch/geom2d.js';
+import { loopArea, pieceMid, polygonOf } from '../sketch/geom2d.js';
 import { sortLabels } from '../doc/refs.js';
 
 export function indexShape(shape) {
@@ -175,6 +175,84 @@ export function prism(fid, frame, region, a, b, roles = ['start', 'end']) {
         'invalid-result',
         'The extrusion did not produce a valid labelled solid.'
       );
+    return { shape, faces, labels };
+  } catch (e) {
+    faces?.forEach((f) => f.delete());
+    shape?.delete();
+    throw e;
+  } finally {
+    own.end();
+  }
+}
+/**
+ * A profile turned about a line of its sketch plane.
+ * @param {{ p: number[], d: number[] }} axis  a point and a unit direction, in the plane's own coordinates
+ * @param {number} angle  degrees, up to 360. Less than all the way round, the turn starts in the sketch
+ *   plane and goes to the side the sketch faces; `flip` turns it the other way.
+ * Faces: `fid/side/<entity>` for what each line or arc of the outline sweeps, and `fid/start`, `fid/end`
+ * for the two flat ends of a turn that is not closed.
+ */
+export function revolved(fid, frame, region, axis, angle, flip = false) {
+  const { OC, r } = kernel(),
+    own = scope(),
+    off = ([x, y]) => axis.d[0] * (y - axis.p[1]) - axis.d[1] * (x - axis.p[0]), // to the left of the axis: positive
+    reach = [region.outer, ...region.holes].flatMap((loop) => polygonOf(loop, 1e-4).map(off)),
+    lo = Math.min(...reach),
+    hi = Math.max(...reach),
+    eps = 1e-6 * Math.max(1, hi - lo);
+  if (lo < -eps && hi > eps)
+    throw new FeatureError('axis-crosses', 'The profile lies on both sides of the axis. Keep it on one side; it may touch the axis.');
+  const { face, origins } = profileFace(frame, region, 0);
+  own(face);
+  let shape, faces;
+  try {
+    const o = toWorld(frame, axis.p),
+      along = unit(sub(toWorld(frame, [axis.p[0] + axis.d[0], axis.p[1] + axis.d[1]]), o)),
+      // A point to the left of the axis turns, right-handed about it, towards the plane's normal.
+      dir = hi > eps !== flip ? along : mul(along, -1),
+      full = angle > 360 - 1e-9;
+    const ax = own(r.makeAx1(o, dir)),
+      builder = own(new OC.BRepPrimAPI_MakeRevol(face.wrapped, ax, full ? 2 * Math.PI : (angle * Math.PI) / 180, false));
+    shape = r.cast(builder.Shape());
+    const indexed = indexShape(shape);
+    faces = indexed.faces;
+    const labels = faces.map(() => []);
+    const put = (raw, label) => {
+      try {
+        const i = indexed.find(raw);
+        if (i >= 0) labels[i].push(label);
+      } finally {
+        raw.delete();
+      }
+    };
+    if (!full) {
+      put(builder.FirstShape(), `${fid}/start`);
+      put(builder.LastShape(), `${fid}/end`);
+    }
+    const swept = []; // each line or arc of the outline, with its middle in space
+    for (const edge of face.edges) {
+      try {
+        const id = originOf(edge, origins);
+        if (!id) throw new FeatureError('profile-invalid', 'The kernel could not identify a profile edge.');
+        for (const g of listToArray(builder.Generated(edge.wrapped))) put(g, `${fid}/side/${id}`); // none for an edge on the axis
+        const m = edge.pointAt(0.5);
+        swept.push({ id, mid: m.toTuple() });
+        m.delete();
+      } finally {
+        edge.delete();
+      }
+    }
+    // On a closed turn the kernel rebuilds the flat rings and no longer says which line made them
+    // (observed: the faces that Generated() names are not in the result). A face holds the middle of
+    // the line that swept it, and of no other.
+    const blank = labels.flatMap((l, i) => (l.length ? [] : [i]));
+    if (blank.length)
+      for (const { id, mid } of swept) {
+        const probe = own(new r.DistanceQuery(own(r.makeVertex(mid))));
+        for (const i of blank) if (probe.distanceTo(faces[i]) < 1e-6) labels[i].push(`${fid}/side/${id}`);
+      }
+    if (labels.some((l) => !l.length) || !isValid(shape) || !(volume(shape) > 0))
+      throw new FeatureError('invalid-result', 'The revolve did not produce a valid labelled solid.');
     return { shape, faces, labels };
   } catch (e) {
     faces?.forEach((f) => f.delete());

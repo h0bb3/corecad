@@ -89,6 +89,18 @@ export function validateFeature(f) {
       check(typeof f.flip === 'boolean', 'Extrusion direction is invalid.');
       break;
     }
+    case 'revolve':
+      check(typeof f.sketch === 'string' && /^f\d+$/.test(f.sketch), 'Choose a sketch.');
+      check(
+        Array.isArray(f.profiles) && f.profiles.length > 0 && f.profiles.every((p) => p && Array.isArray(p.loop) && p.loop.length && p.loop.every((id) => typeof id === 'string') && vec(p.at, 2)),
+        'Select at least one closed profile.'
+      );
+      check(typeof f.axis === 'string' && /^e\d+$/.test(f.axis), 'Choose a line of the sketch to turn about.');
+      check(Number.isFinite(f.angle) && f.angle > 0 && f.angle <= 360, 'The angle is more than 0 and at most 360 degrees.');
+      check(['new', 'join', 'cut', 'intersect'].includes(f.operation), 'Choose a valid operation.');
+      check(f.targets === null || (Array.isArray(f.targets) && f.targets.every((id) => typeof id === 'string')), 'Invalid target body list.');
+      check(typeof f.flip === 'boolean', 'The direction of the turn is invalid.');
+      break;
     case 'hole':
       check(validFaceRef(f.face), 'Choose a flat face for the hole.');
       check(vec(f.at, 2), 'Enter finite hole coordinates.');

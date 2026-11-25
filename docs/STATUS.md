@@ -407,3 +407,30 @@ thing; an agent is given primitives, not conveniences.
   `add_sketch` with `part: "new"`); `hole` (also a circle and `extrude` as a
   cut), and its `position` beside `at`; `name` when making something (also
   `edit_part`, `edit_feature`); `origin` of the three solids.
+
+## Revolve (2026-11-25)
+
+The first of the operations that the others cannot make up: closed areas of
+a sketch turned about a line of that sketch.
+
+- Kernel: `revolved` in `src/kernel/shapes.js`; feature `revolve` (see
+  `docs/SPEC.md`). One way to say each thing: the axis is a line of the
+  sketch, by its id; the angle is positive and at most 360; `flip` is the
+  only way to turn the other way; a name is given with `edit_feature`.
+- Command: `revolve`; `edit_feature` changes angle, axis, operation, flip;
+  `get_state` and `list_dimensions` show it.
+- Page: a row in the history; its angle on the model (click it and type). No
+  dialog and no toolbar button: it is made by command.
+
+Verification: `test/kernel-revolve.test.html` (a ring with exact volume and a
+named face for each line; a quarter and a half turn, to the side the sketch
+faces and the other way, whichever way the axis was drawn; a ball from a half
+disc on its axis; a groove cut and a collar joined on a cylinder; a profile
+across the axis, a lost axis and bad angles refused); `tools/e2e_api.py` (the
+command, its refusals, the angle typed over on the model).
+
+Limits: the axis is a straight line of the same sketch (not an edge of a
+body, not an axis of the part). Cones and tori that a revolve makes are
+measured as plain faces: `measure` does not give their radii.
+
+Next of the same kind, not started: shell, mirror, sweep, loft.

@@ -69,6 +69,16 @@ frame, and the view, the picking, the sketch plane and the export apply the
 placement (`core/mat.js`, `doc/parts.js`). Moving a part rebuilds nothing.
 A sketch on an origin plane lies on that plane of its part.
 
+`revolve` turns closed areas of a sketch about a line of the same sketch:
+`{sketch, profiles, axis, angle, flip, operation, targets}`. `axis` is the id
+of a line (a construction line, or a side of the outline); the areas lie on
+one side of it and may touch it. `angle` is in degrees, more than 0 and at
+most 360. A turn that is not closed starts in the sketch plane and goes to
+the side the sketch faces, whichever way the line was drawn; `flip` turns it
+the other way. Its faces are labelled `side/<entity>` for what each line or
+arc of the outline sweeps, and `start` and `end` for the flat ends of a turn
+that is not closed. `operation` and `targets` are those of an extrusion.
+
 Features `box`, `cylinder` and `sphere` make a solid without a sketch, with
 named faces. They begin a part of their own.
 

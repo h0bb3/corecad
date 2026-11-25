@@ -109,6 +109,8 @@ let measureOn = pref('measure', true), // sizes where the mouse rests or clicks
 const REST_MS = 300; // how long the mouse must stay on something for it to be what the person points at
 const collapsed = new Set(); // the parts whose history is folded away in the browser
 const PRIMITIVES = ['box', 'cylinder', 'sphere'];
+/** The features that have a dialog in the page. The others (revolve) are made by command and changed by their numbers. */
+const DIALOGS = ['extrude', 'hole', 'fillet', 'chamfer', 'box', 'cylinder', 'sphere', 'combine'];
 const pickFilter = () =>
   ['hole', 'combine'].includes(draft?.feature.type)
     ? 'face'
@@ -232,10 +234,10 @@ function shownDimensions() {
     // Only a feature the person clicked in the history: one that was just made is selected too, and its
     // numbers would lie over the very geometry that is clicked next.
     const f = featureById(d, selectedFeature);
-    if (f) features = f.type === 'extrude' ? [featureById(d, f.sketch), f].filter(Boolean) : [f];
+    if (f) features = ['extrude', 'revolve'].includes(f.type) ? [featureById(d, f.sketch), f].filter(Boolean) : [f];
   }
   return features.filter(built).flatMap((f) => {
-    const sketch = f.type === 'sketch' ? f : f.type === 'extrude' ? featureById(d, f.sketch) : null;
+    const sketch = f.type === 'sketch' ? f : ['extrude', 'revolve'].includes(f.type) ? featureById(d, f.sketch) : null;
     return dimensionsOf(f, { frame: sketch ? sketchFrame(sketch) : null, matrix: placementOf(f.part), sketch });
   });
 }
@@ -977,7 +979,7 @@ function renderBrowser() {
   const results = store.state.build?.features ?? [],
     bodies = store.state.build?.bodies ?? [],
     used = usedParts(),
-    symbols = { sketch: '▱', extrude: '⬡', hole: '⊙', fillet: '◜', chamfer: '◩', box: '▣', cylinder: '◎', sphere: '●', combine: '◐' };
+    symbols = { sketch: '▱', extrude: '⬡', revolve: '◔', hole: '⊙', fillet: '◜', chamfer: '◩', box: '▣', cylinder: '◎', sphere: '●', combine: '◐' };
   const featureRow = (f, depth) => {
     const r = results.find((r) => r.id === f.id);
     return `<button class="tree-row ${selectedFeature === f.id ? 'selected' : ''} ${
@@ -2014,7 +2016,12 @@ function editFeature() {
   const f = featureById(store.state.doc, selectedFeature);
   if (!f) return;
   if (f.type === 'sketch') enterSketch(f.plane, f);
-  else beginFeature(f.type, f);
+  else if (!DIALOGS.includes(f.type)) {
+    // Made and changed by command; a person changes its numbers where they stand on the model.
+    numbersFor = f.id;
+    view.dirty();
+    toast(`${f.name} has no dialog. Its numbers are on the model: click one to change it.`);
+  } else beginFeature(f.type, f);
 }
 /** only: the id of the one part to export (with what stands under it), or nothing for everything. */
 async function exportFile(format, only = null) {
@@ -2803,9 +2810,10 @@ document.addEventListener('click', (e) => {
     refreshScene();
     renderBrowser();
     view.dirty();
-    const r = store.state.build?.features.find((f) => f.id === d.feature);
+    const r = store.state.build?.features.find((f) => f.id === d.feature),
+      kind = featureById(store.state.doc, d.feature)?.type;
     id('context-note').textContent =
-      r?.message ?? 'Double-click this feature to edit its parameters.';
+      r?.message ?? (DIALOGS.includes(kind) || kind === 'sketch' ? 'Double-click this feature to edit its parameters.' : 'Its numbers are on the model: click one to change it.');
     return;
   }
   if (d.cid) {

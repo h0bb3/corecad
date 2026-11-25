@@ -153,3 +153,25 @@ const moved = r.cast(shape.wrapped.Moved(loc, false));                   // the 
 - A sphere has three edges: a seam and two of zero length at the poles. All
   belong to one face only, so none can be picked; reading their points and
   length does not throw.
+
+## Revolve
+
+```js
+const ax = r.makeAx1(origin, direction);                       // a gp_Ax1; delete it
+const b = new OC.BRepPrimAPI_MakeRevol(face.wrapped, ax, radians, false);
+const shape = r.cast(b.Shape());
+```
+
+- The turn is right-handed about the axis direction. `2 * Math.PI` closes it.
+- Volumes are exact (a 10 x 20 rectangle at radius 5 to 15: 4000 pi).
+- `b.FirstShape()` and `b.LastShape()` are the two flat ends of a turn that
+  is not closed; `b.Generated(edge.wrapped)` lists the face each edge of the
+  profile swept, and nothing for an edge that lies on the axis.
+- **On a closed turn `Generated()` is not enough**: the faces it names for
+  the lines that sweep flat rings (lines square to the axis) are not the
+  faces of the result, so those rings come out unnamed, while cylinders and
+  spheres are named. Such a face is found by its content instead: the middle
+  of the line that swept it lies on it (`new r.DistanceQuery(r.makeVertex(p))`
+  then `.distanceTo(face) < 1e-6`; delete both).
+- A profile that reaches across the axis is not refused by the kernel; check
+  it in the sketch plane before building.

@@ -191,6 +191,7 @@ Arguments in brackets are optional.
 | `add_constraint` | [sketch], type, refs | Adds a geometric constraint; refused with the reason if it conflicts or repeats. |
 | `remove_from_sketch` | [sketch], ids | Removes entities, dimensions or constraints. |
 | `extrude` | [sketch], [profiles], [distance], [through_all], [operation], [symmetric], [distance2], [flip], [name] | Extrudes regions of a sketch: new body, join, cut or intersect. |
+| `revolve` | [sketch], [profiles], axis, [angle], [operation], [flip] | Turns regions of a sketch about a line of that sketch: new body, join, cut or intersect. |
 | `hole` | [face], [at], [position], diameter, [depth], [name] | A round hole into a flat face. |
 | `fillet` | edges, radius, [name] | Rounds edges. |
 | `chamfer` | edges, distance, [name] | Bevels edges. |

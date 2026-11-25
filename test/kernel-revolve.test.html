@@ -1,0 +1,78 @@
+<!doctype html><meta charset="utf-8"><title>Kernel: revolve</title><script type="module">
+import {test,eq,ok,near,run} from './harness.js';
+import {createKernel} from '../src/kernel/client.js';
+import {createDocument,makeFeature,addFeature,updateFeature} from '../src/doc/model.js';
+import {makePart,addPart} from '../src/doc/parts.js';
+import {validateDocument} from '../src/doc/schema.js';
+import {validateFeature} from '../src/doc/features.js';
+import {findRegions,profileRefFrom} from '../src/sketch/profiles.js';
+import {sk,rect,line,arc} from './fixtures/sketches.js';
+const k=createKernel(),PI=Math.PI;
+const good=r=>{eq(r.status,'done');ok(!r.features.some(f=>f.status==='error'),()=>JSON.stringify(r.features));return r;};
+const part=(d,data={})=>{const m=makePart(d,data);return [addPart(m.doc,m.part),m.part.id];};
+const feat=(d,type,p,data={})=>{const m=makeFeature(d,type,{part:p,...data});return [addFeature(m.doc,m.feature),m.feature.id];};
+const labels=(b)=>[...new Set(b.mesh.faces.flatMap(f=>f.labels))].sort();
+const status=(r,id)=>r.features.find(f=>f.id===id);
+/** A sketch drawn by `draw` (which returns the id of the line to turn about) on a plane of part p, and a revolve of every closed area of it. */
+function turn(d,p,draw,plane='XY',data={}){
+ const s=sk(),axis=draw(s);let sid,rid;
+ [d,sid]=feat(d,'sketch',p,{...s,plane:{kind:'base',base:plane}});
+ [d,rid]=feat(d,'revolve',p,{sketch:sid,profiles:findRegions(d.features.find(f=>f.id===sid)).map(profileRefFrom),axis,...data});
+ return {d,sid,rid};
+}
+const ring=(s)=>{rect(s,5,0,15,20);return line(s,0,0,0,10,{construction:true}).id;};
+
+test('All the way round: a ring, with a face for each line of the outline',async()=>{
+ await k.ready;let d=createDocument('Ring'),p;[d,p]=part(d);
+ const {d:doc,sid,rid}=turn(d,p,ring);eq(validateDocument(doc),[]);
+ const r=good(await k.rebuild(doc,{purpose:'commit'}));eq(r.bodies.length,1);eq(r.bodies[0].id,rid);
+ near(r.bodies[0].volume,PI*(15**2-5**2)*20,1e-6);near(r.bodies[0].bbox,[[-15,0,-15],[15,20,15]],1e-6);
+ const sides=doc.features.find(f=>f.id===sid).entities.filter(e=>!e.construction).map(e=>`${rid}/side/${e.id}`).sort();
+ eq(labels(r.bodies[0]),sides,'no flat ends on a closed turn');eq(r.bodies[0].mesh.faces.length,4);
+});
+test('Part of the way: it starts in the sketch plane and turns to the side the sketch faces; flip turns the other way',async()=>{
+ let d=createDocument('Quarter'),p;[d,p]=part(d);const {d:doc,rid}=turn(d,p,ring,'XY',{angle:90});
+ let r=good(await k.rebuild(doc,{purpose:'commit'}));near(r.bodies[0].volume,PI*200*20/4,1e-6);near(r.bodies[0].bbox,[[0,0,0],[15,20,15]],1e-6,'XY faces +Z');
+ eq(labels(r.bodies[0]).filter(l=>!l.includes('/side/')),[rid+'/end',rid+'/start']);eq(r.bodies[0].mesh.faces.length,6);
+ const start=r.bodies[0].mesh.faces.find(f=>f.labels.includes(rid+'/start'));near(Math.abs(start.plane.n[2]),1,1e-9,'the start lies in the sketch plane');
+ r=good(await k.rebuild(updateFeature(doc,rid,{flip:true})));near(r.bodies[0].bbox,[[0,0,-15],[15,20,0]],1e-6);near(r.bodies[0].volume,PI*200*20/4,1e-6);
+ r=good(await k.rebuild(updateFeature(doc,rid,{angle:180})));near(r.bodies[0].volume,PI*200*20/2,1e-6);near(r.bodies[0].bbox,[[-15,0,0],[15,20,15]],1e-6);
+ // the way the axis line was drawn does not matter, nor which side of it the profile is on
+ let e=createDocument('Other'),q;[e,q]=part(e);const back=turn(e,q,(s)=>{rect(s,5,0,15,20);return line(s,0,10,0,0,{construction:true}).id;},'XY',{angle:90});
+ near(good(await k.rebuild(back.d)).bodies[0].bbox,[[0,0,0],[15,20,15]],1e-6);
+ let g=createDocument('Left'),h;[g,h]=part(g);const left=turn(g,h,(s)=>{rect(s,-15,0,-5,20);return line(s,0,0,0,10,{construction:true}).id;},'XY',{angle:90});
+ near(good(await k.rebuild(left.d)).bodies[0].bbox,[[-15,0,0],[0,20,15]],1e-6);
+});
+test('A profile that touches its axis: a half disc about its straight side is a ball',async()=>{
+ let d=createDocument('Ball'),p;[d,p]=part(d);
+ const {d:doc,sid,rid}=turn(d,p,(s)=>{arc(s,0,10,0,0,0,20);return line(s,0,20,0,0).id;},'XZ');
+ const r=good(await k.rebuild(doc,{purpose:'commit'}));near(r.bodies[0].volume,4/3*PI*1000,1e-5);near(r.bodies[0].bbox,[[-10,-10,0],[10,10,20]],1e-5,'XZ: the sketch\'s up is Z');
+ const curve=doc.features.find(f=>f.id===sid).entities.find(e=>e.type==='arc').id;eq(labels(r.bodies[0]),[`${rid}/side/${curve}`],'the side on the axis sweeps nothing');
+});
+test('Cut and join with what the part has: a groove round a cylinder',async()=>{
+ let d=createDocument('Groove'),p,c;[d,p]=part(d);[d,c]=feat(d,'cylinder',p,{diameter:30,height:30});
+ const groove=(s)=>{rect(s,12,10,20,20);return line(s,0,0,0,5,{construction:true}).id;};
+ const {d:doc,rid}=turn(d,p,groove,'XZ',{operation:'cut'});
+ let r=good(await k.rebuild(doc,{purpose:'commit'}));eq(r.bodies.length,1);eq(r.bodies[0].id,c);near(r.bodies[0].volume,PI*225*30-PI*(225-144)*10,1e-5);
+ ok(labels(r.bodies[0]).some(l=>l.startsWith(rid+'/side/'))&&labels(r.bodies[0]).includes(c+'/top'));
+ r=good(await k.rebuild(updateFeature(doc,rid,{operation:'join'})));eq(r.bodies.length,1);near(r.bodies[0].volume,PI*225*30+PI*(400-225)*10,1e-5,'a collar');
+ r=good(await k.rebuild(updateFeature(doc,rid,{operation:'new'})));eq(r.bodies.length,2);near(r.bodies[1].volume,PI*(400-144)*10,1e-5);
+ r=await k.rebuild(updateFeature(updateFeature(doc,rid,{operation:'cut'}),c,{suppressed:true}));eq(status(r,rid).status,'error');ok(/no body to cut/.test(status(r,rid).message));
+});
+test('What cannot be turned says why, and nothing is half made',async()=>{
+ let d=createDocument('Wrong'),p;[d,p]=part(d);
+ const across=turn(d,p,(s)=>{rect(s,-5,0,15,20);return line(s,0,0,0,10,{construction:true}).id;});
+ let r=await k.rebuild(across.d);eq(status(r,across.rid).status,'error');ok(/both sides of the axis/.test(status(r,across.rid).message),status(r,across.rid).message);eq(r.bodies.length,0);
+ // the axis line is taken out of the sketch: the revolve says so; another line of the sketch can take its place
+ const {d:doc,sid,rid}=turn(d,p,ring),sketch=doc.features.find(f=>f.id===sid),gone=doc.features.find(f=>f.id===rid).axis;
+ const without=updateFeature(doc,sid,{entities:sketch.entities.filter(e=>e.id!==gone)});
+ r=await k.rebuild(without);eq(status(r,rid).status,'error');ok(/no longer in its sketch/.test(status(r,rid).message));
+ const right=sketch.entities.filter(e=>!e.construction)[1].id; // the side at x = 15
+ r=good(await k.rebuild(updateFeature(without,rid,{axis:right})));near(r.bodies[0].volume,PI*100*20,1e-6,'about its own right side: a cylinder of radius 10');near(r.bodies[0].bbox,[[5,0,-10],[25,20,10]],1e-6);
+ const arcId=(()=>{const s=sk();return arc(s,0,10,0,0,0,20).id;})();ok(arcId);
+ for(const bad of [{angle:0},{angle:400},{angle:NaN},{axis:'x'},{axis:''},{flip:1},{operation:'add'},{profiles:[]}]) ok(validateFeature({...doc.features.find(f=>f.id===rid),...bad}).length,JSON.stringify(bad));
+ eq(validateFeature(doc.features.find(f=>f.id===rid)),[]);
+ r=await k.rebuild(updateFeature(doc,rid,{angle:400}));eq(status(r,rid).status,'error');
+});
+run();
+</script>

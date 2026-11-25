@@ -528,6 +528,68 @@ def run(p, url='index.html?test=1'):
     assert p.js('corecad.dimensions') == [], p.js('corecad.dimensions')
     step('Dimensions: click a number and type; a number that cannot be built is refused; the clicked number is "this"')
 
+    # ---- revolve: closed regions of a sketch turned about one of its lines
+    untouched = call('get_document')
+    s = call('add_sketch', plane='XZ', part='new', shapes=[{'type': 'rectangle', 'corner': [8, 0], 'width': 6, 'height': 10},
+                                                           {'type': 'line', 'from': [0, 0], 'to': [0, 5], 'construction': True}])
+    lines = [e for e in s['sketch']['entities'] if e['type'] == 'line']
+    axis = next(e['id'] for e in lines if e.get('construction'))
+    ring = call('revolve', axis=axis)
+    rid, pid = ring['id'], ring['part']
+    assert ring['type'] == 'revolve' and ring['status'] == 'ok' and ring['name'] == 'Revolve1' and pid == s['part'], ring
+    near(vol(ring, pid), math.pi * (14 ** 2 - 8 ** 2) * 10, 1e-2, 'a ring')
+    assert next(b for b in ring['bodies'] if b['part'] == pid)['box'] == [[-14, -14, 0], [14, 14, 10]], 'drawn on XZ about its upright line: it stands on Z'
+    row_of = lambda r: next(f for f in call('get_state')['features'] if f['id'] == r)
+    assert {k: row_of(rid)[k] for k in ('sketch', 'axis', 'angle', 'operation', 'profiles')} == {'sketch': s['id'], 'axis': axis, 'angle': 360, 'operation': 'new', 'profiles': 1}
+    angle = next(x for x in call('list_dimensions', part=pid) if x['feature'] == rid)
+    assert angle['value'] == 360 and angle['unit'] == '\u00b0' and angle['change_with'] == 'edit_feature' and angle['arguments'] == {'id': rid, 'angle': 360}, angle
+    quarter = call('edit_feature', id=rid, angle=90)
+    near(vol(quarter, pid), math.pi * 132 * 10 / 4, 1e-2, 'a quarter of it')
+    assert next(b for b in quarter['bodies'] if b['part'] == pid)['box'] == [[0, -14, 0], [14, 0, 10]], 'XZ faces -Y: the turn goes that way'
+    other = call('edit_feature', id=rid, flip=True)
+    assert next(b for b in other['bodies'] if b['part'] == pid)['box'] == [[0, 0, 0], [14, 14, 10]]
+    # about a side of its own outline: the line at x = 14
+    side = next(e['id'] for e in lines if e['from'][0] == 14 and e['to'][0] == 14)
+    solid = call('edit_feature', id=rid, axis=side, angle=360)
+    near(vol(solid, pid), math.pi * 36 * 10, 1e-2, 'a cylinder of radius 6 about x = 14')
+    # a groove cut into it, in the same part: the default is to join, a cut is said
+    g = call('add_sketch', plane='XZ', part=pid, shapes=[{'type': 'rectangle', 'corner': [18, 4], 'width': 4, 'height': 2},
+                                                         {'type': 'line', 'from': [14, 0], 'to': [14, 3], 'construction': True}])
+    gaxis = next(e['id'] for e in g['sketch']['entities'] if e.get('construction'))
+    cut = call('revolve', axis=gaxis, operation='cut')
+    near(vol(cut, pid), math.pi * 36 * 10 - math.pi * (36 - 16) * 2, 1e-2, 'a groove 2 deep and 2 high')
+    assert len([b for b in cut['bodies'] if b['part'] == pid]) == 1
+    # what is refused, and why
+    before = call('get_document')
+    fails('revolve', 'is the id of a line', sketch=s['id'], axis='e1')
+    fails('revolve', 'needs "axis"', sketch=s['id'])
+    fails('revolve', 'at most 360', sketch=s['id'], axis=axis, angle=400)
+    fails('revolve', 'more than 0', sketch=s['id'], axis=axis, angle=0)
+    fails('revolve', 'no argument "name"', sketch=s['id'], axis=axis, name='Ring')
+    fails('edit_feature', 'at most 360', id=rid, angle=-90)
+    fails('edit_feature', 'it has no distance', id=rid, distance=5)
+    assert call('get_document') == before
+    # in the page: a row in the history, its number on the model, typed over there; no dialog
+    p.click(f'[data-feature="{rid}"]')
+    label = next(l for l in p.js('corecad.dimensions') if l['feature'] == rid)
+    assert label['key'] == 'angle' and label['text'] == '360\u00b0' and label['editable'], label
+    p.click(label['x'], label['y'])
+    p.wait('!!document.querySelector(".dim-input")')
+    p.key('a', modifiers=2)
+    p.type('180')
+    p.key('Enter')
+    p.wait('!corecad.busy && corecad.doc.features.find(f => f.id === ' + json.dumps(rid) + ').angle === 180')
+    near(vol(call('get_state'), pid), (math.pi * 36 * 10 - math.pi * 20 * 2) / 2, 1e-2, 'half of it, by the number on the model')
+    p.js('document.querySelector(' + json.dumps(f'[data-feature="{rid}"]') + ').dispatchEvent(new MouseEvent("dblclick", {bubbles: true}))')
+    assert 'has no dialog' in p.js('document.getElementById("toast").textContent') and not p.js('!!corecad.draft')
+    p.screenshot(ROOT / '.scratch' / 'e2e_api_revolve.png')
+    for _ in range(20):
+        if content(call('get_document')) == content(untouched):
+            break
+        call('undo')
+    assert content(call('get_document')) == content(untouched)
+    step('revolve: a ring, part of a turn and the other way, about a side of the outline, a groove cut; its angle on the model')
+
     # ---- one command, one tool: nothing that lists or runs the others by name
     import re
     st = call('get_state')

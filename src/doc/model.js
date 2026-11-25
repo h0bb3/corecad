@@ -54,6 +54,7 @@ export function makeFeature(doc, type, data = {}) {
       flip: false,
       targets: null,
     },
+    revolve: { sketch: '', profiles: [], axis: '', angle: 360, flip: false, operation: 'new', targets: null },
     hole: { face: null, at: [0, 0], diameter: 5, depth: 'all' },
     fillet: { edges: [], radius: 2, kseq: 0 },
     chamfer: { edges: [], distance: 1, kseq: 0 },

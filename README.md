@@ -44,6 +44,10 @@ and its own place.
   Y or Z. Each ring and button always turns about its own axis, round the
   middle of the part. Its parent is chosen there too, or by dragging the part
   onto another in the list; a part moves with its parent.
+- **Revolve** (by command, for now without a dialog in the page) turns closed
+  areas of a sketch about a line of that sketch: anything that is turned on
+  a lathe. It has a row in the history, and its angle stands on the model
+  where it can be clicked and typed over.
 - **Group** makes a container for parts: a name and a place, and no shape
   of its own. Drag parts onto it in the list, or make them while it is
   selected. Moving, turning, hiding, copying or exporting a group does that

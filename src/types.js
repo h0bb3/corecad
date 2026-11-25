@@ -58,6 +58,11 @@
  *              targets: string[] | null }} ExtrudeFeature
  *  flip false: the direction is the sketch plane's normal; true: against it. targets null: every body the tool reaches. */
 
+/** @typedef {FeatureBase & { type: 'revolve', sketch: string, profiles: ProfileRef[], axis: string, angle: number,
+ *              flip: boolean, operation: 'new'|'join'|'cut'|'intersect', targets: string[] | null }} RevolveFeature
+ *  axis: the id of a line of the sketch. angle: degrees, 0 < angle <= 360. A turn that is not closed starts in the
+ *  sketch plane and goes to the side the sketch faces; flip true: the other way. */
+
 /** @typedef {FeatureBase & { type: 'hole', face: FaceRef, at: Vec2, diameter: number, depth: Reach }} HoleFeature
  *  at: [u, v] in the canonical frame of the face's plane. */
 

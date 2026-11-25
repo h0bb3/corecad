@@ -98,6 +98,11 @@ export function dimensionsOf(f, { frame = null, matrix = Mat.IDENTITY, sketch = 
     }
     return out;
   }
+  if (f.type === 'revolve' && frame && f.profiles?.length) {
+    // at the outline it turns, in the sketch plane: where the turn starts
+    const at = toWorld(frame, cornerOf(sketch, f.profiles[0]) ?? f.profiles[0].at);
+    return [item('angle', f.angle, fmt(f.angle) + '°', f.angle >= 360 ? 'revolve angle, all the way round' : 'revolve angle', [], at, change('angle'), '°')];
+  }
   if (f.type === 'hole' && f.face) {
     const fr = canonicalFrame(f.face.hint.n, f.face.hint.d),
       c = toWorld(fr, f.at),

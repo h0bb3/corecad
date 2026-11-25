@@ -145,6 +145,19 @@ export const TOOLS = [
     }
   ),
   tool(
+    'revolve',
+    'Turns closed regions of a sketch about a line of that sketch into a solid: a new body, joined to the bodies it touches, cut out of them, or their intersection. The regions must lie on one side of the line; they may touch it.',
+    {
+      sketch: SKETCH_ARG,
+      profiles: { description: 'Which regions, as for extrude: "outer" (default), "all", or an array of region indices or of points [x, y] inside them.' },
+      axis: str('The line to turn about: the id of a line of the sketch (get_sketch lists them). A construction line is the usual choice; a side of the outline will do.'),
+      angle: numb('Degrees: more than 0, at most 360. Left out: 360, all the way round. A turn that is not closed starts in the sketch plane and goes to the side the sketch faces.'),
+      operation: str('Default: "new" when the sketch\'s part has no body yet, otherwise "join".', { enum: ['new', 'join', 'cut', 'intersect'] }),
+      flip: bool('Turn the other way.'),
+    },
+    ['axis']
+  ),
+  tool(
     'hole',
     'Drills a round hole into a flat face, straight in.',
     {
@@ -161,13 +174,14 @@ export const TOOLS = [
   tool('chamfer', 'Bevels edges of a body by a distance.', { edges: EDGES_ARG, distance: numb('Millimetres.'), name: str('A name for the history.') }, ['edges', 'distance']),
   tool(
     'edit_feature',
-    'Changes a feature\'s parameters, name or suppression; the features after it are rebuilt. Extrude: distance, through_all, symmetric, distance2, operation, flip. Hole: diameter, depth, through_all, at. Fillet: radius. Chamfer: distance. Box: size, origin. Cylinder: diameter, height, origin. Sphere: diameter, origin. Combine: operation, with, keep. (A sketch is changed with set_dimension, add_to_sketch and remove_from_sketch; where a part stands with move_part.)',
+    'Changes a feature\'s parameters, name or suppression; the features after it are rebuilt. Extrude: distance, through_all, symmetric, distance2, operation, flip. Revolve: angle, axis, operation, flip. Hole: diameter, depth, through_all, at. Fillet: radius. Chamfer: distance. Box: size, origin. Cylinder: diameter, height, origin. Sphere: diameter, origin. Combine: operation, with, keep. (A sketch is changed with set_dimension, add_to_sketch and remove_from_sketch; where a part stands with move_part.)',
     {
       id: str('The feature\'s id, such as "f3"; or "this": the feature the person has selected in the history, or the one that made the face or edge they have selected or point at (the wall or the rim of a hole, say).'),
       name: str('A new name.'),
       suppressed: bool('true: leave the feature out of the model without deleting it.'),
       distance: numb('mm'), through_all: bool('through everything'), symmetric: bool('half to each side'), distance2: numb('mm, the other way'),
       operation: str('new, join, cut or intersect', { enum: ['new', 'join', 'cut', 'intersect'] }), flip: bool('reverse the direction'),
+      angle: numb('a revolve: degrees, up to 360'), axis: str('a revolve: the id of a line of its sketch'),
       diameter: numb('mm'), depth: numb('mm'), at: { type: 'array', items: { type: 'number' }, description: '[x, y] on the face' }, radius: numb('mm'),
       size: VEC('a box: [x, y, z] in mm'), height: numb('mm'), origin: str('base, center or corner'),
       with: { type: 'array', items: { type: 'string' }, description: 'a combine: the other parts, by id or name' }, keep: bool('a combine: leave the other parts as they are'),
@@ -694,6 +708,7 @@ export function createCommands(app) {
         ...(f.flip ? { flip: true } : {}),
         profiles: f.profiles.length,
       };
+    if (f.type === 'revolve') return { sketch: f.sketch, axis: f.axis, angle: f.angle, operation: f.operation, ...(f.flip ? { flip: true } : {}), profiles: f.profiles.length };
     if (f.type === 'hole') return { diameter: f.diameter, ...(f.depth === 'all' ? { through_all: true } : { depth: f.depth }), at: round(f.at), on_body: f.face?.body };
     if (f.type === 'fillet') return { radius: f.radius, edges: f.edges.length };
     if (f.type === 'chamfer') return { distance: f.distance, edges: f.edges.length };
@@ -828,9 +843,15 @@ export function createCommands(app) {
     return outcome(sk.id, { ...more, sketch: sketchInfo(featureById(doc(), sk.id)) });
   }
 
+  /** The line of a sketch that a revolve turns about, by its id. */
+  function axisFrom(sk, id) {
+    const e = indexSketch(sk).entity(String(id));
+    if (e?.type !== 'line') throw Error(`"axis" is the id of a line of ${sk.name}${e ? `: ${id} is ${e.type === 'arc' ? 'an' : 'a'} ${e.type}` : `, and it has no "${id}"`}. Its lines: ${sk.entities.filter((x) => x.type === 'line').map((x) => x.id).join(', ') || 'none'}.`);
+    return e.id;
+  }
   function regionsFor(sk, which = 'outer') {
     const regions = findRegions(sk);
-    if (!regions.length) throw Error(`${sk.name} has no closed region to extrude: close its outline first.`);
+    if (!regions.length) throw Error(`${sk.name} has no closed region: close its outline first.`);
     if (which === 'all') return regions;
     if (which === 'outer') {
       // Not lying in a hole of another region: the outlines, with their holes left open.
@@ -913,7 +934,7 @@ export function createCommands(app) {
       return d.features
         .filter((f) => !only || f.part === only)
         .flatMap((f) => {
-          const sk = f.type === 'sketch' ? f : f.type === 'extrude' ? featureById(d, f.sketch) : null;
+          const sk = f.type === 'sketch' ? f : ['extrude', 'revolve'].includes(f.type) ? featureById(d, f.sketch) : null;
           return dimensionsOf(f, { frame: sk ? resultOf(sk.id)?.frame ?? null : null, matrix: world.get(f.part) ?? Mat.IDENTITY, sketch: sk }).map(dimensionRow);
         });
     },
@@ -1086,6 +1107,23 @@ export function createCommands(app) {
       });
       return apply(addFeature(made.doc, made.feature), made.feature, 'Apply ' + made.feature.name);
     },
+    async revolve(a) {
+      free();
+      await settled();
+      const sk = sketchOf(a.sketch),
+        regions = regionsFor(sk, a.profiles),
+        operation = a.operation ?? (bodies().some((b) => b.part === sk.part) ? 'join' : 'new');
+      const made = makeFeature(doc(), 'revolve', {
+        part: sk.part,
+        sketch: sk.id,
+        profiles: regions.map(profileRefFrom),
+        axis: axisFrom(sk, a.axis),
+        angle: a.angle ?? 360,
+        operation,
+        flip: !!a.flip,
+      });
+      return apply(addFeature(made.doc, made.feature), made.feature, 'Apply ' + made.feature.name);
+    },
     async hole(a) {
       free();
       await settled();
@@ -1124,6 +1162,7 @@ export function createCommands(app) {
         {
           sketch: [],
           extrude: ['distance', 'through_all', 'symmetric', 'distance2', 'operation', 'flip'],
+          revolve: ['angle', 'axis', 'operation', 'flip'],
           hole: ['diameter', 'depth', 'through_all', 'at'],
           fillet: ['radius'],
           chamfer: ['distance'],
@@ -1147,6 +1186,12 @@ export function createCommands(app) {
           next.extent = extentFrom(a, next.operation, f.extent);
           if (a.distance < 0) next.flip = !next.flip;
         }
+      }
+      if (f.type === 'revolve') {
+        if (a.angle !== undefined) next.angle = a.angle;
+        if (a.axis !== undefined) next.axis = axisFrom(featureById(doc(), f.sketch) ?? { name: 'its sketch', entities: [], points: [] }, a.axis);
+        if (a.operation !== undefined) next.operation = a.operation;
+        if (a.flip !== undefined) next.flip = !!a.flip;
       }
       if (f.type === 'hole') {
         if (a.diameter !== undefined) next.diameter = a.diameter;
