@@ -254,6 +254,21 @@ export const TOOLS = [
   tool('delete_feature', 'Deletes a feature. If others are built on it they must go too: say so with with_dependents, or the command lists them and changes nothing.', { id: str('The feature\'s id; or "this", as for edit_feature.'), with_dependents: bool('Also delete what is built on it.') }, ['id']),
   tool('undo', 'Takes back the last change.'),
   tool('redo', 'Does again what undo took back.'),
+  tool(
+    'list_commands',
+    'The commands this CoreCAD tab has now. CoreCAD is updated often and an MCP client keeps the list of tools it read when it connected, so the tab may have commands that are not among your tools: this shows them, and run_command runs them. Without "name": every command with a line about it. With "name": that command in full, with its arguments.',
+    { name: str('A command, to see it in full.') }
+  ),
+  tool(
+    'run_command',
+    'Runs a command of this tab by its name: the same as calling the tool of that name. For commands that list_commands shows and your own list of tools lacks.',
+    { name: str('The command.'), arguments: { type: 'object', description: 'Its arguments, as list_commands gives them.' } },
+    ['name']
+  ),
+  tool(
+    'reload_app',
+    'Reloads the CoreCAD tab so that it runs the newest CoreCAD (get_state says under "app" when a newer one is published; a tab that has been open for a while may be older). The project is kept: it is saved in the browser. Undo history is not. The tab is back, and connected again, within some seconds; then list_commands shows what it has.'
+  ),
   tool('cancel_edit', 'Closes a sketch or a feature dialog that is open in the page without keeping its changes. The commands that change the model need this to be closed.'),
   tool(
     'export',
@@ -285,6 +300,10 @@ export const TOOLS = [
  * @param {() => string | null} app.currentPart   the part being worked on
  * @param {() => string | null} app.homePart      the part a new sketch goes into (never a linked copy or a group)
  * @param {() => string | null} [app.container]  the group a new part goes into: the one the person has selected, or the one their part is in
+ * @param {string} [app.build]                    this tab's build (src/version.js)
+ * @param {() => string | null} [app.newest]      the published build, when it is not this one (as last looked)
+ * @param {() => Promise<string | null>} [app.checkUpdate]  looks what is published (at most once a minute)
+ * @param {() => void} [app.reload]               reloads the page with all of the published version, a moment from now
  * @param {() => { selected: object[], pointed: object | null, part: string | null, feature: string | null }} app.chosen
  *   what the person has clicked and what their mouse last rested on. A pick is { kind: 'face' | 'edge', index,
  *   body, part, instance, matrix, point }: `body` a built body's id, `point` in its part's frame, `matrix` where
@@ -696,10 +715,16 @@ export function createCommands(app) {
     return {};
   }
 
+  /** Which CoreCAD this tab runs, and whether a newer one is published (as last looked). */
+  const appInfo = () => {
+    const newest = app.newest?.() ?? null;
+    return { build: app.build ?? null, update_available: !!newest, ...(newest ? { newest, how: 'reload_app loads it' } : {}) };
+  };
   function stateInfo() {
     const st = store.state;
     return {
       project: st.doc.meta.name,
+      app: appInfo(),
       units: 'mm',
       parts: partRows(),
       current_part: app.currentPart() ?? null,
@@ -869,6 +894,7 @@ export function createCommands(app) {
 
   const impl = {
     async get_state() {
+      await app.checkUpdate?.();
       await settled();
       return stateInfo();
     },
@@ -901,6 +927,41 @@ export function createCommands(app) {
           const sk = f.type === 'sketch' ? f : f.type === 'extrude' ? featureById(d, f.sketch) : null;
           return dimensionsOf(f, { frame: sk ? resultOf(sk.id)?.frame ?? null : null, matrix: world.get(f.part) ?? Mat.IDENTITY, sketch: sk }).map(dimensionRow);
         });
+    },
+    async list_commands(a) {
+      if (a.name !== undefined) {
+        const t = TOOLS.find((x) => x.name === String(a.name));
+        if (!t) throw Error(`There is no command "${a.name}". Commands: ${TOOLS.map((x) => x.name).join(', ')}.`);
+        return { name: t.name, description: t.description, arguments: t.input };
+      }
+      await app.checkUpdate?.();
+      return {
+        app: appInfo(),
+        commands: TOOLS.map((t) => ({
+          name: t.name,
+          about: t.description.split(/(?<=[.:])\s/)[0],
+          arguments: Object.keys(t.input.properties).map((k) => (t.input.required.includes(k) ? k : `[${k}]`)),
+        })),
+      };
+    },
+    async run_command(a) {
+      if (a.name === 'run_command') throw Error('run_command runs the other commands, not itself.');
+      return invoke(String(a.name), a.arguments ?? {});
+    },
+    async reload_app() {
+      app.ready();
+      if (app.editing()) throw Error('A sketch or a feature dialog is open in the page: finish or cancel it there (or cancel_edit) first, or reloading would lose it.');
+      await settled();
+      if (!app.reload) throw Error('This page cannot be reloaded by command.');
+      await app.checkUpdate?.();
+      const info = appInfo();
+      app.reload();
+      return {
+        reloading: true,
+        was: info.build,
+        ...(info.newest ? { loading: info.newest } : {}),
+        note: 'The tab reloads now and connects again by itself within some seconds. Then get_state; list_commands shows the commands it has, and run_command runs those your list of tools lacks.',
+      };
     },
     async get_document() {
       return structuredClone(doc());
@@ -1400,17 +1461,21 @@ export function createCommands(app) {
 
   // One command at a time, in the order they were asked: a preview of one must not meet the commit of another.
   let queue = Promise.resolve();
+  /** Checks a command's name and arguments and runs it. Throws what is wrong. */
+  async function invoke(name, args = {}) {
+    const spec = TOOLS.find((t) => t.name === name);
+    if (!spec || !impl[name]) throw Error(`Unknown command "${name}". Commands: ${TOOLS.map((t) => t.name).join(', ')}.`);
+    if (args === null || typeof args !== 'object' || Array.isArray(args)) throw Error('The arguments must be an object.');
+    const unknown = Object.keys(args).filter((k) => !(k in spec.input.properties));
+    if (unknown.length) throw Error(`${name} has no argument ${unknown.map((k) => `"${k}"`).join(', ')}. It takes: ${Object.keys(spec.input.properties).join(', ') || 'nothing'}.`);
+    const lacking = spec.input.required.filter((k) => args[k] === undefined);
+    if (lacking.length) throw Error(`${name} needs ${lacking.map((k) => `"${k}"`).join(', ')}.`);
+    return impl[name](args);
+  }
   function run(name, args = {}) {
     const job = queue.then(async () => {
-      const spec = TOOLS.find((t) => t.name === name);
-      if (!spec || !impl[name]) return { ok: false, error: `Unknown command "${name}". Commands: ${TOOLS.map((t) => t.name).join(', ')}.` };
       try {
-        if (args === null || typeof args !== 'object' || Array.isArray(args)) throw Error('The arguments must be an object.');
-        const unknown = Object.keys(args).filter((k) => !(k in spec.input.properties));
-        if (unknown.length) throw Error(`${name} has no argument ${unknown.map((k) => `"${k}"`).join(', ')}. It takes: ${Object.keys(spec.input.properties).join(', ') || 'nothing'}.`);
-        const lacking = spec.input.required.filter((k) => args[k] === undefined);
-        if (lacking.length) throw Error(`${name} needs ${lacking.map((k) => `"${k}"`).join(', ')}.`);
-        return { ok: true, result: await impl[name](args) };
+        return { ok: true, result: await invoke(name, args) };
       } catch (e) {
         return { ok: false, error: String(e?.message ?? e) };
       }

@@ -27,6 +27,14 @@ hands them on, plus one of its own, `corecad_status`.
 useless. The tab reconnects by itself after a reload if it was left
 connected, and stays off if it was switched off.
 
+**New commands that the client does not show.** The tab says which tools it
+has when it connects, and the relay answers `tools/list` with those, afresh
+each time. A client keeps the list it read: after CoreCAD has been updated,
+reload the tab (its **Update** button, or the `reload_app` tool) and then
+reconnect the server in the client. The relay has no open connection to a
+client, so it cannot announce a changed list (`notifications/tools/list_changed`);
+`list_commands` and `run_command` reach every command of the tab meanwhile.
+
 ## What the code protects, and what it does not
 
 - The code is 144 random bits made in the browser and kept in that browser's

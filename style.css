@@ -1220,3 +1220,14 @@ main {
 .part-row.group-row .tree-name {
   letter-spacing: 0.2px;
 }
+
+/* A newer CoreCAD is published: the way to get it. */
+.update-button {
+  border: 1px solid #e3c98a;
+  background: #fff8e6;
+  color: #7a5a12;
+  font-weight: 600;
+}
+.update-button[hidden] {
+  display: none;
+}

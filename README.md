@@ -128,6 +128,13 @@ what you have clicked and what your mouse last rested on (a ring marks it),
 so "a hole on this face" or "make this hole bigger" works by pointing. How it
 works and what the code protects: [bridge/README.md](bridge/README.md).
 
+CoreCAD is updated often. A tab that has been open for a while shows an
+**Update** button when a newer version is published (the agent can do the
+same with `reload_app`); your project is kept. If the agent does not see a
+new command after that, reconnect CoreCAD in the client so that it reads the
+list of tools again; it can also reach every command through `list_commands`
+and `run_command`.
+
 ## How it is made
 
 - A static site: plain HTML, CSS and JavaScript modules, no build step.
@@ -144,6 +151,7 @@ There is no build step or npm dependency. Serve the folder with
 need HTTP, not `file://`). Tests run in a real browser:
 
 ```sh
+python tools/stamp.py        # after any change to the page: names the build (src/version.js)
 python tools/run_tests.py
 python tools/e2e.py
 python tools/e2e_more.py

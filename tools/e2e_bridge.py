@@ -167,6 +167,20 @@ def run(p, relay_port=None):
     p.wait('!!document.getElementById("bridge-address")')
     step('"a hole on this face" over MCP, where it was clicked; then "this hole" wider, by pointing at it')
 
+    # ---- the agent reloads the tab itself; every command can be reached whatever list of tools it holds
+    assert [c['name'] for c in ok(mcp.call('list_commands'))['commands']] == names[1:]
+    volume_before = ok(mcp.request('tools/call', {'name': 'run_command', 'arguments': {'name': 'get_state'}}))['bodies'][0]['volume']
+    p.js('window.__old = true')
+    out = ok(mcp.call('reload_app'))
+    assert out['reloading'] is True and out['was'] == p.js('corecad.version'), out
+    p.wait('!window.__old && window.corecadReady && window.corecad && corecad.bridge.status === "on" && !corecad.busy', timeout=120)
+    assert p.js('corecad.bridge.address') == address, 'the same address after the reload'
+    assert abs(ok(mcp.call('get_state'))['bodies'][0]['volume'] - volume_before) < 1e-9
+    assert [t['name'] for t in mcp.request('tools/list')['tools']] == names
+    p.click('#connect-button')
+    p.wait('!!document.getElementById("bridge-address")')
+    step('reload_app over MCP: the tab comes back by itself, connected, with its project')
+
     # ---- the person is in charge: disconnect, a new address
     p.click('[data-modal="toggle"]')
     p.wait('corecad.bridge.status === "off"')

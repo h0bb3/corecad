@@ -528,6 +528,57 @@ def run(p, url='index.html?test=1'):
     assert p.js('corecad.dimensions') == [], p.js('corecad.dimensions')
     step('Dimensions: click a number and type; a number that cannot be built is refused; the clicked number is "this"')
 
+    # ---- the commands the tab has now, whatever list of tools a client holds
+    import re
+    st = call('get_state')
+    build = st['app']['build']
+    assert re.fullmatch(r'[0-9a-f]{10}', build) and st['app'] == {'build': build, 'update_available': False} and p.js('corecad.version') == build, st['app']
+    listed = call('list_commands')
+    names = [c['name'] for c in listed['commands']]
+    assert names == p.js('corecad.tools.map(t => t.name)') and {'list_commands', 'run_command', 'reload_app', 'add_group'} <= set(names) and listed['app']['build'] == build
+    assert all(c['about'] and len(c['about']) < 400 for c in listed['commands']), [c for c in listed['commands'] if not c['about'] or len(c['about']) >= 400]
+    assert next(c for c in listed['commands'] if c['name'] == 'add_box')['arguments'][0] == 'size', 'what must be given is plain, the rest in brackets'
+    one = call('list_commands', name='add_group')
+    assert one['name'] == 'add_group' and {'name', 'parts', 'parent'} <= set(one['arguments']['properties']) and 'container' in one['description'], one
+    fails('list_commands', 'no command', name='nothing')
+    via = call('run_command', name='add_box', arguments={'size': [5, 5, 5], 'name': 'Via', 'parent': None})
+    assert via['part']['name'] == 'Via' and via['status'] == 'ok', via
+    call('run_command', name='undo')
+    assert 'Via' not in [x['name'] for x in call('run_command', name='get_state')['parts']]
+    fails('run_command', 'needs "size"', name='add_box', arguments={})
+    fails('run_command', 'unknown command', name='nothing')
+    fails('run_command', 'not itself', name='run_command', arguments={'name': 'get_state'})
+    fails('run_command', 'must be an object', name='get_state', arguments=[1])
+    step('list_commands and run_command: %d commands, each reachable by name' % len(names))
+
+    # ---- a tab older than what is published: it says so, and a command (or the person) reloads it
+    update = 'document.getElementById("update-button")'
+    assert p.js(update + '.hidden') is True and p.js(update + '.getClientRects().length') == 0
+    newer = "export const BUILD = '0123456789';"
+    assert p.js('corecad.checkUpdate(async () => ' + json.dumps(newer) + ')') == '0123456789'
+    assert p.js(update + '.hidden') is False and p.js('!!' + update + '.title') and p.js(update + '.getClientRects().length') == 1
+    assert call('get_state')['app'] == {'build': build, 'update_available': True, 'newest': '0123456789', 'how': 'reload_app loads it'}
+    p.click('[data-part="o1"]')
+    p.key('b')
+    p.wait('corecad.draft && corecad.draft.type === "box"')
+    fails('reload_app', 'reloading would lose it')
+    p.click('#update-button')
+    assert 'Finish or cancel' in p.js('document.getElementById("toast").textContent') and p.js('!!corecad.draft'), 'nor does the button reload over an open dialog'
+    call('cancel_edit')
+    doc = call('get_document')
+    p.js('window.__old = true')
+    out = call('reload_app')
+    assert out['reloading'] is True and out['was'] == build and out['loading'] == '0123456789', out
+    p.wait('!window.__old && window.corecadReady && window.corecad && !corecad.busy', timeout=60)
+    assert call('get_document') == doc, 'the project is the same after the reload'
+    assert call('get_state')['app'] == {'build': build, 'update_available': False} and p.js(update + '.hidden') is True
+    p.js('corecad.checkUpdate(async () => ' + json.dumps(newer) + ')')
+    p.js('window.__old = true')
+    p.click('#update-button')
+    p.wait('!window.__old && window.corecadReady && window.corecad && !corecad.busy', timeout=60)
+    assert call('get_document') == doc and p.js(update + '.hidden') is True
+    step('a newer build is seen and said; reload_app and the Update button reload the tab and keep the project')
+
     errors = p.errors()
     assert not errors, errors
     print('ALL COMMAND CHECKS PASSED')

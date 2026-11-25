@@ -1,0 +1,35 @@
+<!doctype html><meta charset="utf-8"><title>Updates</title><script type="module">
+import {test,eq,ok,run} from './harness.js';
+import {BUILD,readStamp,published,freshReload} from '../src/update.js';
+import {FILES} from '../src/version.js';
+
+test('The stamp of this build names its files',()=>{
+ ok(/^[0-9a-f]{10}$/.test(BUILD),BUILD);
+ ok(FILES.includes('index.html')&&FILES.includes('style.css')&&FILES.includes('src/app.js')&&FILES.includes('src/kernel/engine.js')&&FILES.includes('src/version.js'));
+ ok(FILES.every(f=>!f.startsWith('test/')&&!f.startsWith('tools/')&&!f.startsWith('bridge/')));
+});
+test('A published version.js is read for its build and its files; anything else is not one',async()=>{
+ const text=await (await fetch('../src/version.js',{cache:'no-store'})).text(),own=readStamp(text);
+ eq(own.build,BUILD);eq(own.files,FILES);
+ eq(readStamp("export const BUILD = 'abc123';"),{build:'abc123',files:[]});
+ eq(readStamp("export const BUILD = 'abc123';\nexport const FILES = [\"index.html\", \"../../secret\", \"/etc/x\", \"https://elsewhere/x.js\", 7, \"src/app.js\"];\n").files,['index.html','src/app.js'],'only paths inside the site');
+ eq(readStamp("export const BUILD = 'abc123';\nexport const FILES = [oops];\n"),{build:'abc123',files:[]});
+ eq(readStamp('<!doctype html><title>Not found</title>'),null);eq(readStamp(''),null);
+ eq((await published(async()=>text)).build,BUILD);
+ eq(await published(async()=>{throw Error('offline');}),null,'no network: nothing is known, nothing is claimed');
+});
+test('A fresh reload fetches every file of the published version past the cache, then reloads',async()=>{
+ const asked=[],real=window.fetch;let reloaded=0;
+ window.fetch=async(url,options)=>{asked.push([String(url),options?.cache]);return new Response('');};
+ try{
+  await freshReload(async()=>"export const BUILD = 'next';\nexport const FILES = [\"index.html\", \"src/new.js\"];\n",()=>reloaded++);
+  const root=new URL('../',location.href).href;
+  eq(asked,[[root+'index.html','reload'],[root+'src/new.js','reload']]);eq(reloaded,1);
+  // without a network: the files this build knows of are tried, and it reloads all the same
+  asked.length=0;window.fetch=async(url,options)=>{asked.push(String(url));throw Error('offline');};
+  await freshReload(async()=>{throw Error('offline');},()=>reloaded++);
+  eq(asked.length,FILES.length);eq(reloaded,2);
+ }finally{window.fetch=real;}
+});
+run();
+</script>

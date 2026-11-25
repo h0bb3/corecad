@@ -252,7 +252,7 @@ class Page:
                 v = self.js(expression)
                 if v:
                     return v
-            except JsError:
+            except (RuntimeError, JsError):     # RuntimeError: the page is between two documents (it is reloading)
                 pass
             if time.time() > end:
                 tail = '\n  '.join(f'{k}: {t}' for k, t in self.console[-12:])

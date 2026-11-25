@@ -350,3 +350,41 @@ Also fixed here: after Copy, the arrows and rings stood at the copy's origin
 until the kernel had built it and then jumped to its middle, so a quick press
 could take hold of the wrong arrow. Until the copy is built the gizmo uses the
 shape of the original. `tools/e2e_parts.py` checks that it does not move.
+
+## Updates, and tools a client does not see (2026-11-25)
+
+Reported: after the group commands were published, an agent connected through
+the bridge did not see them.
+
+What was checked: a fresh tab and a fresh client see every tool
+(`python tools/e2e_bridge.py --live`). So the list was an old one, and there
+are two places it can be old: the tab (it runs the files it loaded and names
+the commands of that version) and the client (it keeps the list of tools it
+read when it connected).
+
+- `src/version.js`, written by `tools/stamp.py`, names the build and lists
+  its files. `tools/run_tests.py` fails when it is not current.
+- The page compares its build with the published one (four seconds after
+  loading, every three minutes while visible, when the tab is shown again,
+  and when `get_state` is asked, at most once a minute). A newer one shows an
+  **Update** button and `app.update_available` in `get_state`.
+- **Update** and the command `reload_app` fetch every file of the published
+  version past the browser's cache and then reload. The project comes back
+  from the browser's save; the bridge connects again under the same address.
+  Both are refused while a sketch or a dialog is open.
+- `list_commands` and `run_command` reach every command of the tab from a
+  client whose list of tools is older.
+
+Verification: `test/update.test.html`; `tools/e2e_api.py` (a newer build
+seen, the button, the refusal, the reload by command and by button, the
+project the same after it); `tools/e2e_bridge.py` (`reload_app` over MCP: the
+tab is back under the same address, `tools/list` complete).
+
+Not done: the relay telling a client that the list changed. It answers each
+request on its own and holds no connection to the client; announcing a change
+needs a stream that stays open (and a client that listens to it), and a new
+version of the relay on its host.
+
+Limits: a tab that loaded a mix of old and new files whose `version.js` is the
+new one does not know it is mixed; `reload_app` and **Update** still fix it,
+because they fetch everything.

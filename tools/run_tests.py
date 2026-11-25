@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from browser import Browser, ROOT  # noqa: E402
+import stamp  # noqa: E402
 
 
 def main():
@@ -25,6 +26,10 @@ def main():
     if not pages:
         print('no test pages'); return 1
     bad = 0
+    if not stamp.current():
+        # the page tells a published build from its own by this stamp: a forgotten one hides an update
+        print('== src/version.js\n   NOT CURRENT: run  python tools/stamp.py')
+        bad += 1
     with Browser() as b:
         p = b.page
         for page in pages:

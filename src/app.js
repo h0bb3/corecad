@@ -55,6 +55,7 @@ import { projectBlob, readProject, filename, download } from './persist.js';
 import { escapeHTML as esc, icon, tool, field, selectField, check, head } from './ui.js';
 import { createCommands } from './api/commands.js';
 import { createBridge } from './api/bridge.js';
+import { BUILD, published, freshReload } from './update.js';
 
 const $ = (s) => document.querySelector(s),
   id = (s) => document.getElementById(s),
@@ -2447,6 +2448,10 @@ const actions = {
     );
   },
   upright: () => mover && upright(),
+  update: () => {
+    if (editor || draft || mover) toast('Finish or cancel what is open first: reloading would lose it.');
+    else reloadApp();
+  },
   'cancel-move': () => endMove(false),
   'apply-move': () => endMove(true),
   sketch: startSketch,
@@ -3047,6 +3052,11 @@ const api = createCommands({
     return was;
   },
   homePart: () => homePart(),
+  /** This tab's build, the published build when that is another, and the way to get it. */
+  build: BUILD,
+  newest: () => updateReady,
+  checkUpdate: () => checkUpdate(),
+  reload: () => setTimeout(reloadApp, 400), // after the answer to the command has gone out
   /** The group a new part would go into, as the page has it: the selected group, or the one the selected part is in. */
   container: () => container(),
   cancelEdit: () => {
@@ -3149,9 +3159,38 @@ function renderBridge(b) {
 }
 renderBridge(bridge.state);
 bridge.resume();
+
+// ---- a newer CoreCAD is published: say so, and get all of it (src/update.js)
+let updateReady = null, // the published build, when it is not the one this tab runs
+  updateChecked = 0;
+/** Looks what is published. `read`: where its version.js comes from (tests); without it, at most once a minute. */
+async function checkUpdate(read) {
+  if (!read && Date.now() - updateChecked < 60000) return updateReady;
+  updateChecked = Date.now();
+  const stamp = await published(read);
+  if (stamp) {
+    updateReady = stamp.build !== BUILD ? stamp.build : null;
+    id('update-button').hidden = !updateReady;
+  }
+  return updateReady;
+}
+function reloadApp() {
+  id('update-button').disabled = true;
+  toast('Getting the newest CoreCAD…');
+  return freshReload();
+}
+if (!new URLSearchParams(location.search).has('test')) {
+  // A tab that stays open for days, and one reloaded while the browser still kept older files.
+  setTimeout(checkUpdate, 4000);
+  setInterval(() => document.visibilityState === 'visible' && checkUpdate(), 180000);
+  document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && checkUpdate());
+}
 // Inspection and coordinate helpers for browser automation, and the commands. The modelling
 // tests in tools/e2e.py edit with actual pointer/key events; tools/e2e_api.py uses the commands.
 window.corecad = {
+  /** This tab's build (src/version.js). checkUpdate(read) looks what is published: the newer build, or null. */
+  version: BUILD,
+  checkUpdate: (read) => checkUpdate(read ?? (() => fetch(new URL('./version.js', import.meta.url), { cache: 'no-store' }).then((r) => r.text()))),
   commands: api.commands,
   tools: api.tools,
   run: api.run,

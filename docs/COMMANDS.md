@@ -214,6 +214,9 @@ Arguments in brackets are optional.
 | `export` | [format], [part], [per_part], [download] | 3MF (an object for each part, named and coloured), STL, STEP or the project. |
 | `screenshot` | [view], [fit], [max], [dimensions] | The 3D view as a PNG data URL, with the driving numbers on it if asked. |
 | `set_view` | view, [fit] | Turns the camera to a standard view. |
+| `list_commands` | [name] | The commands this tab has now; one of them in full. |
+| `run_command` | name, [arguments] | Runs a command by name: for those a client's list of tools lacks. |
+| `reload_app` | - | Reloads the tab so that it runs the newest CoreCAD; the project is kept. |
 
 ## Where the code is
 
@@ -236,6 +239,25 @@ names a code, Claude is given the address that ends in that code, and each
 tool call runs here as `corecad.run(name, args)`. A screenshot arrives as a
 picture; every other answer as JSON text; a refused command as an error with
 its sentence.
+
+### When the tools a client sees are not the tools the tab has
+
+Two things are kept longer than an update of CoreCAD:
+
+- **The tab runs the files it loaded.** A tab that stays open, or that was
+  reloaded while the browser still kept some files, runs an older CoreCAD and
+  tells the bridge the commands of that one. `get_state` says so under `app`
+  (`update_available`, with the build that is published), the page shows an
+  **Update** button, and `reload_app` reloads the tab: every file of the
+  published version is fetched past the browser's cache first, the project
+  comes back from the browser's own save, and the tab connects again under
+  the same address. Undo history does not survive it.
+- **An MCP client keeps the list of tools it read when it connected.** The
+  relay answers `tools/list` afresh every time, but it cannot tell a client
+  that the list has changed (it holds no connection to it), so a client sees
+  new commands when it reads the list again: reconnect the server in the
+  client, or start a new conversation. Until then `list_commands` shows what
+  the tab has and `run_command` runs any of it.
 
 WebMCP registration (the page declaring these tools to the browser's own
 agent) is not done.
