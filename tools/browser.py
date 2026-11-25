@@ -209,7 +209,8 @@ class Page:
 
     # ---- the page
     def url(self, path):
-        return path if '://' in path else f'{self.base}/{path.lstrip("/")}'
+        # An address of its own, or a path of the project (which may carry an address in its query).
+        return path if path.split('?')[0].split('#')[0].count('://') else f'{self.base}/{path.lstrip("/")}'
 
     def goto(self, path, timeout=30):
         self.call('Page.navigate', url=self.url(path))

@@ -8,6 +8,7 @@ import { createSketch, indexSketch } from '../src/sketch/model.js';
 import { findRegions } from '../src/sketch/profiles.js';
 import { setDimensions } from '../src/sketch/solver.js';
 import { findBody, findFace, findEdges, sidesOf, describeFaces, describeEdges } from '../src/api/select.js';
+import { toContent, addressFor, relayUrl, newCode } from '../src/api/bridge.js';
 
 const xy = (s, id) => { const p = indexSketch(s).point(id); return [p.x, p.y]; };
 const ends = (s, id) => { const e = indexSketch(s).entity(id); return [xy(s, e.a), xy(s, e.b)]; };
@@ -177,6 +178,32 @@ test('edges by description; a seam is never chosen', async () => {
   await throws(() => findEdges([b], { parallel: 'w' }), /"parallel" is "x", "y" or "z"/);
   eq(describeEdges(b).map(r => r.edge), [0, 1, 2, 3, 4, 5, 6, 7]);
   eq(describeEdges(b)[7].radius, 4);
+});
+
+test('the bridge: answers as MCP content; a screenshot as a picture', () => {
+  eq(toContent({ ok: true, result: { id: 'f2', bodies: [] } }), { content: [{ type: 'text', text: '{"id":"f2","bodies":[]}' }] });
+  eq(toContent({ ok: false, error: 'Give a distance.' }), { isError: true, content: [{ type: 'text', text: 'Give a distance.' }] });
+  eq(toContent({ ok: true, result: { png: 'data:image/png;base64,iVBORw0KGgo=', width: 4, height: 3 } }),
+    { content: [{ type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' }, { type: 'text', text: '{"width":4,"height":3}' }] });
+  eq(toContent({ ok: true, result: undefined }).content[0].text, 'null');
+  eq(toContent(undefined).isError, true);
+});
+
+test('the bridge: the address for the client, and where the relay is', () => {
+  eq(addressFor('wss://vibedit.app/CoreCAD/ws', 'abc'), 'https://vibedit.app/CoreCAD/mcp/abc');
+  eq(addressFor('ws://127.0.0.1:8787/CoreCAD/ws', 'abc'), 'http://127.0.0.1:8787/CoreCAD/mcp/abc');
+  eq(relayUrl(''), 'wss://vibedit.app/CoreCAD/ws');
+  eq(relayUrl('?bridge=ws://localhost:8787/CoreCAD/ws'), 'ws://localhost:8787/CoreCAD/ws');
+  eq(relayUrl('?bridge=ws://127.0.0.1:9/x/ws'), 'ws://127.0.0.1:9/x/ws');
+  // Only this machine: a link must not be able to point a tab at somebody else's relay.
+  for (const bad of ['wss://evil.example/ws', 'ws://localhost.evil.example/ws', 'https://localhost/ws', 'not an address'])
+    eq(relayUrl('?bridge=' + encodeURIComponent(bad)), 'wss://vibedit.app/CoreCAD/ws', bad);
+});
+
+test('the bridge: codes are long, URL-safe and never the same', () => {
+  const codes = Array.from({ length: 200 }, newCode);
+  ok(codes.every(c => /^[A-Za-z0-9_-]{24}$/.test(c)), codes[0]);
+  eq(new Set(codes).size, 200);
 });
 
 run();

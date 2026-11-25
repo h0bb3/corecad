@@ -1,0 +1,20 @@
+{
+  "name": "corecad-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lets an MCP client work in a CoreCAD browser tab: a relay between MCP over HTTP and the tab's WebSocket.",
+  "license": "MIT",
+  "main": "relay.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test --test-reporter=spec test/"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "ws": "^8.20.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

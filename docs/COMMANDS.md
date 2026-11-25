@@ -86,9 +86,14 @@ Arguments in brackets are optional.
 - `tools/e2e_api.py`: every command against the real kernel, with expected
   volumes; run it with `python tools/e2e_api.py`.
 
-## Not yet
+## Over MCP
 
-There is no MCP server yet: these commands are reached from inside the page
-(the console, or a browser agent that can run JavaScript in the tab). The
-relay that lets Claude connect by address, and WebMCP registration, will
-expose this same list.
+The same list is what an MCP client sees through the bridge
+([bridge/README.md](../bridge/README.md)): the tab connects to a relay and
+names a code, Claude is given the address that ends in that code, and each
+tool call runs here as `corecad.run(name, args)`. A screenshot arrives as a
+picture; every other answer as JSON text; a refused command as an error with
+its sentence.
+
+WebMCP registration (the page declaring these tools to the browser's own
+agent) is not done.

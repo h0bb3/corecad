@@ -24,6 +24,7 @@ import { parseNumber, formatNumber as fmt } from './core/num.js';
 import { projectBlob, readProject, filename, download } from './persist.js';
 import { escapeHTML as esc, icon, tool, field, selectField, check, head } from './ui.js';
 import { createCommands } from './api/commands.js';
+import { createBridge } from './api/bridge.js';
 
 const $ = (s) => document.querySelector(s),
   id = (s) => document.getElementById(s),
@@ -1212,6 +1213,7 @@ async function openFile(file) {
   id('file-input').value = '';
 }
 const actions = {
+  connect: openConnect,
   sketch: startSketch,
   extrude: () => beginFeature('extrude'),
   hole: () => beginFeature('hole'),
@@ -1664,12 +1666,83 @@ const api = createCommands({
   download,
   filename,
 });
+// The bridge to an MCP client (src/api/bridge.js). It connects only when the person chooses to.
+// BRIDGE_LIVE: the relay at vibedit.app is deployed. Until it is, the Connect button is only shown
+// with ?connect in the address (or ?bridge= for a relay on localhost), so nobody meets a dead button.
+const BRIDGE_LIVE = false;
+const bridgeAsked = ['connect', 'bridge'].some((k) => new URLSearchParams(location.search).has(k));
+const bridge = createBridge({
+  run: api.run,
+  tools: api.tools,
+  keySuffix: new URLSearchParams(location.search).has('test') ? '.test' : '',
+  onChange: renderBridge,
+});
+const clock = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+function bridgeStatus(b) {
+  if (b.status === 'on')
+    return b.last
+      ? `Connected. Last command: ${b.last.name} at ${clock(b.last.at)} (${b.calls} so far).`
+      : b.seenAt
+      ? `Connected. An MCP client looked at ${clock(b.seenAt)}.`
+      : 'Connected. Waiting for an MCP client.';
+  if (b.status === 'connecting') return 'Connecting…';
+  if (b.status === 'retrying') return b.note;
+  return b.note || 'Not connected.';
+}
+function connectBody(b) {
+  return `<p id="bridge-status" class="bridge-status ${b.status}"><i></i>${esc(bridgeStatus(b))}</p>
+    <label class="bridge-address" title="The address of this tab for an MCP client. It works while this tab is connected.">Address for Claude
+      <input id="bridge-address" readonly value="${esc(b.address)}" title="Give this address to Claude as a custom connector. Treat it like a password." /></label>
+    <ol>
+      <li>Choose <b>${b.status === 'off' ? 'Connect' : 'Copy address'}</b> below and keep this tab open.</li>
+      <li>In Claude: Settings, Connectors, <b>Add custom connector</b>. Paste the address; no sign-in is needed.</li>
+      <li>Ask Claude to build or change something in CoreCAD. You see every change here, and Undo takes it back.</li>
+    </ol>
+    <p class="bridge-note">While connected, whoever has this address can read and change the model in this tab, and nothing else in your browser. Commands pass through vibedit.app, and Claude sees the model. <b>New address</b> makes the old one useless.</p>`;
+}
+function openConnect() {
+  const b = bridge.state,
+    on = b.status !== 'off';
+  showModal(
+    'Connect to Claude',
+    connectBody(b),
+    `<button data-modal="renew" title="Make a new address; the old one stops working at once">New address</button><button data-modal="copy" title="Copy the address to the clipboard">Copy address</button><button data-modal="toggle" class="${on ? '' : 'primary'}" title="${
+      on ? 'Stop letting an MCP client use this tab' : 'Connect this tab to the bridge, so an MCP client with the address can use it'
+    }">${on ? 'Disconnect' : 'Connect'}</button><button data-modal="close" class="${on ? 'primary' : ''}" title="Close this dialog · Esc">Close</button>`,
+    (action) => {
+      if (action === 'toggle') bridge.state.status === 'off' ? bridge.connect() : bridge.disconnect();
+      else if (action === 'renew') bridge.renew();
+      else if (action === 'copy')
+        navigator.clipboard?.writeText(bridge.state.address).then(
+          () => toast('Address copied. Paste it into Claude as a custom connector.'),
+          () => toast('Could not copy: select the address and copy it yourself.')
+        );
+      else closeModal();
+    },
+    true
+  );
+  modal.kind = 'connect';
+}
+function renderBridge(b) {
+  const button = id('connect-button');
+  if (button) {
+    button.hidden = !(BRIDGE_LIVE || bridgeAsked || b.wanted);
+    button.className = 'connect-button ' + b.status;
+    button.lastChild.textContent = b.status === 'on' ? 'Connected' : 'Connect';
+  }
+  if (modal?.kind === 'connect') openConnect();
+}
+renderBridge(bridge.state);
+bridge.resume();
 // Inspection and coordinate helpers for browser automation, and the commands. The modelling
 // tests in tools/e2e.py edit with actual pointer/key events; tools/e2e_api.py uses the commands.
 window.corecad = {
   commands: api.commands,
   tools: api.tools,
   run: api.run,
+  get bridge() {
+    return bridge.state;
+  },
   get doc() {
     return structuredClone(store.state.doc);
   },

@@ -130,6 +130,48 @@ input[type='checkbox'] {
   align-items: center;
   gap: 3px;
 }
+.connect-button i,
+.bridge-status i {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: #b8c4c6;
+  vertical-align: 1px;
+}
+.connect-button.on i,
+.bridge-status.on i {
+  background: #2f9e6b;
+}
+.connect-button.connecting i,
+.connect-button.retrying i,
+.bridge-status.connecting i,
+.bridge-status.retrying i {
+  background: #d9a441;
+}
+.bridge-status {
+  font-weight: 600;
+}
+.bridge-address {
+  display: block;
+  margin: 12px 0;
+}
+.bridge-address input {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  font: 12px ui-monospace, Consolas, monospace;
+}
+.bridge-note {
+  color: #6b7b80;
+  font-size: 12.5px;
+}
+.modal ol {
+  margin: 10px 0;
+  padding-left: 20px;
+  line-height: 1.55;
+}
 .export-button {
   border: 1px solid #cddcd8;
   margin-left: 7px;

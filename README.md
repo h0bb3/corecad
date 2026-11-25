@@ -65,7 +65,14 @@ await corecad.run('fillet', { edges: { parallel: 'z' }, radius: 4 });
 A command is one undo step, is shown in the history and the view, and
 changes nothing if the kernel cannot build what was asked. `corecad.tools`
 lists the commands with their arguments; [docs/COMMANDS.md](docs/COMMANDS.md)
-explains them. There is no MCP server yet; this list is what one will expose.
+explains them.
+
+**With Claude, over MCP.** The **Connect** dialog pairs the tab with a small
+relay: the tab names a code, you give Claude the address that ends in that
+code as a custom connector, and Claude can then build and change the model in
+your open tab while you watch. How it works and what the code protects:
+[bridge/README.md](bridge/README.md). (Until the relay is deployed the button
+is only shown with `?connect` in the address.)
 
 ## How it is made
 

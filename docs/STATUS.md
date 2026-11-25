@@ -75,3 +75,19 @@ Limits: commands are reached from inside the page only. Sketch shapes are
 rectangle, circle, line, polyline, arc and point; lines, polylines and arcs
 are pinned with `fix` rather than dimensioned. Edges are chosen within one
 body per command.
+
+## The MCP bridge (2026-11-25)
+
+`bridge/relay.js` relays MCP tool calls between an MCP client and a CoreCAD tab
+that named the same code; `src/api/bridge.js` and the Connect dialog are the
+tab's end. Verified locally: `npm test` in `bridge/` (9 tests with the MCP
+SDK's own client) and `python tools/e2e_bridge.py` (the Connect dialog, then
+MCP over HTTP through the relay into the real page and kernel: a plate with a
+hole and four fillets at 23,360 mm3, refusals, a screenshot as a picture,
+disconnect, new address, reload). The same chain also passed through the relay
+as mounted in the vibedit server, run locally.
+
+Not yet true: the relay is not deployed at vibedit.app (it is a pull request in
+that repository), so the public page cannot connect; the Connect button is
+hidden unless `?connect` is in the address. It has not been tried with Claude
+itself, only with the SDK's client and a hand-written one.
