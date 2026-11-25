@@ -52,3 +52,26 @@ portable copy. Number expressions are evaluated once, not retained as named form
 Deferred as specified: 2D fillet/chamfer, trim, offset, mirror, extra constraints,
 named parameters, projected geometry, dedicated measurement/section tools, imports,
 revolve, sweep, loft, shell, patterns and assemblies. No required work is blocked.
+
+## After v0.1: commands for scripts and agents (2026-11-25)
+
+`window.corecad.run(name, args)` exposes 25 commands (`docs/COMMANDS.md`):
+reading the model, making and editing sketches from shapes, extrude, hole,
+fillet, chamfer, editing and deleting features, undo/redo, export and a
+screenshot. They go through the same store as the controls; solid features
+are previewed before they are committed, so a refused command leaves the
+document unchanged. `corecad.tools` describes each command with a JSON Schema,
+ready to be exposed by an MCP server, which does not exist yet.
+
+Verification: `test/api-shapes.test.html` (13 tests of the pure shape and
+selection modules; 70 tests in all) and `python tools/e2e_api.py`, which runs
+every command against the real kernel with expected volumes (plate 24,000;
+through hole 23,497.35; four R4 fillets 23,360; width 60 to 80 gives 31,360
+with references kept), refused commands, an open dialog blocking changes,
+exports, a screenshot and a project round trip. `tools/e2e.py` and
+`tools/e2e_more.py` still pass unchanged.
+
+Limits: commands are reached from inside the page only. Sketch shapes are
+rectangle, circle, line, polyline, arc and point; lines, polylines and arcs
+are pinned with `fix` rather than dimensioned. Edges are chosen within one
+body per command.

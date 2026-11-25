@@ -431,6 +431,19 @@ export function createViewport(host, callbacks = {}) {
         dirty();
       }
     },
+    /** The view as one picture: the solids and what is drawn over them, on `background`. */
+    snapshot(background = '#edf2f2') {
+      render(); // now: a WebGL canvas can only be read in the same task that drew it
+      const out = document.createElement('canvas');
+      out.width = canvas.width;
+      out.height = canvas.height;
+      const g = out.getContext('2d');
+      g.fillStyle = background;
+      g.fillRect(0, 0, out.width, out.height);
+      if (renderer) g.drawImage(renderer.domElement, 0, 0, out.width, out.height);
+      g.drawImage(canvas, 0, 0);
+      return out;
+    },
     toggleProjection() {
       if (!frame) view = { ...view, ortho: !view.ortho };
       dirty();

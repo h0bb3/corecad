@@ -50,6 +50,23 @@ history, undo/redo, body visibility and exports. See [STATUS](docs/STATUS.md) fo
 validation and remaining limits, [SPEC](docs/SPEC.md) for the implementation contract,
 and [BRIEF](docs/BRIEF.md) for the original scope.
 
+## Scripts and agents
+
+Everything the controls do can also be asked for by name, with JSON in and
+out, from the browser console or by an agent that can run JavaScript in the
+tab:
+
+```js
+await corecad.run('add_sketch', { plane: 'XY', shapes: [{ type: 'rectangle', corner: [0, 0], width: 60, height: 40 }] });
+await corecad.run('extrude', { distance: 10 });
+await corecad.run('fillet', { edges: { parallel: 'z' }, radius: 4 });
+```
+
+A command is one undo step, is shown in the history and the view, and
+changes nothing if the kernel cannot build what was asked. `corecad.tools`
+lists the commands with their arguments; [docs/COMMANDS.md](docs/COMMANDS.md)
+explains them. There is no MCP server yet; this list is what one will expose.
+
 ## How it is made
 
 - A static site: plain HTML, CSS and JavaScript modules, no build step.

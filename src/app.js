@@ -23,6 +23,7 @@ import { canonicalFrame, basePlane, toWorld, toLocal } from './core/plane.js';
 import { parseNumber, formatNumber as fmt } from './core/num.js';
 import { projectBlob, readProject, filename, download } from './persist.js';
 import { escapeHTML as esc, icon, tool, field, selectField, check, head } from './ui.js';
+import { createCommands } from './api/commands.js';
 
 const $ = (s) => document.querySelector(s),
   id = (s) => document.getElementById(s),
@@ -1637,9 +1638,38 @@ document.addEventListener('keydown', (e) => {
 });
 renderTools();
 renderBrowser();
-// Read-only inspection and coordinate helpers for browser automation. Modelling
-// tests perform edits with actual pointer/key events, never through this object.
+// The command set for scripts and agents (src/api/commands.js): it changes the model through
+// the same store as the controls above, so what it does is undoable, autosaved and shown.
+const api = createCommands({
+  store,
+  view,
+  editing: () => !!(editor || draft),
+  cancelEdit: () => {
+    if (editor) finishSketch(true);
+    if (draft) endFeature(false);
+  },
+  ready: () => {
+    if (rolled && !editor && !draft) {
+      store.cancelPreview();
+      rolled = false;
+    }
+  },
+  shown: (fid) => {
+    selectedFeature = fid;
+    selection = [];
+    view.select([]);
+    view.fit();
+    renderBrowser();
+  },
+  download,
+  filename,
+});
+// Inspection and coordinate helpers for browser automation, and the commands. The modelling
+// tests in tools/e2e.py edit with actual pointer/key events; tools/e2e_api.py uses the commands.
 window.corecad = {
+  commands: api.commands,
+  tools: api.tools,
+  run: api.run,
   get doc() {
     return structuredClone(store.state.doc);
   },

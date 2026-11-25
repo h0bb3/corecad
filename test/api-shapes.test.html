@@ -1,0 +1,183 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CoreCAD: shapes for scripts</title>
+<script type="module">
+import { test, eq, ok, near, throws, run } from './harness.js';
+import { addShapes } from '../src/api/shapes.js';
+import { createSketch, indexSketch } from '../src/sketch/model.js';
+import { findRegions } from '../src/sketch/profiles.js';
+import { setDimensions } from '../src/sketch/solver.js';
+import { findBody, findFace, findEdges, sidesOf, describeFaces, describeEdges } from '../src/api/select.js';
+
+const xy = (s, id) => { const p = indexSketch(s).point(id); return [p.x, p.y]; };
+const ends = (s, id) => { const e = indexSketch(s).entity(id); return [xy(s, e.a), xy(s, e.b)]; };
+const dims = s => s.constraints.filter(c => c.value !== undefined);
+
+test('a corner rectangle is fully constrained, where it was asked for', () => {
+  const r = addShapes(createSketch(), [{ type: 'rectangle', corner: [0, 0], width: 60, height: 40 }]);
+  eq(r.analysis.dof, 0);
+  eq(r.entities.length, 4);
+  near(ends(r.sketch, r.entities[0]), [[0, 0], [60, 0]], 1e-9);
+  near(ends(r.sketch, r.entities[2]), [[60, 40], [0, 40]], 1e-9);
+  eq(dims(r.sketch).map(c => c.value).sort((a, b) => a - b), [40, 60], 'width and height only: it sits on the origin');
+  const regions = findRegions(r.sketch);
+  eq(regions.length, 1);
+  near(regions[0].area, 2400, 1e-6);
+});
+
+test('a rectangle away from the origin, also in the negative quadrant', () => {
+  for (const corner of [[10, 5], [-70, -45], [0, 12], [-8, 0]]) {
+    const r = addShapes(createSketch(), [{ type: 'rectangle', corner, width: 60, height: 40 }]);
+    eq(r.analysis.dof, 0, 'dof at ' + corner);
+    near(ends(r.sketch, r.entities[0]), [corner, [corner[0] + 60, corner[1]]], 1e-7, 'bottom at ' + corner);
+  }
+});
+
+test('its dimensions drive it: width 60 to 80 keeps the corner', () => {
+  const r = addShapes(createSketch(), [{ type: 'rectangle', corner: [10, 5], width: 60, height: 40 }]);
+  const width = r.sketch.constraints.find(c => c.value === 60);
+  const next = setDimensions(r.sketch, [{ id: width.id, value: 80 }]);
+  ok(next.ok, next.message);
+  near(ends(next.sketch, r.entities[0]), [[10, 5], [90, 5]], 1e-7);
+});
+
+test('a centred rectangle stays centred when its width changes', () => {
+  for (const center of [[0, 0], [15, -20]]) {
+    const r = addShapes(createSketch(), [{ type: 'rectangle', center, width: 60, height: 40 }]);
+    eq(r.analysis.dof, 0, 'dof at ' + center);
+    near(ends(r.sketch, r.entities[0]), [[center[0] - 30, center[1] - 20], [center[0] + 30, center[1] - 20]], 1e-7);
+    eq(findRegions(r.sketch).length, 1, 'the diagonal is construction: one region');
+    const width = r.sketch.constraints.find(c => c.value === 60);
+    const next = setDimensions(r.sketch, [{ id: width.id, value: 100 }]);
+    ok(next.ok, next.message);
+    near(ends(next.sketch, r.entities[0]), [[center[0] - 50, center[1] - 20], [center[0] + 50, center[1] - 20]], 1e-7, 'grown about ' + center);
+  }
+});
+
+test('circles: by diameter and by radius, on and off the origin', () => {
+  const r = addShapes(createSketch(), [
+    { type: 'circle', center: [0, 0], diameter: 8 },
+    { type: 'circle', center: [20, -10], radius: 3 },
+    { type: 'circle', center: [0, 15], diameter: 5 },
+  ]);
+  eq(r.analysis.dof, 0);
+  const [a, b, c] = r.entities.map(id => indexSketch(r.sketch).entity(id));
+  near([a.r, b.r, c.r], [4, 3, 2.5], 1e-9);
+  near([xy(r.sketch, a.c), xy(r.sketch, b.c), xy(r.sketch, c.c)], [[0, 0], [20, -10], [0, 15]], 1e-7);
+  eq(dims(r.sketch).filter(c => c.type === 'diameter').length, 2);
+  eq(dims(r.sketch).filter(c => c.type === 'radius').length, 1);
+});
+
+test('a plate with a hole: two regions, the outer one has the hole', () => {
+  const r = addShapes(createSketch(), [
+    { type: 'rectangle', corner: [0, 0], width: 60, height: 40 },
+    { type: 'circle', center: [20, 20], diameter: 8 },
+  ]);
+  eq(r.analysis.dof, 0);
+  const regions = findRegions(r.sketch).sort((a, b) => b.area - a.area);
+  eq(regions.length, 2);
+  near(regions[0].area, 2400 - Math.PI * 16, 1e-6);
+  eq(regions[0].holes.length, 1);
+});
+
+test('a closed polyline is pinned and makes one region', () => {
+  const r = addShapes(createSketch(), [{ type: 'polyline', closed: true, points: [[0, 0], [50, 0], [50, 20], [20, 35], [0, 20]] }]);
+  eq(r.analysis.dof, 0);
+  eq(r.entities.length, 5);
+  near(ends(r.sketch, r.entities[2]), [[50, 20], [20, 35]], 1e-9);
+  eq(r.sketch.constraints.filter(c => c.type === 'coincident').length, 5, 'every corner joined once');
+  const regions = findRegions(r.sketch);
+  eq(regions.length, 1);
+  near(regions[0].area, 1375, 1e-6, 'area (shoelace)');
+});
+
+test('a slot of two lines and two arcs: joined, pinned, one region of the right area', () => {
+  const r = addShapes(createSketch(), [
+    { type: 'line', from: [0, -5], to: [30, -5] },
+    { type: 'arc', center: [30, 0], from: [30, -5], to: [30, 5] },
+    { type: 'line', from: [30, 5], to: [0, 5] },
+    { type: 'arc', center: [0, 0], from: [0, 5], to: [0, -5] },
+  ]);
+  eq(r.analysis.dof, 0);
+  const regions = findRegions(r.sketch);
+  eq(regions.length, 1);
+  near(regions[0].area, 300 + Math.PI * 25, 1e-6);
+});
+
+test('fix: false and dimension: false leave geometry free', () => {
+  const r = addShapes(createSketch(), [
+    { type: 'line', from: [0, 0], to: [10, 0], fix: false },
+    { type: 'circle', center: [5, 5], radius: 2, dimension: false },
+  ]);
+  eq(r.analysis.dof, 4 + 3);
+});
+
+test('shapes can be added to a sketch that has some', () => {
+  const first = addShapes(createSketch(), [{ type: 'rectangle', corner: [0, 0], width: 60, height: 40 }]);
+  const more = addShapes(first.sketch, [{ type: 'circle', center: [45, 20], diameter: 10 }, { type: 'point', at: [5, 5] }]);
+  eq(more.analysis.dof, 0);
+  eq(more.sketch.entities.length, 6);
+  eq(first.sketch.entities.length, 4, 'the sketch passed in is not changed');
+  eq(more.entities.length, 2);
+});
+
+test('bad input is refused with a sentence that says what and where', async () => {
+  await throws(() => addShapes(createSketch(), []), /at least one shape/);
+  await throws(() => addShapes(createSketch(), [{ type: 'hexagon' }]), /Shape 1: unknown type "hexagon"/);
+  await throws(() => addShapes(createSketch(), [{ type: 'rectangle', width: 0, height: 4 }]), /Shape 1 \(rectangle\): A rectangle's width must be a positive/);
+  await throws(() => addShapes(createSketch(), [{ type: 'circle', center: [0, 0] }]), /radius or diameter/);
+  await throws(() => addShapes(createSketch(), [{ type: 'rectangle', width: 5, height: 4 }, { type: 'arc', center: [0, 0], from: [5, 0], to: [0, 6] }]), /Shape 2 \(arc\): An arc's two ends must be equally far/);
+  await throws(() => addShapes(createSketch(), [{ type: 'line', from: [1, 1], to: [1, 1] }]), /two different end points/);
+});
+// A 60 x 40 x 10 plate with a round hole, as the kernel describes a body (only what choosing needs).
+function plate(id = 'f2') {
+  const flat = (n, d, center, area) => ({ kind: 'plane', labels: [], center, area, plane: { n, d } });
+  const faces = [
+    flat([0, 0, 1], 10, [30, 20, 10], 2350), flat([0, 0, -1], 0, [30, 20, 0], 2350),
+    flat([1, 0, 0], 60, [60, 20, 5], 400), flat([-1, 0, 0], 0, [0, 20, 5], 400),
+    flat([0, 1, 0], 40, [30, 40, 5], 600), flat([0, -1, 0], 0, [30, 0, 5], 600),
+    { kind: 'cylinder', labels: [], center: [20, 20, 5], area: 251, cyl: { p: [20, 20, 0], dir: [0, 0, 1], r: 4, convex: false } },
+    flat([0, 0, 1], 4, [5, 5, 4], 9),    // the floor of a pocket: flat and facing up, but not the top
+  ];
+  const line = (a, b, f) => ({ kind: 'line', a, b, mid: a.map((v, i) => (v + b[i]) / 2), length: Math.hypot(...a.map((v, i) => v - b[i])), closed: false, faces: f });
+  const edges = [
+    line([0, 0, 0], [0, 0, 10], [3, 5]), line([60, 0, 0], [60, 0, 10], [2, 5]), line([60, 40, 0], [60, 40, 10], [2, 4]), line([0, 40, 0], [0, 40, 10], [3, 4]),
+    line([0, 0, 10], [60, 0, 10], [0, 5]), line([60, 0, 10], [60, 40, 10], [0, 2]), line([0, 0, 0], [60, 0, 0], [1, 5]),
+    { kind: 'circle', a: [24, 20, 10], b: [24, 20, 10], mid: [16, 20, 10], length: 8 * Math.PI, closed: true, faces: [0, 6], circle: { c: [20, 20, 10], r: 4, n: [0, 0, 1] } },
+    { kind: 'line', a: [24, 20, 0], b: [24, 20, 10], mid: [24, 20, 5], length: 10, closed: false, faces: [6], seam: true },
+  ];
+  return { id, mesh: { faces, edges } };
+}
+
+test('faces by side: the flat face furthest out that way', async () => {
+  const b = plate();
+  eq(sidesOf(b), { top: 0, bottom: 1, right: 2, left: 3, back: 4, front: 5 });
+  eq(findFace([b], 'top').face, 0);
+  eq(findFace([b], { side: 'front' }).face, 5);
+  eq(findFace([b], { body: 'f2', face: 7 }).face, 7);
+  await throws(() => findFace([b], 'upper'), /Unknown side "upper"/);
+  await throws(() => findFace([b], { face: 99 }), /no face 99/);
+  await throws(() => findFace([], 'top'), /no body yet/);
+  await throws(() => findFace([b, plate('f9')], 'top'), /2 bodies \(f2, f9\): say which/);
+  eq(findBody([b, plate('f9')], 'f9').id, 'f9');
+  const rows = describeFaces(b);
+  eq([rows[0].side, rows[7].side, rows[6].hole, rows[6].radius], ['top', undefined, true, 4]);
+});
+
+test('edges by description; a seam is never chosen', async () => {
+  const b = plate();
+  eq(findEdges([b], { parallel: 'z' }).map(h => h.edge), [0, 1, 2, 3]);
+  eq(findEdges([b], 'all').length, 8);
+  eq(findEdges([b], [4, 7]).map(h => h.edge), [4, 7]);
+  eq(findEdges([b], { on: 'top' }).map(h => h.edge), [4, 5, 7]);
+  eq(findEdges([b], { on: 'top', kind: 'circle' }).map(h => h.edge), [7]);
+  eq(findEdges([b], { parallel: 'x', length: 60 }).map(h => h.edge), [4, 6]);
+  await throws(() => findEdges([b], [8]), /seam of a round face/);
+  await throws(() => findEdges([b], { parallel: 'y', length: 7 }), /No edge of body f2 matches/);
+  await throws(() => findEdges([b], { parallel: 'w' }), /"parallel" is "x", "y" or "z"/);
+  eq(describeEdges(b).map(r => r.edge), [0, 1, 2, 3, 4, 5, 6, 7]);
+  eq(describeEdges(b)[7].radius, 4);
+});
+
+run();
+</script>
