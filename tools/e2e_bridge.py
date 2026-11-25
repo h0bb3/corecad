@@ -23,11 +23,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from browser import Browser, ROOT  # noqa: E402
 
-NODE_HERE = Path(r'E:\projects\new_coding\tools\node\node.exe')
 
 
 def node_path():
-    for c in (os.environ.get('NODE'), shutil.which('node'), str(NODE_HERE)):
+    for c in (os.environ.get('NODE'), shutil.which('node')):
         if c and Path(c).exists():
             return c
     return None

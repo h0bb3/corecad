@@ -63,8 +63,8 @@ are previewed before they are committed, so a refused command leaves the
 document unchanged. `corecad.tools` describes each command with a JSON Schema,
 ready to be exposed by an MCP server, which does not exist yet.
 
-Verification: `test/api-shapes.test.html` (13 tests of the pure shape and
-selection modules; 70 tests in all) and `python tools/e2e_api.py`, which runs
+Verification: `test/api-shapes.test.html` (16 tests of the pure shape,
+selection and bridge helpers; 73 tests in all) and `python tools/e2e_api.py`, which runs
 every command against the real kernel with expected volumes (plate 24,000;
 through hole 23,497.35; four R4 fillets 23,360; width 60 to 80 gives 31,360
 with references kept), refused commands, an open dialog blocking changes,
