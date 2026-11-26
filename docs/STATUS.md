@@ -49,7 +49,12 @@ Verified on this build, 2026-11-26:
   commands is asserted exactly) and `e2e_bridge.py` (MCP over HTTP through a
   local relay into the page).
 - On the public site: `e2e_api.py` against the published page, and
-  `e2e_bridge.py --live` through the public relay.
+  `e2e_bridge.py --live` through the public relay. In the first minutes
+  after this build was published the live bridge check failed twice at the
+  same place (a `get_state` soon after `reload_app`: "The CoreCAD tab
+  disconnected before it answered"), and passed three times after that with
+  nothing changed. Why is not known; it has not been seen with the local
+  relay.
 
 Used for a real thing (the owner, 2026-11-26): a wall-mounted tablet holder
 with dovetails was designed in CoreCAD in three variations and printed, and
