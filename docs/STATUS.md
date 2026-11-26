@@ -39,7 +39,7 @@ What it does:
 - **In a headset, and on another device**: the Headset button shows the
   model in the room at its real size (WebXR); a headset or a phone that scans
   the QR code of the Connect dialog watches the tab's model live and points
-  at it. Neither has been tried in a headset yet: see below.
+  at it. The owner has tried it in the headset: see below.
 - A tab notices a newer published build and reloads into it (the **Update**
   button, `reload_app`).
 
@@ -54,7 +54,11 @@ Verified on this build, 2026-11-26:
   local relay into the page) and `e2e_view.py` (a tab and a page that watches
   it, through a local relay). `npm test` in `bridge/`: 12 tests of the relay.
 - On the public site: `e2e_api.py` against the published page, and
-  `e2e_bridge.py --live` through the public relay. In the first minutes
+  `e2e_bridge.py --live` through the public relay. The relay there is 0.2.0
+  since 2026-11-26: a tab on the public page and a page that watches it,
+  through it (the QR code is drawn, the same triangles arrive, a click there
+  is the selection here, a cut made there is the cut here, the tab going
+  away is said). In the first minutes
   after this build was published the live bridge check failed twice at the
   same place (a `get_state` soon after `reload_app`: "The CoreCAD tab
   disconnected before it answered"), and passed three times after that with
@@ -74,14 +78,14 @@ Not verified:
   the holder above and what is in the log (turning parts, which led to the
   rings; a 3MF opened in Bambu Studio). There is no report from use yet of
   Section, X-ray or the signs of an agent at work: they rest on the scripts.
-- **A headset.** No test here has a headset: a headless Chrome has no
-  WebXR. `src/view/xr.js` runs in the tests against stand-ins for the
-  session, the poses and the buttons, with the real three.js; what a headset
-  really does with it (whether the model appears, where, how the hands feel,
-  whether the cut surfaces are filled, how fast it is) nobody has seen.
-- **The watching page on the public site.** It needs relay 0.2.0 at
-  `vibedit.app/CoreCAD`. Until that is deployed the Connect dialog says that
-  the relay is an older one, and shows no QR code.
+- **A headset, in detail.** No test here has a headset: a headless Chrome
+  has no WebXR, and `src/view/xr.js` runs in the tests against stand-ins for
+  the session, the poses and the buttons. The owner tried it in a Quest 3 on
+  2026-11-26 and reported: "the controls work I think". Which of the two
+  ways it was (the Headset button, or the watching page), and what of it was
+  tried (holding, sizing, pointing, the cut, see-through, the numbers), is
+  not written down; nor how fast it is or whether the cut surfaces are
+  filled there.
 - **A printed thread.** Bolt and nut come out of the kernel as valid solids
   with the volumes they must have. Whether a thread made this way screws
   together when printed, and with what clearance, nobody has tried.
