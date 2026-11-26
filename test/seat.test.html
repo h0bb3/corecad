@@ -3,7 +3,7 @@ import {test,eq,ok,near,run} from './harness.js';
 import * as M from '../src/view/camera-math.js';
 import {pack,unpack,packMesh,unpackMesh,packBody,unpackBodies,checkCam,checkInput,createMirror} from '../src/api/mirror.js';
 import {INK,kindOf,between2,beside,line} from '../src/view/annotate.js';
-import {knifeSection,scaleText,twoHands,standing,createXR,xrMode,XR_SCALE} from '../src/view/xr.js';
+import {knifeSection,scaleText,twoHands,standing,createXR,xrMode,XR_SCALE,FINE,REWIND_MS,oneEuro,quatEuro,oneHandStep,twoHandsStep} from '../src/view/xr.js';
 import {halfSpace} from '../src/view/section.js';
 import * as T from 'https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js';
 const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
@@ -90,6 +90,25 @@ test('Two hands move, turn and size the model; it first stands in front of the h
  const big=standing(T,[[0,0,0],[2000,0,0]],V(0,1.6,0),V(1,0,0));near(at(big,[1000,0,0]),[2.1,1.3,0],1e-9,'a big thing stands further off');
  near(at(standing(T,null,V(0,0.6,0),V(0,-1,0)),[0,0,5])[1],0.5,1e-9,'not below half a metre, and a head that looks straight down has a forward all the same');
 });
+test('A steady hand: the smoothing, and what a hand does to what it holds, in full and fine',()=>{
+ // at rest it is smooth; in a quick move it does not hang back
+ const f=oneEuro();let out=[];for(let i=0;i<200;i++) out.push(f([0.5+0.001*Math.sin(i*2*Math.PI*8*0.0111),1,0],i*0.0111)[0]);
+ const tail=out.slice(60);ok(Math.max(...tail)-Math.min(...tail)<0.0006,'a tremble of 2 mm comes out as '+((Math.max(...tail)-Math.min(...tail))*1000).toFixed(2)+' mm');
+ const g=oneEuro();let lag=0;for(let i=0;i<90;i++){const x=i*0.0111*0.5;lag=x-g([x,0,0],i*0.0111)[0];}ok(lag>=0&&lag<0.015,'at half a metre a second it is '+(lag*1000).toFixed(1)+' mm behind');
+ const h=oneEuro();h([0,0,0],0);let v;for(let i=1;i<200;i++) v=h([0.3,-0.2,0.1],i*0.0111);near(v,[0.3,-0.2,0.1],1e-6,'and it arrives');
+ // a turning: the same, and q and -q are one turning
+ const q=quatEuro(),a=new T.Quaternion().setFromAxisAngle(new T.Vector3(0,1,0),0.5).toArray();q([0,0,0,1],0);let w;for(let i=1;i<300;i++) w=q(i%2?a:a.map(x=>-x),i*0.0111);
+ near(Math.abs(w[0]*a[0]+w[1]*a[1]+w[2]*a[2]+w[3]*a[3]),1,1e-9,'it arrives at the turning, whichever sign it is given with');near(Math.hypot(...w),1,1e-12);
+ // one hand: what it holds goes and turns with it, about the hand; fine: a fifth
+ const P=(x,y,z,angle=0)=>({p:new T.Vector3(x,y,z),q:new T.Quaternion().setFromAxisAngle(new T.Vector3(0,1,0),angle)}),at=(m,p)=>new T.Vector3(...p).applyMatrix4(m).toArray();
+ near(at(oneHandStep(T,P(0,1,0),P(0.1,1.2,0)),[5,5,5]),[5.1,5.2,5],1e-12);near(at(oneHandStep(T,P(0,1,0),P(0.1,1.2,0),FINE),[5,5,5]),[5.02,5.04,5],1e-12);
+ near(at(oneHandStep(T,P(0,1,0),P(0,1,0,Math.PI/2)),[1,1,0]),[0,1,-1],1e-12,'turned about the hand');
+ near(at(oneHandStep(T,P(0,1,0),P(0,1,0,Math.PI/2),FINE),[1,1,0]),[Math.cos(Math.PI/10),1,-Math.sin(Math.PI/10)],1e-12,'a fifth of the turn');
+ // two hands: steps that follow each other are the whole of it; fine: a fifth of the sizing, in size
+ const V=(x,y,z)=>new T.Vector3(x,y,z),whole=twoHands(T,new T.Matrix4(),V(-1,0,0),V(1,0,0),V(-2,1,0),V(2,1,0)),step=twoHandsStep(T,V(-1.5,0.5,0),V(1.5,0.5,0),V(-2,1,0),V(2,1,0)).multiply(twoHandsStep(T,V(-1,0,0),V(1,0,0),V(-1.5,0.5,0),V(1.5,0.5,0)));
+ near(step.elements,whole.elements,1e-12);near(V().setFromMatrixColumn(twoHandsStep(T,V(-1,0,0),V(1,0,0),V(-2,0,0),V(2,0,0),FINE),0).length(),Math.pow(2,FINE),1e-12);
+ eq(FINE,0.2);ok(REWIND_MS>=80&&REWIND_MS<=200);
+});
 test('The headset, with stand-ins for the hands: holding, sizing, pointing, choosing, cutting, and back',async()=>{
  // the real three.js and the real module; the browser's part of it (a session, poses, buttons) is played
  const rays=[new T.Group(),new T.Group()];rays.forEach(r=>(r.matrixAutoUpdate=false));
@@ -117,23 +136,42 @@ test('The headset, with stand-ins for the hands: holding, sizing, pointing, choo
  // the trigger chooses; with the other trigger held it is one more
  said.length=0;rays[1].dispatchEvent({type:'selectstart'});eq(said[0][0],'click');eq(said[0][2],{shiftKey:false});rays[0].dispatchEvent({type:'selectstart'});eq(said[1][2],{shiftKey:true});
  rays.forEach(r=>r.dispatchEvent({type:'selectend'}));
- // one grip holds it: it goes with the hand
- const before=where([50,30,20]);rays[1].dispatchEvent({type:'squeezestart'});put(1,0.35,1.3,0.1);frame(1700);
- near(where([50,30,20]),[before[0]+0.1,before[1]+0.1,before[2]+0.1],1e-9,'carried by the hand');ok(!rays[1].children[0].visible,'a hand that holds does not point');
- // both grips, and the hands twice as far apart: twice the size; let go near its real size and it is that again
- rays[0].dispatchEvent({type:'squeezestart'});put(0,-0.45,1.2,0);put(1,0.75,1.3,0.1);frame(1800);
- const k=new T.Vector3().setFromMatrixColumn(world.matrix,0).length()/XR_SCALE;ok(k>1.5&&k<3,'bigger: '+k);ok(/ : 1$/.test(xr.scale));
- put(0,-0.2,1.2,0);put(1,0.37,1.3,0.1);frame(1900);const size=()=>new T.Vector3().setFromMatrixColumn(world.matrix,0).length()/XR_SCALE;ok(size()>1.02&&size()<1.04,'3 % bigger while it is held: '+size());rays.forEach(r=>r.dispatchEvent({type:'squeezeend'}));frame(2000);near(size(),1,1e-9,'within a few hundredths of its real size it is taken to it');eq(xr.scale,'1 : 1');
+ // From here on a clock that goes forward: tick() is the next frame, 20 ms on; rest() lets a second pass.
+ let clock=1600;const tick=(ms=20)=>frame(clock+=ms),rest=(n=150)=>{for(let i=0;i<n;i++)tick();},mid=()=>where([50,30,20]),size=()=>new T.Vector3().setFromMatrixColumn(world.matrix,0).length()/XR_SCALE;
+ // one grip holds it: it goes with the hand, smoothly, and has arrived when the hand has rested a moment
+ let before=mid();rays[1].dispatchEvent({type:'squeezestart'});tick();put(1,0.35,1.3,0.1);tick();
+ ok(mid()[0]>before[0]&&mid()[0]<before[0]+0.1,'on its way after one frame');rest();
+ near(mid(),[before[0]+0.1,before[1]+0.1,before[2]+0.1],1e-6,'carried by the hand');ok(!rays[1].children[0].visible,'a hand that holds does not point');
+ // a hand trembles: what it holds is steadier than the hand
+ let low=Infinity,high=-Infinity;for(let i=0;i<100;i++){put(1,0.35+0.001*Math.sin(i*2*Math.PI*8*0.02),1.3,0.1);tick();if(i>20){low=Math.min(low,mid()[0]);high=Math.max(high,mid()[0]);}}
+ ok(high-low<0.0006,'a tremble of 2 mm, eight times a second, moves it '+((high-low)*1000).toFixed(2)+' mm');put(1,0.35,1.3,0.1);rest();
+ // with the trigger of the hand that holds: fine. It is not a choice, and the model goes a fifth as far
+ said.length=0;before=mid();rays[1].dispatchEvent({type:'selectstart'});ok(!said.some(x=>x[0]==='click'),'the trigger of a holding hand chooses nothing');
+ put(1,0.45,1.3,0.1);rest();near(mid(),[before[0]+0.02,before[1],before[2]],1e-6,'10 cm of the hand: 2 cm of the model');
+ rays[1].dispatchEvent({type:'selectend'});put(1,0.55,1.3,0.1);rest();near(mid(),[before[0]+0.12,before[1],before[2]],1e-6,'and as far as the hand again without it');
+ // letting go jerks the hand: the model stays where it was held still, not where the jerk took it
+ before=mid();put(1,0.556,1.296,0.1);tick();tick();rays[1].dispatchEvent({type:'squeezeend'});tick();
+ near(mid(),before,1e-6,'a jerk of 7 mm in the last 40 ms before letting go is not in it');eq(xr.scale,'1 : 1');
+ // a quick squeeze that lasts no time at all leaves it where it was
+ rays[1].dispatchEvent({type:'squeezestart'});put(1,0.6,1.3,0.1);tick();rays[1].dispatchEvent({type:'squeezeend'});tick();near(mid(),before,1e-6);put(1,0.55,1.3,0.1);
+ // both grips, and the hands twice as far apart: twice the size, about the middle between them
+ put(0,-0.05,1.3,0.1);tick();rays.forEach(r=>r.dispatchEvent({type:'squeezestart'}));tick();put(0,-0.35,1.3,0.1);put(1,0.85,1.3,0.1);rest();
+ near(size(),2,1e-5,'twice the size');ok(/^2 : 1$/.test(xr.scale),xr.scale);
+ // fine with two hands, too: a trigger of either
+ rays[0].dispatchEvent({type:'selectstart'});put(0,-0.95,1.3,0.1);put(1,1.45,1.3,0.1);rest();near(size(),2*Math.pow(2,0.2),1e-5,'the hands twice as far apart again: a fifth of that');rays[0].dispatchEvent({type:'selectend'});
+ // brought back to within a few hundredths of its real size and let go: it is taken to it
+ const wide=2.4,want=1.03/size();put(0,0.25-wide*want/2,1.3,0.1);put(1,0.25+wide*want/2,1.3,0.1);rest();ok(size()>1.02&&size()<1.04,'3 % bigger while it is held: '+size());
+ rays.forEach(r=>r.dispatchEvent({type:'squeezeend'}));tick();near(size(),1,1e-9,'within a few hundredths of its real size it is taken to it');eq(xr.scale,'1 : 1');
  // the stick: bigger about the hand
- pads[1].axes[3]=-1;frame(2100);frame(2200);ok(new T.Vector3().setFromMatrixColumn(world.matrix,0).length()>XR_SCALE*1.05);pads[1].axes[3]=0;
+ pads[1].axes[3]=-1;tick(100);tick(100);ok(size()>1.05);pads[1].axes[3]=0;tick(200);
  // B: see-through. A held: the cut follows the hand; tapped: whole again. The stick pressed: it stands in front again
- said.length=0;pads[1].buttons[5].pressed=true;frame(2300);pads[1].buttons[5].pressed=false;frame(2400);eq(said.filter(s=>s[0]==='button'),[['button','xray']]);
- pads[1].buttons[4].pressed=true;frame(2500);ok(!said.some(s=>s[0]==='section'),'not at once: it may be a tap');frame(2900);
- const cutNow=said.find(s=>s[0]==='section')[1];ok(['XY','XZ','YZ'].includes(cutNow.plane)&&Number.isInteger(cutNow.at)&&typeof cutNow.flip==='boolean',JSON.stringify(cutNow));
- pads[1].buttons[4].pressed=false;frame(3000);said.length=0;pads[1].buttons[4].pressed=true;frame(3100);pads[1].buttons[4].pressed=false;frame(3200);eq(said.filter(s=>s[0]==='section'),[['section',null]]);
- pads[1].buttons[3].pressed=true;frame(3300);pads[1].buttons[3].pressed=false;frame(3400);near(where([50,30,20]),[0,1.3,-0.45],1e-9,'in front again');eq(xr.scale,'1 : 1');
- // a hand that is put down is not pointed with; the session ends: the model is where it is on the screen
- rays.forEach(r=>r.dispatchEvent({type:'disconnected'}));said.length=0;frame(4000);frame(4500);ok(said.some(s=>s[0]==='point'&&s[1]===null),'nothing is pointed at any more');
+ said.length=0;pads[1].buttons[5].pressed=true;tick(100);pads[1].buttons[5].pressed=false;tick(100);eq(said.filter(x=>x[0]==='button'),[['button','xray']]);
+ pads[1].buttons[4].pressed=true;tick(100);ok(!said.some(x=>x[0]==='section'),'not at once: it may be a tap');tick(400);
+ const cutNow=said.find(x=>x[0]==='section')[1];ok(['XY','XZ','YZ'].includes(cutNow.plane)&&Number.isInteger(cutNow.at)&&typeof cutNow.flip==='boolean',JSON.stringify(cutNow));
+ pads[1].buttons[4].pressed=false;tick(100);said.length=0;pads[1].buttons[4].pressed=true;tick(100);pads[1].buttons[4].pressed=false;tick(100);eq(said.filter(x=>x[0]==='section'),[['section',null]]);
+ pads[1].buttons[3].pressed=true;tick(100);pads[1].buttons[3].pressed=false;tick(100);near(mid(),[0,1.3,-0.45],1e-9,'in front again');eq(xr.scale,'1 : 1');
+ // hands that are put down are not pointed with; the session ends: the model is where it is on the screen
+ rays.forEach(r=>r.dispatchEvent({type:'disconnected'}));said.length=0;tick(600);tick(500);ok(said.some(x=>x[0]==='point'&&x[1]===null),'nothing is pointed at any more');
  session.end();ok(!xr.active&&!renderer.xr.enabled&&loop===null);near(world.matrix.elements,new T.Matrix4().elements,1e-12);eq(said.at(-1),['ended']);
  delete navigator.xr;
 });

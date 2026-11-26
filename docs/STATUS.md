@@ -7,7 +7,7 @@ in the order the work was done.
 ## Where it stands
 
 CoreCAD is live at [h0bb3.github.io/corecad](https://h0bb3.github.io/corecad/):
-`main` is what is published. The page is build `93e4232296`
+`main` is what is published. The page is build `cc8ab914a9`
 (`src/version.js` names the build).
 
 What it does:
@@ -45,7 +45,7 @@ What it does:
 
 Verified on this build, 2026-11-26:
 
-- `python tools/run_tests.py`: 145 tests in 18 pages; the kernel pages run
+- `python tools/run_tests.py`: 146 tests in 18 pages; the kernel pages run
   the real OpenCascade worker.
 - The end-to-end scripts in headless Chrome, all passing: `tools/e2e.py`,
   `e2e_more.py`, `e2e_parts.py` and `e2e_export.py` (real mouse and key
@@ -937,4 +937,35 @@ Limits:
   camera: a size that the tab sees end-on is one number, not a line.
 - A watching page does not zoom by pinching: wheel, or the headset.
 - A body of more than about 6 MB of triangles is not sent to a viewer.
+
+## A steady hand in the headset (2026-11-26)
+
+Why: the owner, after trying it: placing the model exactly is hard, the hand
+trembles and it always ends up a little off; perhaps a button that makes the
+movement smaller.
+
+Three things, all in `src/view/xr.js`, and all three are what is usually
+done about it:
+
+- **What is held is carried by a smoothed hand** (the "1 euro filter" of
+  Casiez, Roussel and Vogel, 2012: `oneEuro` for where the hand is,
+  `quatEuro` for how it is turned). The slower the hand, the more it is
+  smoothed: a tremble of 2 mm at 8 times a second moves the model 0.4 mm,
+  and at half a metre a second the model is less than 15 mm behind.
+- **Fine**: with the trigger of a hand that holds, the model moves and turns
+  a fifth as far as the hand (`FINE`), with two hands the sizing too. That
+  trigger chooses nothing then. Holding is now worked out step by step
+  (`oneHandStep`, `twoHandsStep`), so the model does not jump when fine
+  begins or ends.
+- **Letting go does not move it**: the finger that lets go of the grip moves
+  the hand. The model is put back where it was 110 ms before (`REWIND_MS`):
+  where it was being held still.
+
+Verification: `test/seat.test.html` (9 tests; the new one for the filters and
+the steps, and the session with stand-ins now has a hand that trembles, a
+fine hold, a jerk before letting go and a squeeze that lasts no time).
+
+Not verified: in a headset. The numbers (how smooth, how fine, how long
+before) are first guesses; whether 110 ms is the jerk of a real finger and a
+fifth is fine enough is for a hand to say.
 

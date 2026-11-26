@@ -51,7 +51,10 @@ and its own place.
   tooth, a rise for each turn and 360 degrees for each turn.
 - **In a headset** (the **Headset** button, where the browser has one: a
   Quest's browser, say) the model stands in the room at its real size. The
-  grips hold it, turn it and size it; a trigger points and chooses, and the
+  grips hold it, turn it and size it, and with the trigger of the same hand
+  it moves a fifth as far, for placing it exactly; what is held is steadied
+  against the trembling of the hand, and stays where it was held when the
+  grip is let go; a trigger points and chooses, and the
   other trigger held with it gives the distance between two things; A or X
   held cuts it open along the hand; B or Y makes it see-through. What is
   pointed at there is what an agent takes "this" to mean.

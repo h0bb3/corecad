@@ -6,6 +6,7 @@
 //
 //   trigger          point and choose (the other trigger held: one more, as Shift does)
 //   grip             take hold of the model; both grips: size it and turn it between the hands
+//   grip and trigger of the same hand: fine: the model moves a fifth as far as the hand
 //   stick up, down   bigger, smaller, about the hand
 //   stick pressed    back to its real size, in front of you
 //   A or X held      cut the model open along the hand; tapped: whole again
@@ -14,6 +15,83 @@ import * as M from './camera-math.js';
 
 /** A millimetre of the model is a millimetre of the room. */
 export const XR_SCALE = 0.001;
+/** Fine: with the trigger of a hand that holds, the model moves and turns this much of what the hand does. */
+export const FINE = 0.2;
+/** Letting go of a button moves the hand. What was held is put back where it was this long before (ms). */
+export const REWIND_MS = 110;
+
+// A hand is never still: it trembles a millimetre or two, eight times a second or so. What it holds is
+// carried by a smoothed hand (the "1 euro filter" of Casiez, Roussel and Vogel, 2012): the slower the
+// hand, the more it is smoothed, so that a resting hand is steady and a moving one is followed at once.
+const alpha = (cutoff, dt) => 1 / (1 + 1 / (2 * Math.PI * cutoff) / dt);
+/** A filter for a point: f(point, seconds) gives the smoothed point. minCutoff in Hz at rest; beta: Hz more for each m/s. */
+export function oneEuro(minCutoff = 1.2, beta = 15) {
+  let prev = null,
+    rate = null,
+    last = 0;
+  return (x, t) => {
+    if (!prev) {
+      prev = x.slice();
+      rate = x.map(() => 0);
+      last = t;
+      return prev.slice();
+    }
+    const dt = Math.max(1e-3, t - last);
+    last = t;
+    const a = alpha(1, dt);
+    rate = rate.map((r, i) => r + a * ((x[i] - prev[i]) / dt - r));
+    const b = alpha(minCutoff + beta * Math.hypot(...rate), dt);
+    prev = prev.map((v, i) => v + b * (x[i] - v));
+    return prev.slice();
+  };
+}
+/** The same for a turning, as a quaternion [x, y, z, w]; beta: Hz more for each radian a second. */
+export function quatEuro(minCutoff = 1.2, beta = 2.5) {
+  let prev = null,
+    rate = 0,
+    last = 0;
+  return (q, t) => {
+    if (!prev) {
+      prev = q.slice();
+      last = t;
+      return prev.slice();
+    }
+    const dt = Math.max(1e-3, t - last);
+    last = t;
+    const dot = prev[0] * q[0] + prev[1] * q[1] + prev[2] * q[2] + prev[3] * q[3],
+      sign = dot < 0 ? -1 : 1; // q and -q are the same turning
+    rate += alpha(1, dt) * ((2 * Math.acos(Math.min(1, Math.abs(dot)))) / dt - rate);
+    const b = alpha(minCutoff + beta * rate, dt),
+      next = prev.map((v, i) => v + b * (sign * q[i] - v)),
+      n = Math.hypot(...next) || 1;
+    prev = next.map((v) => v / n);
+    return prev.slice();
+  };
+}
+/** What a hand that went from one pose ({ p: Vector3, q: Quaternion }) to another does to what it holds, as
+ *  a matrix of the room: it is moved and turned with the hand, about the hand. k < 1: that part of it only. */
+export function oneHandStep(T, from, to, k = 1) {
+  const turn = new T.Quaternion().slerp(to.q.clone().multiply(from.q.clone().invert()), k),
+    at = from.p.clone().lerp(to.p, k);
+  return new T.Matrix4()
+    .makeTranslation(at.x, at.y, at.z)
+    .multiply(new T.Matrix4().makeRotationFromQuaternion(turn))
+    .multiply(new T.Matrix4().makeTranslation(-from.p.x, -from.p.y, -from.p.z));
+}
+/** The same for two hands that went from a0, b0 to a1, b1: moved, turned and sized between them. */
+export function twoHandsStep(T, a0, b0, a1, b1, k = 1) {
+  const v0 = b0.clone().sub(a0),
+    v1 = b1.clone().sub(a1),
+    s = Math.pow(v1.length() / Math.max(1e-6, v0.length()), k),
+    q = new T.Quaternion().slerp(new T.Quaternion().setFromUnitVectors(v0.clone().normalize(), v1.clone().normalize()), k),
+    m0 = a0.clone().add(b0).multiplyScalar(0.5),
+    m1 = m0.clone().lerp(a1.clone().add(b1).multiplyScalar(0.5), k);
+  return new T.Matrix4()
+    .makeTranslation(m1.x, m1.y, m1.z)
+    .multiply(new T.Matrix4().makeRotationFromQuaternion(q))
+    .multiply(new T.Matrix4().makeScale(s, s, s))
+    .multiply(new T.Matrix4().makeTranslation(-m0.x, -m0.y, -m0.z));
+}
 
 /** How this browser can show it: 'immersive-ar' (the room is seen round the model), 'immersive-vr', or null. */
 export async function xrMode(xr = globalThis.navigator?.xr) {
@@ -103,7 +181,7 @@ export function createXR({ T, renderer, scene, world, hooks }) {
     lastCut = 0,
     lastTime = 0,
     pointedAt = null, // where the ray of the pointing hand was, a metre along it, when it was last told
-    hold = null; // { hands: [i] | [i, j], start: Matrix4, a0, b0 } while the model is held
+    hold = null; // while the model is held: { hands: [i] | [i, j], filters, prev: the smoothed hands a frame ago, history: [{ t, m }] }
   const camera = new T.PerspectiveCamera(60, 1, 0.02, 60),
     hands = [],
     tmp = new T.Vector3();
@@ -143,18 +221,39 @@ export function createXR({ T, renderer, scene, world, hooks }) {
     setWorld(m.multiply(world.matrix));
     if (hand) pulse(hand, 0.7, 40);
   }
+  /** A grip was pressed or let go: who holds the model now. */
   function grab() {
     const held = hands.filter((h) => h.grip);
+    if (hold) {
+      // The finger that lets go (or takes hold) moves the hand with it. The model is put back where it
+      // was a moment before: where it was being held still.
+      const back = [...hold.history].reverse().find((s) => s.t <= lastTime - REWIND_MS) ?? hold.history[0];
+      setWorld(back.m);
+    }
     if (!held.length) {
       if (hold) snap(new T.Vector3().setFromMatrixPosition(hands[hold.hands[0]].ray.matrixWorld), hands[hold.hands[0]]);
       hold = null;
       return;
     }
-    const at = held.map((h) => new T.Vector3().setFromMatrixPosition(h.ray.matrixWorld));
-    hold =
-      held.length === 2
-        ? { hands: held.map((h) => h.i), start: world.matrix.clone(), a0: at[0], b0: at[1] }
-        : { hands: [held[0].i], start: new T.Matrix4().copy(held[0].ray.matrixWorld).invert().multiply(world.matrix) };
+    hold = { hands: held.map((h) => h.i), filters: held.map(() => ({ p: oneEuro(), q: quatEuro() })), prev: null, history: [{ t: lastTime, m: world.matrix.clone() }] };
+  }
+  /** Once a frame while the model is held: it goes with the smoothed hands, or a fifth as far when it is held fine. */
+  function carry(time) {
+    const p = new T.Vector3(),
+      q = new T.Quaternion(),
+      s = new T.Vector3();
+    const now = hold.hands.map((i, n) => {
+      hands[i].ray.matrixWorld.decompose(p, q, s);
+      return { p: new T.Vector3(...hold.filters[n].p(p.toArray(), time / 1000)), q: new T.Quaternion(...hold.filters[n].q(q.toArray(), time / 1000)) };
+    });
+    const prev = hold.prev;
+    hold.prev = now;
+    if (!prev) return;
+    const fine = hold.hands.some((i) => hands[i].trigger),
+      k = fine ? FINE : 1;
+    setWorld((now.length === 2 ? twoHandsStep(T, prev[0].p, prev[1].p, now[0].p, now[1].p, k) : oneHandStep(T, prev[0], now[0], k)).multiply(world.matrix));
+    hold.history.push({ t: time, m: world.matrix.clone() });
+    while (hold.history.length > 2 && hold.history[1].t < time - 400) hold.history.shift();
   }
 
   function makeHands() {
@@ -181,8 +280,9 @@ export function createXR({ T, renderer, scene, world, hooks }) {
       });
       ray.addEventListener('selectstart', () => {
         hand.trigger = true;
+        if (hand.grip) return pulse(hand, 0.25, 15); // the trigger of a hand that holds: fine, not a choice
         pointer = i;
-        hooks.click?.(camOf(hand), { shiftKey: hands.some((h) => h !== hand && h.trigger) });
+        hooks.click?.(camOf(hand), { shiftKey: hands.some((h) => h !== hand && h.trigger && !h.grip) });
         pulse(hand);
       });
       ray.addEventListener('selectend', () => (hand.trigger = false));
@@ -249,10 +349,7 @@ export function createXR({ T, renderer, scene, world, hooks }) {
     }
     for (const hand of hands) hand.ray.updateMatrixWorld(true);
     for (const hand of hands) controls(hand, time, dt, head);
-    if (hold?.hands.length === 2) {
-      const [a, b] = hold.hands.map((i) => new T.Vector3().setFromMatrixPosition(hands[i].ray.matrixWorld));
-      setWorld(twoHands(T, hold.start, hold.a0, hold.b0, a, b));
-    } else if (hold) setWorld(new T.Matrix4().copy(hands[hold.hands[0]].ray.matrixWorld).multiply(hold.start));
+    if (hold) carry(time);
     world.updateMatrixWorld(true);
     const size = factor();
     hooks.frame?.(head, size);
