@@ -85,8 +85,16 @@ Not verified:
   button on the page itself, with a box made there: so the kernel runs in
   the Quest's browser, for a box at least. What of it was tried (holding,
   sizing, pointing, the cut, see-through, the numbers) is not written down;
-  nor how fast it is or whether the cut surfaces are filled there. The
-  watching page has not been tried in a headset.
+  nor how fast it is or whether the cut surfaces are filled there.
+  The watching page was tried the same evening with a real model from the
+  owner's tab (the address was sent to the headset over USB: this Quest has
+  no QR scanner). Three screenshots from the headset show it: the room is
+  seen round the model, the model stands upright on a table in front of the
+  person, with its edges and its painted faces, and an edge under the hand's
+  ray is lit with the ray's dot on it. Not seen in them: a number on the
+  model, a cut, see-through, or how big the model stood against its real
+  size. The ray is thin and hard to see, and nothing in the headset says how
+  big the model stands ("1 : 4"): `xr.scale` knows it and nothing shows it.
 - **A printed thread.** Bolt and nut come out of the kernel as valid solids
   with the volumes they must have. Whether a thread made this way screws
   together when printed, and with what clearance, nobody has tried.
