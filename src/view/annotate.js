@@ -9,6 +9,19 @@ export const INK = {
   chosen: { ink: '#ffffff', paper: '#0e7b68' }, // the number being changed
 };
 const FONT = '12px "SFMono-Regular", Consolas, monospace';
+/** The name of a style: what goes to a page that draws it itself. */
+export const kindOf = (style) => Object.keys(INK).find((k) => INK[k] === style) ?? 'reference';
+/** A point of the screen between two others, and one beside another: each remembers where it is in space, as they do. */
+export function between2(a, b) {
+  const s = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  if (a.w && b.w) s.w = [0, 1, 2].map((i) => (a.w[i] + b.w[i]) / 2);
+  return s;
+}
+export function beside(s, dx, dy) {
+  const out = [s[0] + dx, s[1] + dy];
+  if (s.w) out.w = s.w;
+  return out;
+}
 
 /** How wide the plate of a value is. */
 export function pillWidth(ctx, text) {
@@ -41,6 +54,11 @@ export function pill(ctx, text, x, y, style = INK.driving) {
 /** A thin line through points, with a short tick across each of the ends named in `ticks`. */
 export function line(ctx, points, style = INK.driving, { width = 0.9, ticks = [], dash = [] } = {}) {
   if (points.length < 2) return;
+  // ctx.rec: a list that takes what is drawn as it is in space (the points remember where they are: viewport.js, project)
+  if (ctx.rec && points.every((p) => p.w)) {
+    const at = points.map((p) => p.w);
+    if (at.some((p, i) => i && (p[0] !== at[0][0] || p[1] !== at[0][1] || p[2] !== at[0][2]))) ctx.rec.push({ line: at, kind: kindOf(style), width, dash });
+  }
   ctx.strokeStyle = style.ink;
   ctx.lineWidth = width;
   ctx.setLineDash(dash);

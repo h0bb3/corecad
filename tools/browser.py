@@ -366,6 +366,7 @@ class Browser:
                     if time.time() > end:
                         raise TimeoutError('Chrome did not start')
                     time.sleep(0.1)
+            self.port = port
             tabs = json.load(urllib.request.urlopen(f'http://127.0.0.1:{port}/json'))
             tab = next(t for t in tabs if t['type'] == 'page')
             self.page = Page(Socket(tab['webSocketDebuggerUrl']), f'http://127.0.0.1:{self.server.server_address[1]}')
@@ -377,6 +378,15 @@ class Browser:
             self.__exit__(None, None, None)
             raise
         return self
+
+    def new_page(self):
+        """A second tab in the same browser, with the same storage: another Page."""
+        request = urllib.request.Request(f'http://127.0.0.1:{self.port}/json/new?about:blank', method='PUT')
+        tab = json.load(urllib.request.urlopen(request))
+        page = Page(Socket(tab['webSocketDebuggerUrl']), f'http://127.0.0.1:{self.server.server_address[1]}')
+        w, h = self.size
+        page.call('Emulation.setDeviceMetricsOverride', width=w, height=h, deviceScaleFactor=self.scale, mobile=False)
+        return page
 
     def __exit__(self, *exc):
         if self.chrome:

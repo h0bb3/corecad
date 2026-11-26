@@ -7,7 +7,7 @@ in the order the work was done.
 ## Where it stands
 
 CoreCAD is live at [h0bb3.github.io/corecad](https://h0bb3.github.io/corecad/):
-`main` is what is published. The page is build `90df49af15`
+`main` is what is published. The page is build `93e4232296`
 (`src/version.js` names the build).
 
 What it does:
@@ -36,18 +36,23 @@ What it does:
   the mouse on, and `get_selection` says how they are looking at the model.
   While an agent is at work the page says so: a frame round the view, a line
   with what it does, the Connect button.
+- **In a headset, and on another device**: the Headset button shows the
+  model in the room at its real size (WebXR); a headset or a phone that scans
+  the QR code of the Connect dialog watches the tab's model live and points
+  at it. Neither has been tried in a headset yet: see below.
 - A tab notices a newer published build and reloads into it (the **Update**
   button, `reload_app`).
 
 Verified on this build, 2026-11-26:
 
-- `python tools/run_tests.py`: 137 tests in 17 pages; the kernel pages run
+- `python tools/run_tests.py`: 145 tests in 18 pages; the kernel pages run
   the real OpenCascade worker.
 - The end-to-end scripts in headless Chrome, all passing: `tools/e2e.py`,
   `e2e_more.py`, `e2e_parts.py` and `e2e_export.py` (real mouse and key
   events), `e2e_api.py` (every command with expected volumes; the list of
-  commands is asserted exactly) and `e2e_bridge.py` (MCP over HTTP through a
-  local relay into the page).
+  commands is asserted exactly), `e2e_bridge.py` (MCP over HTTP through a
+  local relay into the page) and `e2e_view.py` (a tab and a page that watches
+  it, through a local relay). `npm test` in `bridge/`: 12 tests of the relay.
 - On the public site: `e2e_api.py` against the published page, and
   `e2e_bridge.py --live` through the public relay. In the first minutes
   after this build was published the live bridge check failed twice at the
@@ -69,6 +74,14 @@ Not verified:
   the holder above and what is in the log (turning parts, which led to the
   rings; a 3MF opened in Bambu Studio). There is no report from use yet of
   Section, X-ray or the signs of an agent at work: they rest on the scripts.
+- **A headset.** No test here has a headset: a headless Chrome has no
+  WebXR. `src/view/xr.js` runs in the tests against stand-ins for the
+  session, the poses and the buttons, with the real three.js; what a headset
+  really does with it (whether the model appears, where, how the hands feel,
+  whether the cut surfaces are filled, how fast it is) nobody has seen.
+- **The watching page on the public site.** It needs relay 0.2.0 at
+  `vibedit.app/CoreCAD`. Until that is deployed the Connect dialog says that
+  the relay is an older one, and shows no QR code.
 - **A printed thread.** Bolt and nut come out of the kernel as valid solids
   with the volumes they must have. Whether a thread made this way screws
   together when printed, and with what clearance, nobody has tried.
@@ -848,4 +861,67 @@ Limits:
   that again.
 - Each line of the outline has a face for every half turn, so a long thread
   has hundreds of faces. Picking and measuring work on each as on any face.
+
+## A second seat: the headset, and a page that watches (2026-11-26)
+
+Asked for: CoreCAD on the Quest 3, as the part that shows: looking, marking,
+measuring, exploring; the agent models. And a QR code to connect by.
+
+- **The headset** (`src/view/xr.js`, WebXR through three.js). The model's
+  root is stood in the room: its middle 45 cm ahead and 30 cm below the
+  eyes, upright, its front towards the person, a millimetre a millimetre.
+  With passthrough (`immersive-ar`) the room is seen round it. Grip: hold;
+  both grips: size and turn, and within 4 % of its real size it is taken to
+  it; stick: bigger and smaller, pressed: in front again; trigger: point and
+  choose, the other trigger held: one more (the distance between two); A or
+  X held: the cut follows the hand, along the origin plane the hand's flat
+  is nearest to, with the head's side taken away, tapped: whole again; B or
+  Y: see-through. A light from above stands in the room. The numbers on the
+  model are plates that face the eye, as big to the eye wherever they stand.
+- **One way to pick.** A hand's ray is a camera that looks along it
+  (`rayCamera` in `camera-math.js`), and `view.pick` takes a camera: the
+  page picks what a hand points at with the code that picks under the
+  mouse, so edges, cut surfaces and see-through behave the same.
+- **A seat** (`seat` in `src/app.js`): what somebody may do who is not at
+  the tab's screen: point, choose, cut, see through. The headset's hands and
+  a watching page both go through it, so "this" for an agent is what was
+  pointed at wherever the person is.
+- **A page that watches** (`view.html`, `src/viewer.js`): no model and no
+  kernel. The tab shows it the triangles (once for each body as built),
+  where they stand, colours, the selection, the cut, see-through and the
+  numbers in space (`src/api/mirror.js`); it sends back the camera it looks
+  with and the pixel pointed at. Dragging turns the model there. It has the
+  same Headset button.
+- **The relay** 0.2.0 (`bridge/relay.js`): `watch`, `show`, `input`,
+  `viewer`, `host`. It reads none of what passes. Four viewers a code.
+- **The Connect dialog** shows a QR code of the watching page's address
+  (made in the page by `qrcode-generator` 1.4.4 from the CDN; the address
+  goes nowhere), the address, and how many devices watch.
+
+Verification: `test/seat.test.html` (8 tests: numbers through JSON, what a
+viewer may send, what the tab sends and when, the camera of a ray, numbers
+in space, the cut of a hand, two hands and standing, and a whole session in
+the headset with stand-ins). `bridge/test/relay.test.js` (3 new of 12).
+`tools/e2e_view.py`: a tab and a watching page in two tabs of one browser
+through a local relay: the same triangles, a click there is the selection
+here and "this" in `get_selection`, sizes and a distance come back as
+numbers in space, resting is pointing, a cut and see-through made there are
+the tab's, garbage is ignored, the model changing here is followed there,
+reloads and a tab that goes and comes.
+
+Not verified, and it is most of what matters: **anything in a headset**. To
+try it before the relay is deployed, open the public page in the headset's
+browser, make a box (Box, OK) and press Headset: that needs no relay.
+
+Limits:
+
+- The watching page holds the tab's own code. A code that can only watch
+  would be a weaker key to hand to a second device; there is none.
+- A headset without controllers (hands only) can point and choose by
+  pinching; it cannot hold, size or cut: those are on the grips and buttons.
+- The hand's cut is along the three origin planes, as every cut is.
+- The numbers a watching page shows are those the tab draws for its own
+  camera: a size that the tab sees end-on is one number, not a line.
+- A watching page does not zoom by pinching: wheel, or the headset.
+- A body of more than about 6 MB of triangles is not sent to a viewer.
 

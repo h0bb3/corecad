@@ -18,7 +18,7 @@ TARGET = ROOT / 'src' / 'version.js'
 
 def files():
     """What the page is made of, as paths from the site's root."""
-    found = [ROOT / 'index.html', ROOT / 'style.css']
+    found = [ROOT / 'index.html', ROOT / 'view.html', ROOT / 'style.css']
     found += sorted(p for p in (ROOT / 'assets').rglob('*') if p.is_file())
     found += sorted(p for p in (ROOT / 'src').rglob('*.js') if p != TARGET)
     return [p.relative_to(ROOT).as_posix() for p in found]

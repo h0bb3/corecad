@@ -1,0 +1,141 @@
+<!doctype html><meta charset="utf-8"><title>A second seat: the mirror, the camera of a ray, numbers in space, the headset</title><script type="module">
+import {test,eq,ok,near,run} from './harness.js';
+import * as M from '../src/view/camera-math.js';
+import {pack,unpack,packMesh,unpackMesh,packBody,unpackBodies,checkCam,checkInput,createMirror} from '../src/api/mirror.js';
+import {INK,kindOf,between2,beside,line} from '../src/view/annotate.js';
+import {knifeSection,scaleText,twoHands,standing,createXR,xrMode,XR_SCALE} from '../src/view/xr.js';
+import {halfSpace} from '../src/view/section.js';
+import * as T from 'https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js';
+const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
+const mesh=(n=1)=>({positions:new Float32Array([0,0,0,n,0,0,0,n,0]),normals:new Float32Array([0,0,1,0,0,1,0,0,1]),indices:new Uint32Array([0,1,2]),faceTris:new Uint32Array([0,3]),edgeSegs:new Uint32Array([0,2]),edgeLines:new Float32Array([0,0,0,n,0,0])});
+const body=(id,key,n=1,more={})=>({id,key,part:'o1',bbox:[[0,0,0],[n,n,0]],mesh:mesh(n),...more});
+
+test('Numbers go through JSON and come back the same: every kind of array, and a part of a bigger one',()=>{
+ for(const a of [new Float32Array([1.5,-2.25,3e-7]),new Uint32Array([0,4294967295,7]),new Uint16Array([65535,1]),new Float64Array([Math.PI]),new Int32Array([-5,5]),new Uint8Array(70000).fill(9)]){
+  const back=unpack(JSON.parse(JSON.stringify(pack(a))));eq(back.constructor.name,a.constructor.name);eq([...back.slice(0,50)],[...a.slice(0,50)]);eq(back.length,a.length);}
+ const whole=new Float32Array([9,9,1,2,3,9]),part=whole.subarray(2,5);eq([...unpack(JSON.parse(JSON.stringify(pack(part))))],[1,2,3],'only its own numbers');
+ eq(pack([1,2]),[1,2]);eq(unpack([1,2]),[1,2]);
+ let threw=false;try{unpack({t:'Function',b:'AAAA'});}catch{threw=true;}ok(threw,'only arrays of numbers are made');
+ const m=mesh(4),back=unpackMesh(JSON.parse(JSON.stringify(packMesh(m))));for(const k of Object.keys(m)){eq(back[k].constructor.name,m[k].constructor.name,k);eq([...back[k]],[...m[k]],k);}
+ const b=body('f2','k1',2,{matrix:[1,0,0,0,1,0,0,0,1,5,6,7],color:'#ff8800',faceColors:new Map([[0,'#00ff00']]),chosen:true}),sent=JSON.parse(JSON.stringify(packBody(b)));
+ ok(!('mesh' in sent));const [got]=unpackBodies([sent],new Map([['k1',m]]));eq(got.matrix,b.matrix);eq(got.color,'#ff8800');eq([...got.faceColors],[[0,'#00ff00']]);ok(got.chosen&&got.mesh===m);
+ eq(unpackBodies([sent],new Map()),[],'a body whose triangles have not come is not drawn');
+});
+test('What a viewer sends is checked: pointing, choosing, a cut and see-through, and nothing else',()=>{
+ const cam={view:{target:[0,0,0],quat:[0,0,0,1],dist:100,fov:35,ortho:true,extra:1},vp:{w:800,h:600},p:[10,20],more:2};
+ eq(checkCam(cam),{view:{target:[0,0,0],quat:[0,0,0,1],dist:100,fov:35,ortho:true},vp:{w:800,h:600},p:[10,20]},'only what a camera is');
+ for(const bad of [null,{},{...cam,p:[1]},{...cam,vp:{w:0,h:1}},{...cam,view:{...cam.view,dist:-1}},{...cam,view:{...cam.view,target:[0,0,NaN]}},{...cam,view:{...cam.view,quat:[0,0,1]}},{...cam,view:{...cam.view,fov:180}}]) eq(checkCam(bad),null,JSON.stringify(bad));
+ eq(checkInput({kind:'point',cam}).cam.p,[10,20]);eq(checkInput({kind:'point',cam:null}),{kind:'point',cam:null},'pointing at nothing');
+ eq(checkInput({kind:'click',cam,shift:1}).shift,true);eq(checkInput({kind:'click',cam:{}}),null);
+ eq(checkInput({kind:'section',section:{plane:'XZ',at:5,flip:0,more:1}}),{kind:'section',section:{plane:'XZ',at:5,flip:false}});eq(checkInput({kind:'section',section:null}),{kind:'section',section:null});
+ for(const bad of [{kind:'section',section:{plane:'ZZ',at:1}},{kind:'section',section:{plane:'XY',at:'1'}},{kind:'section'},{kind:'run',command:'new_document'},{kind:'bodies'},null,7,'click']) eq(checkInput(bad),null,JSON.stringify(bad));
+ eq(checkInput({kind:'xray'}),{kind:'xray',on:undefined});eq(checkInput({kind:'xray',on:0}),{kind:'xray',on:false});
+});
+test('The tab shows a viewer everything when it comes, then only what changes, and triangles once',async()=>{
+ const sent=[],m=createMirror((data,to)=>(sent.push({kind:data.kind,to,data}),true));
+ m.set('bodies',[body('f2','k1')]);m.set('name','Plate');await sleep(60);eq(sent,[],'nobody watches: nothing is sent');
+ m.join(7);eq(sent.map(s=>s.kind),['name','mesh','bodies','section','xray','select','labels']);ok(sent.every(s=>s.to===7));
+ eq(sent[1].data.key,'k1');eq(sent[2].data.list[0].id,'f2');ok(!('mesh' in sent[2].data.list[0]));eq(sent[0].data.name,'Plate');
+ sent.length=0;m.set('select',[{type:'face',body:'f2',face:0}]);m.set('select',[{type:'face',body:'f2',face:1}]);eq(sent,[],'in a moment, once');await sleep(60);
+ eq(sent.map(s=>s.kind),['select']);eq(sent[0].data.hits[0].face,1);eq(sent[0].to,undefined,'to all who watch');
+ sent.length=0;m.set('select',[{type:'face',body:'f2',face:1}]);await sleep(60);eq(sent,[],'the same again is not said again');
+ // the body is moved: no triangles again; it is rebuilt: its new triangles, once
+ m.set('bodies',[body('f2','k1',1,{matrix:[1,0,0,0,1,0,0,0,1,1,2,3]})]);await sleep(60);eq(sent.map(s=>s.kind),['bodies']);
+ sent.length=0;m.set('bodies',[body('f2','k2',3),body('f5','k9',1)]);await sleep(60);eq(sent.map(s=>s.kind+(s.data.key??'')),['meshk2','meshk9','bodies']);
+ sent.length=0;m.set('bodies',[body('f2','k1')]);await sleep(60);eq(sent.map(s=>s.kind+(s.data.key??'')),['meshk1','bodies'],'triangles that were let go are sent again when they come back');
+ // a second viewer gets everything, alone; the first is not sent it again
+ sent.length=0;m.join(8);ok(sent.length===7&&sent.every(s=>s.to===8));eq(m.viewers.size,2);
+ m.leave(7);m.leave(8);sent.length=0;m.set('xray',true);await sleep(60);eq(sent,[]);
+ m.join(9);eq(sent.find(s=>s.kind==='xray').data.on,true,'what changed while nobody watched is what the next viewer sees');
+});
+test('A camera that looks along a ray: what is under its middle is the ray',()=>{
+ for(const [o,d] of [[[10,20,30],[1,0,0]],[[0,0,0],[0.3,-0.5,0.2]],[[5,5,500],[0,0,-1]],[[5,5,-500],[0,0,1]],[[1,2,3],[0.001,0.001,1]]]){
+  const cam=M.rayCamera(o,d),r=M.ray(cam.view,cam.vp,...cam.p),u=M.unit(d);
+  near(r.o,o,1e-9,'it starts where the ray starts');near(r.d,u,1e-9,'and goes its way');
+  const ahead=M.add(o,M.mul(u,250)),s=M.project(cam.view,cam.vp,ahead);near(s.slice(0,2),cam.p,1e-6,'a point on the ray is under the middle');near(s[2],250,1e-6);
+  ok(cam.view.quat.every(Number.isFinite));}
+});
+test('What is drawn over the view remembers where it is in space',()=>{
+ const p=(x,y,w)=>Object.assign([x,y],w?{w}:{}),a=p(0,0,[0,0,0]),b=p(10,20,[2,4,6]);
+ eq(between2(a,b).slice(),[5,10]);eq(between2(a,b).w,[1,2,3]);eq(between2(a,p(1,1)).w,undefined);
+ eq(beside(b,3,-20).slice(),[13,0]);eq(beside(b,3,-20).w,[2,4,6]);
+ eq(kindOf(INK.measure),'measure');eq(kindOf({}),'reference');
+ const calls=[],ctx=new Proxy({rec:[]},{get:(t,k)=>k in t?t[k]:(...x)=>calls.push(k),set:(t,k,v)=>((t[k]=v),true)});
+ line(ctx,[a,b],INK.measure,{width:1.6,ticks:[0,1]});eq(ctx.rec,[{line:[[0,0,0],[2,4,6]],kind:'measure',width:1.6,dash:[]}]);
+ line(ctx,[a,p(4,4)],INK.measure);line(ctx,[a,beside(a,0,10)],INK.driving);eq(ctx.rec.length,1,'a line with an end that is only on the screen, or with no length in space, is not put into space');
+ const plain={};line(new Proxy(plain,{get:(t,k)=>k in t?t[k]:k==='rec'?undefined:()=>{},set:(t,k,v)=>((t[k]=v),true)}),[a,b]);ok(!('rec' in plain),'nothing is kept unless it is asked for');
+});
+test('The cut a hand makes: along the plane its flat is nearest to, where it is, and the side of the head goes',()=>{
+ eq(knifeSection([0.1,0.9,0.2],[3,12.4,7],[0,100,0]),{plane:'XZ',at:12,flip:false});
+ eq(knifeSection([0.1,-0.9,0.2],[3,12.6,7],[0,-100,0]),{plane:'XZ',at:13,flip:true},'which way the blade faces does not matter');
+ eq(knifeSection([1,0,0],[-4.2,0,0],[50,0,0]).plane,'YZ');eq(knifeSection([0,0.1,-1],[0,0,8],[0,0,-9]),{plane:'XY',at:8,flip:true});
+ // what is left is what the tab's own rule leaves: the head's side is the one taken away
+ for(const [blade,tip,eye] of [[[0,1,0],[0,5,0],[0,90,0]],[[0,1,0],[0,5,0],[0,-90,0]],[[0,0,1],[0,0,-3],[0,0,40]],[[1,0,0],[7,0,0],[-40,0,0]]]){
+  const h=halfSpace(knifeSection(blade,tip,eye));ok(h.n[0]*eye[0]+h.n[1]*eye[1]+h.n[2]*eye[2]>h.d,'the head is on the side that is not drawn');}
+ eq(scaleText(XR_SCALE),'1 : 1');eq(scaleText(2*XR_SCALE),'2 : 1');eq(scaleText(XR_SCALE/4),'1 : 4');eq(scaleText(2.5*XR_SCALE),'2.5 : 1');eq(scaleText(25*XR_SCALE),'25 : 1');
+});
+test('Two hands move, turn and size the model; it first stands in front of the head, upright, at its real size',()=>{
+ const V=(x,y,z)=>new T.Vector3(x,y,z),start=new T.Matrix4().makeScale(XR_SCALE,XR_SCALE,XR_SCALE),at=(m,p)=>V(...p).applyMatrix4(m).toArray();
+ near(twoHands(T,start,V(0,1,0),V(1,1,0),V(0,1,0),V(1,1,0)).elements,start.elements,1e-12,'hands that do not move leave it');
+ const moved=twoHands(T,start,V(0,1,0),V(1,1,0),V(0.5,1.2,0),V(1.5,1.2,0));near(at(moved,[100,0,0]),[0.6,0.2,0],1e-9,'carried along');
+ const wide=twoHands(T,start,V(-0.1,1,0),V(0.1,1,0),V(-0.2,1,0),V(0.2,1,0));near(at(wide,[100,0,0]),[0.2,-1,0].map((v,i)=>i===1?1+(0-1)*2:v),1e-9,'twice as far apart: twice the size, about the middle of the hands');
+ near(V().setFromMatrixColumn(wide,0).length(),2*XR_SCALE,1e-12);
+ const turned=twoHands(T,start,V(-0.1,1,0),V(0.1,1,0),V(0,1,0.1),V(0,1,-0.1));near(at(turned,[100,1000,0]),[0,1,-0.1],1e-9,'turned with the line between the hands');
+ // standing: a box 100 x 60 x 40 mm with its middle at (50, 30, 20); the head at 1.6 m looks along -z
+ const m=standing(T,[[0,0,0],[100,60,40]],V(0,1.6,0),V(0,-0.4,-1));
+ near(at(m,[50,30,20]),[0,1.3,-0.45],1e-9,'its middle: 45 cm ahead, 30 cm below the eyes');near(V().setFromMatrixColumn(m,0).length(),XR_SCALE,1e-12,'its real size');
+ near(V(...at(m,[50,30,60])).sub(V(...at(m,[50,30,20]))).toArray(),[0,0.04,0],1e-9,'the model\'s Z is up in the room');
+ near(V(...at(m,[50,-70,20])).sub(V(...at(m,[50,30,20]))).toArray(),[0,0,0.1],1e-9,'its front, -Y, is towards the person');
+ near(V(...at(m,[150,30,20])).sub(V(...at(m,[50,30,20]))).toArray(),[0.1,0,0],1e-9,'its X is to the person\'s right');
+ const big=standing(T,[[0,0,0],[2000,0,0]],V(0,1.6,0),V(1,0,0));near(at(big,[1000,0,0]),[2.1,1.3,0],1e-9,'a big thing stands further off');
+ near(at(standing(T,null,V(0,0.6,0),V(0,-1,0)),[0,0,5])[1],0.5,1e-9,'not below half a metre, and a head that looks straight down has a forward all the same');
+});
+test('The headset, with stand-ins for the hands: holding, sizing, pointing, choosing, cutting, and back',async()=>{
+ // the real three.js and the real module; the browser's part of it (a session, poses, buttons) is played
+ const rays=[new T.Group(),new T.Group()];rays.forEach(r=>(r.matrixAutoUpdate=false));
+ let loop=null,ended=null,rendered=0;
+ const session={addEventListener:(k,f)=>k==='end'&&(ended=f),end(){ended();}};
+ const renderer={xr:{enabled:false,setReferenceSpaceType(){},async setSession(){},getController:(i)=>rays[i],getReferenceSpace:()=>({})},setAnimationLoop:(f)=>(loop=f),render:()=>rendered++};
+ Object.defineProperty(navigator,'xr',{configurable:true,value:{isSessionSupported:async(m)=>m==='immersive-ar',requestSession:async()=>session}});
+ eq(await xrMode(),'immersive-ar');eq(await xrMode({isSessionSupported:async()=>false}),null);eq(await xrMode(null),null);
+ const scene=new T.Scene(),world=new T.Group(),said=[];scene.add(world);
+ const xr=createXR({T,renderer,scene,world,hooks:{box:()=>[[0,0,0],[100,60,40]],first:(ray)=>(ray.d[1]>0.9?{t:200}:null),frame:(head,f)=>said.push(['frame',f]),
+  point:(cam)=>said.push(['point',cam]),click:(cam,e)=>said.push(['click',cam,e]),section:(s)=>said.push(['section',s]),button:(n)=>said.push(['button',n]),ended:()=>said.push(['ended'])}});
+ ok(!xr.active);eq(await xr.enter(),'immersive-ar');ok(xr.active&&renderer.xr.enabled&&loop);
+ const pads=[0,1].map(()=>({buttons:Array.from({length:6},()=>({pressed:false})),axes:[0,0,0,0],hapticActuators:[{pulse(){}}]}));
+ const frame=(t,head=[0,1.6,0])=>loop(t,{getViewerPose:()=>({transform:{position:{x:head[0],y:head[1],z:head[2]},orientation:{x:0,y:0,z:0,w:1}}})});
+ const put=(i,x,y,z,turn=null)=>{rays[i].matrix.compose(new T.Vector3(x,y,z),turn??new T.Quaternion(),new T.Vector3(1,1,1));};
+ put(0,-0.2,1.2,0);put(1,0.2,1.2,0);rays.forEach((r,i)=>r.dispatchEvent({type:'connected',data:{handedness:i?'right':'left',gamepad:pads[i]}}));
+ frame(1000);eq(rendered,1);const where=(p)=>new T.Vector3(...p).applyMatrix4(world.matrixWorld).toArray();
+ near(where([50,30,20]),[0,1.3,-0.45],1e-9,'it stands in front of the head');eq(xr.scale,'1 : 1');
+ // the right hand points along -z from (0.2, 1.2, 0): in the model's space that is +Y, from where the hand is
+ const pt=said.find(s=>s[0]==='point')[1],r=M.ray(pt.view,pt.vp,...pt.p);near(r.d,[0,1,0],1e-9);near(r.o,[250,-420,-80],1e-6,'the hand, in the model\'s millimetres');
+ ok(rays[1].children[0].visible&&Math.abs(rays[1].children[0].scale.z-0.2)<1e-9,'its ray is drawn as far as what it meets: 200 mm');
+ // it rests: nothing more is said; it moves: said again
+ said.length=0;frame(1200);frame(1400);ok(!said.some(s=>s[0]==='point'),'a hand that rests is not told again');
+ put(1,0.25,1.2,0);frame(1600);ok(said.some(s=>s[0]==='point'));
+ // the trigger chooses; with the other trigger held it is one more
+ said.length=0;rays[1].dispatchEvent({type:'selectstart'});eq(said[0][0],'click');eq(said[0][2],{shiftKey:false});rays[0].dispatchEvent({type:'selectstart'});eq(said[1][2],{shiftKey:true});
+ rays.forEach(r=>r.dispatchEvent({type:'selectend'}));
+ // one grip holds it: it goes with the hand
+ const before=where([50,30,20]);rays[1].dispatchEvent({type:'squeezestart'});put(1,0.35,1.3,0.1);frame(1700);
+ near(where([50,30,20]),[before[0]+0.1,before[1]+0.1,before[2]+0.1],1e-9,'carried by the hand');ok(!rays[1].children[0].visible,'a hand that holds does not point');
+ // both grips, and the hands twice as far apart: twice the size; let go near its real size and it is that again
+ rays[0].dispatchEvent({type:'squeezestart'});put(0,-0.45,1.2,0);put(1,0.75,1.3,0.1);frame(1800);
+ const k=new T.Vector3().setFromMatrixColumn(world.matrix,0).length()/XR_SCALE;ok(k>1.5&&k<3,'bigger: '+k);ok(/ : 1$/.test(xr.scale));
+ put(0,-0.2,1.2,0);put(1,0.37,1.3,0.1);frame(1900);const size=()=>new T.Vector3().setFromMatrixColumn(world.matrix,0).length()/XR_SCALE;ok(size()>1.02&&size()<1.04,'3 % bigger while it is held: '+size());rays.forEach(r=>r.dispatchEvent({type:'squeezeend'}));frame(2000);near(size(),1,1e-9,'within a few hundredths of its real size it is taken to it');eq(xr.scale,'1 : 1');
+ // the stick: bigger about the hand
+ pads[1].axes[3]=-1;frame(2100);frame(2200);ok(new T.Vector3().setFromMatrixColumn(world.matrix,0).length()>XR_SCALE*1.05);pads[1].axes[3]=0;
+ // B: see-through. A held: the cut follows the hand; tapped: whole again. The stick pressed: it stands in front again
+ said.length=0;pads[1].buttons[5].pressed=true;frame(2300);pads[1].buttons[5].pressed=false;frame(2400);eq(said.filter(s=>s[0]==='button'),[['button','xray']]);
+ pads[1].buttons[4].pressed=true;frame(2500);ok(!said.some(s=>s[0]==='section'),'not at once: it may be a tap');frame(2900);
+ const cutNow=said.find(s=>s[0]==='section')[1];ok(['XY','XZ','YZ'].includes(cutNow.plane)&&Number.isInteger(cutNow.at)&&typeof cutNow.flip==='boolean',JSON.stringify(cutNow));
+ pads[1].buttons[4].pressed=false;frame(3000);said.length=0;pads[1].buttons[4].pressed=true;frame(3100);pads[1].buttons[4].pressed=false;frame(3200);eq(said.filter(s=>s[0]==='section'),[['section',null]]);
+ pads[1].buttons[3].pressed=true;frame(3300);pads[1].buttons[3].pressed=false;frame(3400);near(where([50,30,20]),[0,1.3,-0.45],1e-9,'in front again');eq(xr.scale,'1 : 1');
+ // a hand that is put down is not pointed with; the session ends: the model is where it is on the screen
+ rays.forEach(r=>r.dispatchEvent({type:'disconnected'}));said.length=0;frame(4000);frame(4500);ok(said.some(s=>s[0]==='point'&&s[1]===null),'nothing is pointed at any more');
+ session.end();ok(!xr.active&&!renderer.xr.enabled&&loop===null);near(world.matrix.elements,new T.Matrix4().elements,1e-12);eq(said.at(-1),['ended']);
+ delete navigator.xr;
+});
+run();
+</script>

@@ -1,8 +1,9 @@
 // Written by tools/stamp.py: do not edit. BUILD names exactly this set of files;
 // FILES is what the page is made of (src/update.js reads both from the published copy).
-export const BUILD = '90df49af15';
+export const BUILD = '93e4232296';
 export const FILES = [
   "index.html",
+  "view.html",
   "style.css",
   "assets/corecad.svg",
   "src/api/bridge.js",
@@ -10,6 +11,7 @@ export const FILES = [
   "src/api/commands.js",
   "src/api/dimensions.js",
   "src/api/measure3d.js",
+  "src/api/mirror.js",
   "src/api/select.js",
   "src/api/shapes.js",
   "src/app.js",
@@ -57,5 +59,7 @@ export const FILES = [
   "src/view/pick3d.js",
   "src/view/section.js",
   "src/view/viewport.js",
+  "src/view/xr.js",
+  "src/viewer.js",
   "src/version.js"
 ];

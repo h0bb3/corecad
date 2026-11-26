@@ -13,6 +13,10 @@
 // and change the CAD model open in it; they cannot do anything else in the
 // browser). It is never written to disk here and not logged.
 //
+// A tab may also be WATCHED: another page (a headset, a phone) connects with the same code
+// and says `watch`. What the tab shows goes to its viewers, and what a viewer points at goes
+// to the tab. The relay does not read either: it only passes them on. A viewer has no tools.
+//
 // This file has no server of its own. A host gives it:
 //   acceptBrowser(ws, req)        an accepted WebSocket (the `ws` package) and its upgrade request
 //   handleMcp(req, res, code)     an HTTP request (req.body: the parsed JSON, or absent) for /mcp/<code>
@@ -26,7 +30,7 @@ const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { ListToolsRequestSchema, CallToolRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 /** A code: 20 to 64 URL-safe characters. Short codes are refused: they could be guessed. */
 const CODE_RE = /^[A-Za-z0-9_-]{20,64}$/;
 const TOOL_NAME_RE = /^[a-z][a-z0-9_]{0,63}$/;
@@ -41,6 +45,9 @@ const text = (t, isError = false) => ({ content: [{ type: 'text', text: t }], ..
  * @param {number} [options.callTimeoutMs]   how long a tab may take to answer a call
  * @param {number} [options.maxMessageBytes] largest message a tab may send
  * @param {number} [options.maxRooms]        how many tabs may be connected at once
+ * @param {number} [options.maxViewers]      how many viewers one code may have
+ * @param {number} [options.maxViewersTotal] how many viewers there may be in all
+ * @param {number} [options.maxViewerMessageBytes] largest message a viewer may send
  */
 function createRelay(options = {}) {
   const opt = {
@@ -54,10 +61,18 @@ function createRelay(options = {}) {
     maxRooms: 200,
     maxPending: 8,
     maxTools: 64,
+    maxViewers: 4,
+    maxViewersTotal: 400,
+    maxViewerMessageBytes: 64 * 1024,
     ...options,
   };
   /** code -> { code, ws, tools, instructions, pending: Map, seq, alive, since } */
   const rooms = new Map();
+  /** code -> Set of { ws, id, code, alive }: who watches the tab with this code. They wait when no tab is there. */
+  const watchers = new Map();
+  let viewerSeq = 0,
+    viewerCount = 0;
+  const watching = (code) => [...(watchers.get(code) ?? [])];
   // What tools/list answers while no tab is connected: the tools of the last tab that said hello.
   let knownTools = [];
 
@@ -89,9 +104,35 @@ function createRelay(options = {}) {
   };
 
   function leave(room, why) {
-    if (rooms.get(room.code) === room) rooms.delete(room.code);
+    if (rooms.get(room.code) === room) {
+      rooms.delete(room.code);
+      for (const v of watching(room.code)) send(v.ws, { type: 'host', on: false });
+    }
     for (const p of room.pending.values()) p.done(text(why, true));
     room.pending.clear();
+  }
+
+  /** A page that wants to watch a tab says so first: { type: 'watch', code }. */
+  function sayWatch(ws, m) {
+    if (!CODE_RE.test(String(m.code ?? ''))) return close(ws, 4401, 'a valid code is needed'), null;
+    const set = watchers.get(m.code) ?? new Set();
+    if (set.size >= opt.maxViewers || viewerCount >= opt.maxViewersTotal) return close(ws, 4429, 'too many viewers; try again later'), null;
+    const viewer = { ws, id: ++viewerSeq, code: m.code, alive: true };
+    set.add(viewer);
+    watchers.set(m.code, set);
+    viewerCount++;
+    const room = rooms.get(m.code);
+    send(ws, { type: 'watching', version: VERSION, host: !!room });
+    if (room) send(room.ws, { type: 'viewer', id: viewer.id, on: true });
+    return viewer;
+  }
+  function unwatch(viewer) {
+    const set = watchers.get(viewer.code);
+    if (!set?.delete(viewer)) return;
+    viewerCount--;
+    if (!set.size) watchers.delete(viewer.code);
+    const room = rooms.get(viewer.code);
+    if (room) send(room.ws, { type: 'viewer', id: viewer.id, on: false });
   }
 
   function sayHello(ws, m) {
@@ -121,30 +162,54 @@ function createRelay(options = {}) {
     };
     rooms.set(room.code, room);
     knownTools = room.tools;
-    send(ws, { type: 'ready', version: VERSION });
+    // viewers: who watches this code already (they may have come first, or stayed through a reload of the tab)
+    send(ws, { type: 'ready', version: VERSION, viewers: watching(room.code).map((v) => v.id) });
+    for (const v of watching(room.code)) send(v.ws, { type: 'host', on: true });
     return room;
   }
 
   /** A tab has connected. `ws` is an accepted socket of the `ws` package; `req` its upgrade request. */
   function acceptBrowser(ws, req) {
     if (!originAllowed(String(req?.headers?.origin ?? ''))) return close(ws, 4403, 'this page may not use the bridge');
-    let room = null;
+    let room = null,
+      viewer = null;
     const waiting = setTimeout(() => close(ws, 4408, 'no hello'), opt.helloTimeoutMs);
     ws.on('pong', () => {
       if (room) room.alive = true;
+      if (viewer) viewer.alive = true;
     });
     ws.on('message', (data, isBinary) => {
       const size = Array.isArray(data) ? data.reduce((n, d) => n + d.length, 0) : data.length ?? data.byteLength;
-      if (isBinary || size > opt.maxMessageBytes) return close(ws, 4413, 'only text messages up to the size limit');
+      if (isBinary || size > (viewer ? opt.maxViewerMessageBytes : opt.maxMessageBytes)) return close(ws, 4413, 'only text messages up to the size limit');
       let m;
       try {
         m = JSON.parse(Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.concat([].concat(data).map((d) => Buffer.from(d))).toString('utf8'));
       } catch {
         return close(ws, 4400, 'not JSON');
       }
+      if (viewer) {
+        // What a viewer points at or asks to see: to the tab, which decides what it means.
+        const host = rooms.get(viewer.code);
+        if (m?.type === 'input' && host) send(host.ws, { type: 'input', from: viewer.id, data: m.data });
+        return;
+      }
       if (!room) {
         clearTimeout(waiting);
-        room = sayHello(ws, m);
+        if (m?.type === 'watch') viewer = sayWatch(ws, m);
+        else room = sayHello(ws, m);
+        return;
+      }
+      if (m?.type === 'show') {
+        // What the tab shows: to its viewers (to one of them, when it says which), as it is.
+        if (rooms.get(room.code) !== room) return;
+        const out = JSON.stringify({ type: 'show', data: m.data });
+        for (const v of watching(room.code))
+          if (m.to === undefined || m.to === v.id)
+            try {
+              v.ws.send(out);
+            } catch {
+              /* its close event follows */
+            }
         return;
       }
       if (m?.type !== 'result') return;
@@ -156,6 +221,7 @@ function createRelay(options = {}) {
     ws.on('close', () => {
       clearTimeout(waiting);
       if (room) leave(room, 'The CoreCAD tab disconnected before it answered. ' + HOW);
+      if (viewer) unwatch(viewer);
     });
     ws.on('error', () => {});
   }
@@ -262,6 +328,24 @@ function createRelay(options = {}) {
         /* the close event follows */
       }
     }
+    for (const set of [...watchers.values()])
+      for (const v of [...set]) {
+        if (!v.alive) {
+          try {
+            v.ws.terminate();
+          } catch {
+            /* gone */
+          }
+          unwatch(v);
+          continue;
+        }
+        v.alive = false;
+        try {
+          v.ws.ping();
+        } catch {
+          /* the close event follows */
+        }
+      }
   }, opt.pingMs);
   pinger.unref?.();
 
@@ -273,8 +357,13 @@ function createRelay(options = {}) {
     get connected() {
       return rooms.size;
     },
+    /** How many viewers are watching (never whom). */
+    get watching() {
+      return viewerCount;
+    },
     close() {
       clearInterval(pinger);
+      for (const set of [...watchers.values()]) for (const v of [...set]) close(v.ws, 1001, 'the bridge is shutting down');
       for (const room of [...rooms.values()]) {
         leave(room, 'The bridge is shutting down.');
         close(room.ws, 1001, 'the bridge is shutting down');

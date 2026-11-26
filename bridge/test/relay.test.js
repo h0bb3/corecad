@@ -175,6 +175,107 @@ test('a tab that stops answering pings is dropped', async () => {
   await c.close();
 });
 
+/** A viewer: connects and says watch. */
+function viewer({ code = CODE, origin = ORIGIN } = {}) {
+  const ws = new WebSocket(wsUrl(), { headers: { Origin: origin } });
+  const v = { ws, messages: [], closed: null };
+  const waiters = [];
+  v.next = (type) =>
+    new Promise((resolve) => {
+      const i = v.messages.findIndex((m) => m.type === type && !m.taken);
+      if (i >= 0) return resolve(((v.messages[i].taken = true), v.messages[i]));
+      waiters.push({ type, resolve });
+    });
+  ws.on('open', () => ws.send(JSON.stringify({ type: 'watch', code })));
+  ws.on('message', (data) => {
+    const m = JSON.parse(data.toString());
+    v.messages.push(m);
+    const i = waiters.findIndex((w) => w.type === m.type);
+    if (i >= 0) ((m.taken = true), waiters.splice(i, 1)[0].resolve(m));
+  });
+  ws.on('error', () => {});
+  v.gone = new Promise((resolve) => ws.on('close', (c, reason) => resolve((v.closed = { code: c, reason: reason.toString() }))));
+  v.send = (data) => ws.send(JSON.stringify({ type: 'input', data }));
+  v.close = () => new Promise((resolve) => (ws.readyState === WebSocket.CLOSED ? resolve() : (ws.once('close', resolve), ws.close())));
+  return v;
+}
+const until = async (fn, ms = 1500) => {
+  for (const end = Date.now() + ms; Date.now() < end; ) {
+    if (fn()) return true;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  return fn();
+};
+
+test('a viewer watches a tab: what the tab shows reaches it, what it points at reaches the tab', async () => {
+  const t = await tab().ready;
+  assert.deepEqual(t.messages.find((m) => m.type === 'ready').viewers, [], 'nobody watches yet');
+  const v = viewer();
+  assert.equal((await v.next('watching')).host, true);
+  assert.ok(await until(() => t.messages.some((m) => m.type === 'viewer' && m.on)), 'the tab is told that somebody watches');
+  const id = t.messages.find((m) => m.type === 'viewer').id;
+  t.ws.send(JSON.stringify({ type: 'show', data: { bodies: [1, 2, 3] } }));
+  assert.deepEqual((await v.next('show')).data, { bodies: [1, 2, 3] });
+  v.send({ point: [1, 2, 3] });
+  assert.ok(await until(() => t.messages.some((m) => m.type === 'input')));
+  assert.deepEqual(t.messages.find((m) => m.type === 'input'), { type: 'input', from: id, data: { point: [1, 2, 3] } });
+  // a viewer has no tools: nothing it sends is a call or an answer
+  v.ws.send(JSON.stringify({ type: 'result', id: 1, content: [{ type: 'text', text: 'not mine to give' }] }));
+  v.ws.send(JSON.stringify({ type: 'hello', code: CODE, tools: TOOLS }));
+  // a second viewer, shown something alone; another code's viewer sees nothing of it
+  const second = viewer(),
+    other = viewer({ code: OTHER });
+  await second.next('watching');
+  assert.equal((await other.next('watching')).host, false);
+  assert.ok(await until(() => t.messages.filter((m) => m.type === 'viewer' && m.on).length === 2));
+  const secondId = t.messages.filter((m) => m.type === 'viewer').at(-1).id;
+  t.ws.send(JSON.stringify({ type: 'show', to: secondId, data: 'for the second' }));
+  t.ws.send(JSON.stringify({ type: 'show', data: 'for all' }));
+  assert.equal((await second.next('show')).data, 'for the second');
+  assert.equal((await second.next('show')).data, 'for all');
+  assert.equal((await v.next('show')).data, 'for all');
+  assert.equal(other.messages.filter((m) => m.type === 'show').length, 0);
+  // the tools still work beside it, and the tab is still the tab
+  const c = await client();
+  assert.equal(textOf(await c.callTool({ name: 'get_state', arguments: {} })), 'get_state {}');
+  await c.close();
+  // a viewer leaves: the tab is told
+  await second.close();
+  assert.ok(await until(() => t.messages.some((m) => m.type === 'viewer' && m.id === secondId && m.on === false)));
+  await Promise.all([v.close(), other.close(), t.close()]);
+});
+
+test('a viewer may come first and stays through a reload of the tab', async () => {
+  const v = viewer();
+  assert.equal((await v.next('watching')).host, false);
+  const t = await tab().ready;
+  assert.equal(t.messages.find((m) => m.type === 'ready').viewers.length, 1, 'the tab learns who waits');
+  assert.equal((await v.next('host')).on, true);
+  await t.close();
+  assert.equal((await v.next('host')).on, false);
+  const again = await tab().ready;
+  assert.equal(again.messages.find((m) => m.type === 'ready').viewers.length, 1);
+  assert.equal((await v.next('host')).on, true);
+  again.ws.send(JSON.stringify({ type: 'show', data: 'back' }));
+  assert.equal((await v.next('show')).data, 'back');
+  await Promise.all([v.close(), again.close()]);
+});
+
+test('who may watch: the right page, a real code, not too many, small messages, and it must answer pings', async () => {
+  assert.equal((await viewer({ origin: 'https://example.com' }).gone).code, 4403);
+  assert.equal((await viewer({ code: 'short' }).gone).code, 4401);
+  const four = [viewer(), viewer(), viewer(), viewer()];
+  await Promise.all(four.map((x) => x.next('watching')));
+  assert.equal((await viewer().gone).code, 4429, 'a fifth viewer of one code');
+  four[0].ws.send(JSON.stringify({ type: 'input', data: 'x'.repeat(70 * 1024) }));
+  assert.equal((await four[0].gone).code, 4413);
+  // one that stops answering pings is dropped
+  four[1].ws.pong = () => {};
+  four[1].ws._receiver.removeAllListeners('ping');
+  assert.ok((await four[1].gone).code);
+  await Promise.all(four.slice(2).map((x) => x.close()));
+});
+
 test('the HTTP edges: not a code, not POST, not JSON, and the line about what this is', async () => {
   const post = (url, body, headers = {}) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...headers }, body });
   const short = await post(mcpUrl('short'), '{}');

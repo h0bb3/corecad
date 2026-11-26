@@ -3,6 +3,8 @@ import { buildPickData, pickFace, pickEdge, projectEdges, countHits } from './pi
 import { halfSpaceIn, rayRange, cutOutline } from './section.js';
 import { basePlane, canonicalFrame, toWorld } from '../core/plane.js';
 import * as Mat from '../core/mat.js';
+import { INK, pill, pillWidth, line as inkLine } from './annotate.js';
+import { createXR, xrMode } from './xr.js';
 
 /** Demand-rendered WebGL solids and a CSS-pixel canvas for sketch annotations. */
 export function createViewport(host, callbacks = {}) {
@@ -35,15 +37,24 @@ export function createViewport(host, callbacks = {}) {
     cut = null, // looking inside: the half of space that is drawn ({ n, d }: every p with n.p <= d), or null
     seeThrough = false, // the solids drawn see-through, every edge showing
     geometries = [], // of the bodies as they are drawn, for their cut surfaces
+    marked = [], // numbers and lines in space (labels()), for a headset and for a page that only shows
+    markedText = '[]',
+    sun = [], // the lights of the screen, which stand where the model stands
+    lamp = null, // the light of a room, for a headset: from above, and it stays when the model is turned
     queued = false;
-  let T, renderer, scene, camera, solids, highlights, toolGroup, cuts, clipPlane;
+  // world: everything of the model, in mm. On the screen it stands where it is; in a headset it is stood in the room.
+  let T, renderer, scene, camera, solids, highlights, toolGroup, cuts, clipPlane, modelClip, world, marks, xr;
   /** How the model is looked into. Neither while a sketch is drawn: there the plane of the sketch is what is looked at. */
   const active = () => (frame ? null : cut),
     through = () => seeThrough && !frame,
     clips = () => (active() ? [clipPlane] : null);
   function aim() {
-    // three.js draws where normal.p + constant >= 0
-    if (T && cut) clipPlane.set(new T.Vector3(-cut.n[0], -cut.n[1], -cut.n[2]), cut.d);
+    // three.js draws where normal.p + constant >= 0; the plane is asked for in the scene's space, and in a
+    // headset the model does not stand at the scene's origin
+    if (!T || !cut) return;
+    modelClip.set(new T.Vector3(-cut.n[0], -cut.n[1], -cut.n[2]), cut.d);
+    clipPlane.copy(modelClip);
+    if (xr?.active) clipPlane.applyMatrix4(world.matrixWorld);
   }
   const cache = new Map();
   const dirty = () => {
@@ -301,8 +312,53 @@ export function createViewport(host, callbacks = {}) {
     ctx.stroke();
     ctx.setLineDash([]);
   }
+  /** The numbers and lines in space, as objects of the scene: what a headset shows of them. */
+  function buildMarks() {
+    if (!T) return;
+    for (const c of [...marks.children]) {
+      marks.remove(c);
+      c.geometry?.dispose();
+      c.material.map?.dispose();
+      c.material.dispose();
+    }
+    if (!xr?.active) return;
+    for (const m of marked) {
+      const style = INK[m.kind] ?? INK.reference;
+      if (m.line) {
+        const g = new T.BufferGeometry().setFromPoints(m.line.map((p) => new T.Vector3(...p))),
+          object = new T.Line(g, new T.LineBasicMaterial({ color: style.ink, depthTest: false, transparent: true }));
+        object.renderOrder = 20;
+        marks.add(object);
+      } else if (m.text) {
+        const plate = document.createElement('canvas'),
+          c = plate.getContext('2d'),
+          k = 4,
+          w = pillWidth(c, m.text) + 4;
+        plate.width = Math.ceil(w * k);
+        plate.height = 22 * k;
+        c.scale(k, k);
+        pill(c, m.text, w / 2, 11, style);
+        const sprite = new T.Sprite(new T.SpriteMaterial({ map: new T.CanvasTexture(plate), depthTest: false, transparent: true }));
+        sprite.position.set(...m.at);
+        sprite.userData.aspect = w / 22;
+        sprite.renderOrder = 21;
+        marks.add(sprite);
+      }
+    }
+  }
+  /** The same on the screen, for a page that has no drawing of its own. */
+  function drawMarks() {
+    const S = (p) => M.project(view, vp, p);
+    for (const m of marked) if (m.line) inkLine(ctx, m.line.map(S), INK[m.kind] ?? INK.reference, { width: m.width ?? 1.4, ticks: m.ticks ?? [], dash: m.dash ?? [] });
+    for (const m of marked)
+      if (m.text) {
+        const s = S(m.at);
+        pill(ctx, m.text, s[0], s[1] - (m.lift ?? 0), INK[m.kind] ?? INK.reference);
+      }
+  }
   function render() {
     queued = false;
+    if (xr?.active) return; // the headset draws, frame by frame
     ctx.clearRect(0, 0, vp.w, vp.h);
     if (renderer) {
       const h = view.dist * M.tanHalf(view),
@@ -357,6 +413,7 @@ export function createViewport(host, callbacks = {}) {
       }
     }
     drawOverlay?.(ctx, api);
+    if (callbacks.marks) drawMarks();
     const start = [vp.w - 52, vp.h - 49],
       axes = [
         [1, 0, 0],
@@ -387,7 +444,7 @@ export function createViewport(host, callbacks = {}) {
     canvas.style.width = vp.w + 'px';
     canvas.style.height = vp.h + 'px';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    renderer?.setSize(vp.w, vp.h);
+    if (!xr?.active) renderer?.setSize(vp.w, vp.h);
     dirty();
   }
   /** A ray of the world in the frame of body i (placements are rigid: distances along it are the same). */
@@ -419,7 +476,10 @@ export function createViewport(host, callbacks = {}) {
     }
     return best;
   }
-  function pick(x, y, filter = 'all', hidden = false) {
+  /** cam: another camera than the view's own ({ view, vp }): a hand's ray in a headset, or the camera of a page that only shows. */
+  function pick(x, y, filter = 'all', hidden = false, cam = null) {
+    const view = cam?.view ?? api.view, // eslint-disable-line no-shadow
+      vp = cam?.vp ?? api.vp; // eslint-disable-line no-shadow
     const ray = M.ray(view, vp, x, y),
       half = active(),
       front = first(ray);
@@ -468,6 +528,7 @@ export function createViewport(host, callbacks = {}) {
     return filter === 'edge' ? edge : edge ?? face;
   }
   let navigation = null,
+    pressed = null, // on a page that only shows (callbacks.viewer): where the button went down; dragging from there turns the model
     last = [0, 0];
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   canvas.addEventListener('pointerdown', (e) => {
@@ -479,11 +540,15 @@ export function createViewport(host, callbacks = {}) {
       canvas.setPointerCapture(e.pointerId);
     } else {
       callbacks.down?.(p, e);
-      if (e.button === 0) canvas.setPointerCapture(e.pointerId);
+      if (e.button === 0) {
+        canvas.setPointerCapture(e.pointerId);
+        if (callbacks.viewer) pressed = p;
+      }
     }
   });
   canvas.addEventListener('pointermove', (e) => {
     const p = local(e);
+    if (!navigation && pressed && Math.hypot(p[0] - pressed[0], p[1] - pressed[1]) > 5) navigation = { pan: e.shiftKey };
     if (navigation) {
       view = navigation.pan
         ? M.pan(view, vp, p[0] - last[0], p[1] - last[1])
@@ -494,12 +559,14 @@ export function createViewport(host, callbacks = {}) {
     last = p;
   });
   canvas.addEventListener('pointerup', (e) => {
+    pressed = null;
     if (navigation) navigation = null;
     else callbacks.up?.(local(e), e);
     if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
   });
   canvas.addEventListener('pointercancel', () => {
     navigation = null;
+    pressed = null;
     callbacks.cancel?.();
   });
   canvas.addEventListener('pointerleave', () => callbacks.leave?.());
@@ -538,7 +605,13 @@ export function createViewport(host, callbacks = {}) {
       dirty();
     },
     dirty,
-    project: (p) => M.project(view, vp, p),
+    /** Where a point of space is on the screen. The answer remembers the point (`w`), so that what is drawn
+     *  there can also be put into space (annotate.js). */
+    project: (p) => {
+      const s = M.project(view, vp, p);
+      s.w = p;
+      return s;
+    },
     sketchPoint: (p) => (frame ? M.planePoint(view, vp, ...p, frame) : null),
     screen: (p) => M.project(view, vp, toWorld(frame, p)),
     get mmPerPx() {
@@ -596,13 +669,48 @@ export function createViewport(host, callbacks = {}) {
       dirty();
     },
     /** The body whose cut surface is under a pixel (its id), or null. */
-    cutAt(x, y) {
-      const f = first(M.ray(view, vp, x, y));
+    cutAt(x, y, cam = null) {
+      const f = first(M.ray(cam?.view ?? view, cam?.vp ?? vp, x, y));
       return f?.cut ? pickBodies[f.i].id : null;
     },
     overlay(fn) {
       drawOverlay = fn;
       dirty();
+    },
+    /** Draws what is drawn over the model now, not at the next frame: in a headset there is no next frame of the screen. */
+    redraw() {
+      ctx.clearRect(0, 0, vp.w, vp.h);
+      drawOverlay?.(ctx, api);
+    },
+    /** Numbers and lines in space: [{ line: [[x, y, z], ...], kind, width?, ticks?, dash? } | { text, at: [x, y, z], kind, lift? }],
+     *  kind one of annotate.js's INK. A headset shows them; so does the screen of a page made with `marks: true`. */
+    labels(list) {
+      const text = JSON.stringify(list ?? []);
+      if (text === markedText) return; // the same again, as while a hand rests: nothing is made anew
+      markedText = text;
+      marked = list ?? [];
+      buildMarks();
+      dirty();
+    },
+    /** The headset: mode() says how this browser can show the model in one ('immersive-ar', 'immersive-vr' or null). */
+    xr: {
+      mode: () => xrMode(),
+      enter: async () => {
+        if (!xr) throw new Error('The 3D view has not started yet.');
+        const mode = await xr.enter();
+        for (const light of sun) light.visible = false;
+        lamp.visible = true;
+        aim();
+        buildMarks();
+        return mode;
+      },
+      exit: () => xr?.exit(),
+      get active() {
+        return !!xr?.active;
+      },
+      get scale() {
+        return xr?.scale ?? '1 : 1';
+      },
     },
     planes(on) {
       planes = on;
@@ -687,6 +795,7 @@ export function createViewport(host, callbacks = {}) {
       renderer = new T.WebGLRenderer({ antialias: true, alpha: true, stencil: true });
       renderer.localClippingEnabled = true;
       clipPlane = new T.Plane();
+      modelClip = new T.Plane();
       aim();
       renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
       surface.append(renderer.domElement);
@@ -699,12 +808,55 @@ export function createViewport(host, callbacks = {}) {
         const light = new T.DirectionalLight(0xffffff, intensity);
         light.position.fromArray(pos);
         scene.add(light);
+        sun.push(light);
       }
+      lamp = new T.DirectionalLight(0xffffff, 3);
+      lamp.position.set(0.6, 2, 1); // a headset's space has Y up
+      lamp.visible = false;
+      scene.add(lamp);
       solids = new T.Group();
       highlights = new T.Group();
       toolGroup = new T.Group();
       cuts = new T.Group();
-      scene.add(solids, cuts, highlights, toolGroup);
+      marks = new T.Group();
+      world = new T.Group();
+      world.add(solids, cuts, highlights, toolGroup, marks);
+      scene.add(world);
+      xr = createXR({
+        T,
+        renderer,
+        scene,
+        world,
+        hooks: {
+          box() {
+            const boxes = bodies.map((b) => (b.matrix ? Mat.box(b.matrix, b.bbox) : b.bbox));
+            return boxes.length ? [[0, 1, 2].map((i) => Math.min(...boxes.map((b) => b[0][i]))), [0, 1, 2].map((i) => Math.max(...boxes.map((b) => b[1][i])))] : null;
+          },
+          first,
+          frame(head, factor) {
+            if (cut) clipPlane.copy(modelClip).applyMatrix4(world.matrixWorld);
+            // a number is as big to the eye wherever it stands: about a degree and a half high
+            const at = new T.Vector3();
+            for (const m of marks.children)
+              if (m.isSprite) {
+                const h = Math.min(0.2, Math.max(0.004, m.getWorldPosition(at).distanceTo(head) * 0.028)) / factor;
+                m.scale.set(h * m.userData.aspect, h, 1);
+              }
+          },
+          point: (cam) => callbacks.xrPoint?.(cam),
+          click: (cam, e) => callbacks.xrClick?.(cam, e),
+          section: (s) => callbacks.xrSection?.(s),
+          button: (name) => callbacks.xrButton?.(name),
+          ended() {
+            for (const light of sun) light.visible = true;
+            lamp.visible = false;
+            aim();
+            buildMarks();
+            resize();
+            callbacks.xrEnded?.();
+          },
+        },
+      });
       resize();
       buildSolids();
       highlightsNow();

@@ -186,6 +186,18 @@ export function quatLooking(back, up) {
   return qFromBasis(r, cross(b, r), b);
 }
 
+/** A camera that looks along a ray from where the ray starts: { view, vp, p }, with the ray under the pixel p.
+ *  What a hand points at in a headset is picked as what this camera has under its middle: 8 pixels about
+ *  it are 0.4 degrees. */
+export function rayCamera(o, d, reach = 1000) {
+  const back = mul(unit(d), -1);
+  return {
+    view: { target: add(o, mul(back, -reach)), quat: quatLooking(back, Math.abs(back[2]) > 0.99 ? [0, 1, 0] : null), dist: reach, fov: 20, ortho: false },
+    vp: { w: 400, h: 400 },
+    p: [200, 200],
+  };
+}
+
 export function fitSphere(v, vp, centre, radius, margin = 1.15) {
   const th = Math.min((v.fov * Math.PI) / 360, Math.atan((tanHalf(v) * vp.w) / vp.h));
   return { ...v, target: centre, dist: (radius * margin) / Math.sin(th) };

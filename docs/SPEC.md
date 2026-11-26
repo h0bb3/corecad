@@ -232,6 +232,20 @@ extrude, cut on its top face, blend edges, edit history and export. Additional f
 exercise dragging, quick holes, planes, undo and persistence. Screenshots go in
 `.scratch/`; no required source or test may depend on that ignored directory.
 
+A second seat. Somebody may look at the model from somewhere else than the
+tab's screen and point at it: a headset on the page itself (`src/view/xr.js`,
+WebXR), or another page that watches the tab through the relay (`view.html`,
+`src/viewer.js`, `src/api/mirror.js`). A seat points, chooses, cuts the model
+open and sees through it; it does not model. It sends the camera it looks
+with and the pixel it points at; the tab picks with that camera
+(`view.pick(x, y, filter, hidden, cam)`), so a hand's ray in a headset, a
+finger on a phone and the mouse all mean the same face. In a headset a hand's
+ray is a camera that looks along it (`rayCamera`). The numbers drawn over the
+model are also kept as points and lines of space (`view.labels`), which a
+headset draws as plates that face the eye and a watching page draws with its
+own camera. In a headset the model's root stands in the room: a millimetre
+of the model is a millimetre of the room until it is sized by hand.
+
 Deferred: the brief's “should” tools (2D corner operations, trim, offset, mirror,
 named expressions, projected geometry, a section tool), plus imports,
 sweep, loft, shell, patterns, and joints or mates between parts (parts are

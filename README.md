@@ -49,6 +49,16 @@ and its own place.
   where it can be clicked and typed over. With a **rise** the areas climb the
   line as they turn, so a thread, a spring or a screw is one feature: a
   tooth, a rise for each turn and 360 degrees for each turn.
+- **In a headset** (the **Headset** button, where the browser has one: a
+  Quest's browser, say) the model stands in the room at its real size. The
+  grips hold it, turn it and size it; a trigger points and chooses, and the
+  other trigger held with it gives the distance between two things; A or X
+  held cuts it open along the hand; B or Y makes it see-through. What is
+  pointed at there is what an agent takes "this" to mean.
+- **On another device**: when the tab is connected (**Connect**), the dialog
+  shows a QR code. A headset or a phone that opens it shows this tab's model,
+  live, and points at it; the model, the kernel and the agent stay in the
+  tab ([bridge/README.md](bridge/README.md)).
 - **Group** makes a container for parts: a name and a place, and no shape
   of its own. Drag parts onto it in the list, or make them while it is
   selected. Moving, turning, hiding, copying or exporting a group does that

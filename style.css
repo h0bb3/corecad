@@ -1188,6 +1188,30 @@ main {
 .connect-button.working i {
   background: #d98a2b;
 }
+.bridge-second {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  margin: 12px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid #dfe7e8;
+  border-radius: 8px;
+  background: #f7fafa;
+}
+.bridge-second canvas {
+  width: 132px;
+  height: 132px;
+  flex: none;
+  image-rendering: pixelated;
+  background: #fff;
+}
+.bridge-second p {
+  margin: 0 0 6px;
+}
+.bridge-second input {
+  width: 100%;
+  font: 11px 'SFMono-Regular', Consolas, monospace;
+}
 .bridge-recent {
   margin: 10px 0 0;
   padding: 0;

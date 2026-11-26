@@ -47,7 +47,7 @@ import * as Mat from './core/mat.js';
 import { gizmoArrows, hitArrow, alongAxis, drawArrows, gizmoRings, hitRing, ringAngle, ringTangent, drawRings } from './view/gizmo.js';
 import { sizeOf, spansOf, between, total, boxOf } from './api/measure3d.js';
 import { dimensionsOf } from './api/dimensions.js';
-import { pill, pillWidth, line as inkLine, inBox, INK } from './view/annotate.js';
+import { pill, pillWidth, line as inkLine, inBox, INK, kindOf, between2, beside } from './view/annotate.js';
 import { checkSection, halfSpace, sectionText, sectionAxis, reachAlong, SECTION_PLANES } from './view/section.js';
 import { faceRefFrom, edgeRefFrom, frameOfSketch, resolveEdgeRef } from './doc/refs.js';
 import { canonicalFrame, basePlane, toWorld, toLocal } from './core/plane.js';
@@ -56,6 +56,7 @@ import { projectBlob, readProject, filename, download } from './persist.js';
 import { escapeHTML as esc, icon, tool, field, selectField, check, head } from './ui.js';
 import { createCommands, READS } from './api/commands.js';
 import { createBridge, activity } from './api/bridge.js';
+import { createMirror, checkInput } from './api/mirror.js';
 import { BUILD, published, freshReload } from './update.js';
 
 const $ = (s) => document.querySelector(s),
@@ -215,13 +216,30 @@ const view = createViewport(id('viewport'), {
   error: toast,
   ready: () => {
     window.corecadReady = true;
+    view.xr.mode().then((mode) => {
+      id('xr').hidden = !mode; // only where there is a headset to show it in
+    });
+  },
+  // a headset on this page: its hands point, choose and cut as a second seat does
+  xrPoint: (cam) => seat.point(cam),
+  xrClick: (cam, e) => seat.click(cam, e),
+  xrSection: (s) => seat.section(s),
+  xrButton: (name) => name === 'xray' && seat.xray(),
+  xrEnded: () => {
+    id('xr').classList.remove('active');
+    view.dirty();
   },
 });
 view.overlay((ctx) => {
   if (editor) editor.draw(ctx);
   else {
     drawProfiles(ctx);
+    ctx.rec = []; // the numbers, as they are in space: for a headset and for a page that watches (api/mirror.js)
     drawNumbers(ctx);
+    const rec = ctx.rec;
+    delete ctx.rec;
+    mirror.set('labels', rec);
+    if (view.xr.active) view.labels(rec);
     if (mover) drawGizmo(ctx);
     else {
       if (!draft && bridgeOn()) drawPointed(ctx);
@@ -229,6 +247,63 @@ view.overlay((ctx) => {
     }
   }
 });
+// ------------------------------------------------------------------ a second seat
+// Somebody who looks at the model from somewhere else than this screen and points at it: a headset on
+// this page (view/xr.js), or another page that watches this tab through the relay (view.html,
+// api/mirror.js). It points, chooses, cuts the model open and sees through it; it does not model.
+// What it points at is picked here, with its camera, exactly as under the mouse: "this" is the same.
+let seatCam = null, // the camera of the seat whose click is being dealt with
+  seatRest = 0;
+/** After a seat did something: what is drawn over the model is made again now. A hidden tab, and a page
+ *  in a headset, have no next frame of the screen to wait for. */
+const seatDone = () => (view.xr.active || document.hidden ? view.redraw() : view.dirty());
+const seat = {
+  point(cam) {
+    clearTimeout(seatRest);
+    if (editor || draft || mover || modal) return;
+    if (!cam) {
+      view.hover(bridgeOn() ? stillThere(pointed) : null);
+      return seatDone();
+    }
+    view.hover(view.pick(...cam.p, pickFilter(), false, cam));
+    // what it comes to rest on is what is pointed at, as with the mouse
+    seatRest = setTimeout(() => {
+      const now = !draft && !mover && !editor ? view.pick(...cam.p, pickFilter(), false, cam) : null;
+      if (now) point(now);
+      seatDone();
+    }, REST_MS);
+    seatDone();
+  },
+  click(cam, e) {
+    if (editor || draft || mover || modal || replaneId) return;
+    seatCam = cam;
+    try {
+      modelClick(cam.p, { shiftKey: !!e?.shiftKey, altKey: false });
+    } finally {
+      seatCam = null;
+    }
+    seatDone();
+  },
+  section(s) {
+    if (editor || draft || mover) return;
+    setSection(s);
+    seatDone();
+  },
+  xray(on) {
+    if (editor || draft || mover) return;
+    setXray(on ?? !xray);
+    seatDone();
+  },
+};
+/** What a page that watches this tab sent. */
+function seatInput(from, data) {
+  const d = checkInput(data);
+  if (!d) return;
+  if (d.kind === 'point') seat.point(d.cam);
+  else if (d.kind === 'click') seat.click(d.cam, { shiftKey: d.shift });
+  else if (d.kind === 'section') seat.section(d.section);
+  else if (d.kind === 'xray') seat.xray(d.on);
+}
 // ------------------------------------------------------------------ numbers on the model
 const mm = (v) => fmt(v, Math.abs(v) >= 100 ? 1 : 2);
 /** A pick as the measuring functions take it: the body as it is shown, and the clicked point in space. */
@@ -302,6 +377,7 @@ function drawNumbers(ctx) {
     }
     if (y !== l.at[1]) inkLine(ctx, [l.at, [l.at[0], y]], l.style === INK.chosen ? INK.driving : l.style, { width: 0.5 });
     const box = pill(ctx, l.text, l.at[0], y, l.style);
+    if (l.at.w) ctx.rec?.push({ text: l.text, at: l.at.w, kind: kindOf(l.style) });
     placed.push(box);
     if (l.caption) {
       placed.push(pill(ctx, l.caption, l.at[0], y + 20, INK.reference));
@@ -356,7 +432,8 @@ function drawOverall(ctx, labels) {
     inkLine(ctx, [sa, off(sa, 29)], INK.reference, { width: 0.6 });
     inkLine(ctx, [sb, off(sb, 29)], INK.reference, { width: 0.6 });
     inkLine(ctx, [off(sa, 24), off(sb, 24)], INK.reference, { ticks: [0, 1] });
-    labels.push({ text: `${'XYZ'[axis]} ${mm(size)}`, at: off(mid, 24), style: INK.reference });
+    labels.push({ text: `${'XYZ'[axis]} ${mm(size)}`, at: beside(between2(sa, sb), nx * 24, ny * 24), style: INK.reference });
+    ctx.rec?.push({ line: [sa.w, sb.w], kind: 'reference', width: 0.9, dash: [] });
   }
 }
 /** How big what was clicked is, how far apart two clicked things are, and how big what the mouse rests on is.
@@ -373,7 +450,7 @@ function drawMeasured(ctx, labels) {
         b = S(span.b);
       if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 14) continue; // seen end-on
       inkLine(ctx, [a, b], style, { width: 1.8, ticks: [0, 1] });
-      labels.push({ text: span.text, at: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], style });
+      labels.push({ text: span.text, at: between2(a, b), style });
       drawn++;
     }
     if (!drawn) labels.push({ text: sizeOf(p.body, p.kind, p.index).text, at, style });
@@ -384,21 +461,21 @@ function drawMeasured(ctx, labels) {
       a = S(real ? m.from : sel[0].point),
       b = S(real ? m.to : sel[1].point);
     inkLine(ctx, [a, b], INK.measure, real ? { width: 1.6, ticks: [0, 1] } : { width: 1, dash: [4, 3] });
-    labels.push({ text: m.text, at: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], style: INK.measure });
+    labels.push({ text: m.text, at: between2(a, b), style: INK.measure });
     for (const p of sel) {
       const s = S(p.point);
-      labels.push({ text: sizeOf(p.body, p.kind, p.index).text, at: [s[0], s[1] - 20], style: INK.measure });
+      labels.push({ text: sizeOf(p.body, p.kind, p.index).text, at: beside(s, 0, -20), style: INK.measure });
     }
   } else if (sel.length === 1) {
     const s = S(sel[0].point);
-    sized(sel[0], INK.measure, [s[0], s[1] - 20]);
+    sized(sel[0], INK.measure, beside(s, 0, -20));
   }
   const at = stillThere(pointed),
     same = (h) => h.body === at.body && h.type === at.type && (h.face ?? h.edge) === (at.face ?? at.edge);
   if (at && (mouse || bridgeOn()) && !selection.some(same)) {
     const p = asPick(at),
       s = S(p.point);
-    sized(p, INK.pointed, [s[0], s[1] - 22]);
+    sized(p, INK.pointed, beside(s, 0, -22));
   }
 }
 /** What the line under the view bar says about the selection: its size, or what lies between two. */
@@ -881,7 +958,7 @@ function drawProfiles(ctx) {
 }
 function modelClick(p, e) {
   if (modal) return;
-  const label = draft || replaneId ? null : labelAt(p);
+  const label = draft || replaneId || seatCam ? null : labelAt(p);
   if (label) {
     editDimension(label);
     return;
@@ -911,7 +988,7 @@ function modelClick(p, e) {
       return;
     }
   }
-  const hit = view.pick(...p, pickFilter(), e.altKey);
+  const hit = view.pick(...p, pickFilter(), e.altKey, seatCam);
   if (draft && ['fillet', 'chamfer'].includes(draft.feature.type) && hit?.type === 'edge') {
     toggleEdge(hit);
     return;
@@ -929,7 +1006,7 @@ function modelClick(p, e) {
     pointed = null;
     view.select([]);
     // The cut surface of a part is not a face of it: the part is what is meant.
-    const cutBody = draft ? null : view.pickBodies.find((b) => b.id === view.cutAt(...p));
+    const cutBody = draft ? null : view.pickBodies.find((b) => b.id === view.cutAt(...p, seatCam));
     if (cutBody) {
       if (cutBody.part !== selectedPart) selectPart(cutBody.part);
       id('context-note').textContent = `The cut through ${partById(store.state.doc, cutBody.part)?.name ?? 'a part'} · Click a face inside to measure it; Shift-click another for the distance between them.`;
@@ -2540,6 +2617,17 @@ const actions = {
     setXray(!xray);
     if (xray) toast('See-through. Every edge shows and can be clicked; Shift-click a second one for the distance between them.');
   },
+  xr: () => {
+    if (view.xr.active) return view.xr.exit();
+    if (editor || draft || mover) return toast('Finish what is open first: the headset shows the model, it does not edit it.');
+    view.xr.enter().then(
+      () => {
+        id('xr').classList.add('active');
+        view.redraw();
+      },
+      (e) => toast('The headset could not be started: ' + e.message)
+    );
+  },
   box: () => beginFeature('box'),
   cylinder: () => beginFeature('cylinder'),
   sphere: () => beginFeature('sphere'),
@@ -3284,12 +3372,40 @@ const api = createCommands({
 // is ever taken down: the Connect button is then only shown with ?connect in the address (or ?bridge=
 // for a relay on localhost), so nobody meets a dead button.
 const BRIDGE_LIVE = true;
+// What this tab shows goes to the pages that watch it (api/mirror.js): whatever the view is given, as it is given it.
+const mirror = createMirror((data, to) => bridge.show(data, to));
+for (const [method, kind, what] of [
+  ['setBodies', 'bodies', (bs) => bs],
+  ['select', 'select', (hs) => hs],
+  ['section', 'section', (half) => half ?? null],
+  ['xray', 'xray', (on) => !!on],
+]) {
+  const own = view[method];
+  view[method] = (...args) => {
+    own.apply(view, args);
+    mirror.set(kind, what(...args));
+    // a hidden tab draws nothing by itself: the numbers on the model are made again for who watches
+    if (mirror.viewers.size && document.hidden) queueMicrotask(() => view.redraw());
+  };
+}
 const bridgeAsked = ['connect', 'bridge'].some((k) => new URLSearchParams(location.search).has(k));
 const bridge = createBridge({
   run: api.run,
   tools: api.tools,
   keySuffix: new URLSearchParams(location.search).has('test') ? '.test' : '',
   onChange: renderBridge,
+  onViewer: (viewer, on) => {
+    if (!on) return mirror.leave(viewer);
+    // everything as it is now, through the view: that is where the mirror hears of it
+    mirror.set('name', store.state.doc.meta.name);
+    refreshScene();
+    view.select(selection);
+    view.section(section && !editor ? halfSpace(section) : null);
+    view.xray(xray);
+    view.redraw();
+    mirror.join(viewer);
+  },
+  onInput: seatInput,
 });
 const clock = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const clockS = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -3305,6 +3421,47 @@ function bridgeStatus(b) {
   if (b.status === 'connecting') return 'Connecting…';
   if (b.status === 'retrying') return b.note;
   return b.note || 'Not connected.';
+}
+/** The address of the page that watches this tab: for a headset or a phone. The code is behind the #, which is
+ *  not sent to the server the page comes from. A relay on this machine (development) goes along. */
+function secondAddress(b) {
+  const u = new URL('view.html', location.href),
+    own = new URLSearchParams(location.search).get('bridge');
+  u.search = own ? '?bridge=' + encodeURIComponent(own) : '';
+  u.hash = b.code;
+  return u.href;
+}
+/** Draws a QR code of a text on a canvas; false when the code that makes them could not be had. */
+async function drawQR(canvas, text) {
+  try {
+    const { default: qrcode } = await import('https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/+esm');
+    const qr = qrcode(0, 'M');
+    qr.addData(text);
+    qr.make();
+    const n = qr.getModuleCount(),
+      quiet = 3,
+      g = canvas.getContext('2d');
+    canvas.width = canvas.height = n + 2 * quiet;
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, 0, canvas.width, canvas.height);
+    g.fillStyle = '#10292c';
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) g.fillRect(c + quiet, r + quiet, 1, 1);
+    canvas.dataset.text = text;
+    return true;
+  } catch {
+    canvas.hidden = true;
+    return false;
+  }
+}
+/** In the Connect dialog: how another device comes to see this model. */
+function secondSeat(b) {
+  if (b.status !== 'on') return '';
+  if (!b.viewing) return '<p class="bridge-note">A headset or a phone cannot watch this tab yet: the relay it is connected to is an older one.</p>';
+  const address = secondAddress(b);
+  return `<div class="bridge-second"><canvas id="bridge-qr" width="1" height="1" title="Scan this with the headset or a phone"></canvas><div>
+    <p><b>See it on another device</b>: a headset or a phone opens this address and shows this model as it is here, at its real size in a headset. It can point, measure and cut the model open; it cannot change it.</p>
+    <input id="bridge-second" readonly value="${esc(address)}" title="The address of the page that watches this tab. Treat it like a password: it holds the same code." />
+    <p id="bridge-viewers">${b.viewers ? `${b.viewers} ${b.viewers === 1 ? 'device is' : 'devices are'} watching.` : 'Nobody is watching.'}</p></div></div>`;
 }
 function connectBody(b) {
   return `<p id="bridge-status" class="bridge-status ${b.status}"><i></i>${esc(bridgeStatus(b))}</p>
@@ -3323,6 +3480,7 @@ function connectBody(b) {
             .join('')}</ul>`
         : ''
     }
+    ${secondSeat(b)}
     <p class="bridge-note">While connected, whoever has this address can read and change the model in this tab, and nothing else in your browser. Commands pass through vibedit.app, and Claude sees the model. <b>New address</b> makes the old one useless.</p>`;
 }
 function openConnect() {
@@ -3347,7 +3505,16 @@ function openConnect() {
     true
   );
   modal.kind = 'connect';
+  // the QR code is made once for an address: the dialog is drawn again whenever the connection has news
+  const slot = id('bridge-qr');
+  if (slot) {
+    const text = secondAddress(b),
+      have = qrMade.get(text);
+    if (have) slot.replaceWith(have);
+    else drawQR(slot, text).then((ok) => ok && qrMade.set(text, slot));
+  }
 }
+const qrMade = new Map();
 let agentTimer = null;
 /** Says when an agent is at work in the model: a frame round the view, a line that says what it does
  *  (and, held over, what it did last), and the Connect button. It stays for a while after a command:

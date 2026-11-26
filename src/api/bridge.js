@@ -92,7 +92,8 @@ const MAX_ANSWER = 6e6; // the relay takes 8 MB; leave room
  * @param {string} [o.url]        the relay's WebSocket address
  * @param {string} [o.keySuffix]  keeps test runs out of the real settings
  */
-export function createBridge({ run, tools, onChange = () => {}, url = relayUrl(), keySuffix = '' }) {
+/** onViewer(id, on): a page has begun or stopped watching this tab; onInput(id, data): what it sent (api/mirror.js). */
+export function createBridge({ run, tools, onChange = () => {}, onViewer = () => {}, onInput = () => {}, url = relayUrl(), keySuffix = '' }) {
   const KEY_CODE = 'corecad.bridge.code' + keySuffix,
     KEY_ON = 'corecad.bridge.on' + keySuffix;
   const read = (k) => {
@@ -120,10 +121,18 @@ export function createBridge({ run, tools, onChange = () => {}, url = relayUrl()
     timer = null;
   // busy: commands that were asked and are not answered yet; running: the one that is being done;
   // recent: the last dozen, oldest first: { name, ok, at, ms }.
-  const state = { status: 'off', note: '', calls: 0, last: null, seenAt: null, busy: 0, running: null, recent: [] },
-    asked = [];
+  // viewing: the relay passes what this tab shows on to pages that watch it; viewers: how many do.
+  const state = { status: 'off', note: '', calls: 0, last: null, seenAt: null, busy: 0, running: null, recent: [], viewing: false, viewers: 0 },
+    asked = [],
+    watching = new Set();
   const changed = () => onChange(view());
-  const view = () => ({ ...state, code, address: addressFor(url, code), wanted });
+  const view = () => ({ ...state, code, url, address: addressFor(url, code), wanted });
+  const watched = (id, on) => {
+    if (on === watching.has(id)) return;
+    on ? watching.add(id) : watching.delete(id);
+    state.viewers = watching.size;
+    onViewer(id, on);
+  };
 
   function open() {
     clearTimeout(timer);
@@ -157,7 +166,14 @@ export function createBridge({ run, tools, onChange = () => {}, url = relayUrl()
         attempt = 0;
         state.status = 'on';
         state.note = '';
+        state.viewing = Array.isArray(m.viewers); // an older relay does not say, and does not pass anything on
+        for (const id of m.viewers ?? []) watched(id, true);
         changed();
+      } else if (m.type === 'viewer') {
+        watched(m.id, !!m.on);
+        changed();
+      } else if (m.type === 'input') {
+        if (watching.has(m.from)) onInput(m.from, m.data);
       } else if (m.type === 'seen') {
         state.seenAt = new Date();
         changed();
@@ -205,6 +221,8 @@ export function createBridge({ run, tools, onChange = () => {}, url = relayUrl()
   function closed(socket, e) {
     if (socket !== ws && socket !== undefined) return; // an old socket: a newer one is in charge
     ws = null;
+    for (const id of [...watching]) watched(id, false);
+    state.viewing = false;
     // 44xx: the relay refused this tab (the page is not allowed, the bridge is full): trying again will not help now.
     const refused = e?.code >= 4400 && e.code < 4500 && e.code !== 4408;
     if (refused && e.code !== 4409) state.note = 'The bridge refused the connection: ' + (e.reason || 'no reason given') + '.';
@@ -245,6 +263,8 @@ export function createBridge({ run, tools, onChange = () => {}, url = relayUrl()
       ws = null;
       socket?.close();
       state.status = 'off';
+      for (const id of [...watching]) watched(id, false);
+      state.viewing = false;
       changed();
     },
     /** A new code: the old address stops working at once. */
@@ -253,6 +273,14 @@ export function createBridge({ run, tools, onChange = () => {}, url = relayUrl()
       write(KEY_CODE, code);
       if (wanted) this.connect();
       else changed();
+    },
+    /** Shows the pages that watch this tab something (api/mirror.js); `to`: one of them only. False when it did not go. */
+    show(data, to) {
+      if (ws?.readyState !== WebSocket.OPEN || !watching.size) return false;
+      const text = JSON.stringify({ type: 'show', data, ...(to === undefined ? {} : { to }) });
+      if (text.length > MAX_ANSWER) return false;
+      ws.send(text);
+      return true;
     },
     /** Connects again if the person had it connected when the page was last open. */
     resume() {
