@@ -39,7 +39,7 @@ What it does:
 
 Verified on this build, 2026-11-26:
 
-- `python tools/run_tests.py`: 124 tests in 16 pages; the kernel pages run
+- `python tools/run_tests.py`: 128 tests in 17 pages; the kernel pages run
   the real OpenCascade worker.
 - The end-to-end scripts in headless Chrome, all passing: `tools/e2e.py`,
   `e2e_more.py`, `e2e_parts.py` and `e2e_export.py` (real mouse and key
@@ -154,7 +154,19 @@ description of the tablet holder, not from the holder's files:
   grows.
 - **An agent's work as one thing**: a mark in the history where it began,
   and a way back to it. Undo goes a command at a time.
-- **A helix** as a path, for threads: the paths of a sketch are flat.
+- **A thread**: a profile turned about a line while it rises along it. The
+  paths of a sketch are flat, so the planned sweep would not give one. The
+  owner's agent, asked for a cube with a large threaded bolt through it,
+  built the thread as a stair of wedges, about 36 to a turn (2026-11-26).
+  Tried in the kernel the same day (`test/spike-helix.test.html`,
+  [KERNEL_NOTES.md](KERNEL_NOTES.md)): a tooth turned up a helix is one
+  valid solid with an exact volume in a tenth of a second; joined to its
+  core, a rod 60 mm long with 17 turns is one valid solid in about 5 s, and
+  the same thread is cut out of a block with a clearance. The tooth must
+  reach into the core: one that stands on the core's wall does not join.
+  A way to say it that keeps one way for each thing: `revolve` with a rise
+  for each turn, and angles past 360; an ordinary revolve is then the one
+  with no rise. Not decided.
 
 What a new operation touches (revolve, commit `65a526a`, is the pattern):
 

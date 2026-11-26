@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CoreCAD kernel spike: a thread</title>
+<script type="module">
+import { test, ok, near, run } from './harness.js';
+
+test('the kernel turns a tooth up a helix into one valid solid', async () => {
+  const result = await new Promise((done, fail) => {
+    const w = new Worker('./spike-helix-worker.js', { type: 'module' });
+    w.onmessage = e => done(e.data);
+    w.onerror = e => fail(new Error('worker: ' + (e.message || 'failed to load')));
+  });
+  window.__spike = result;
+  ok(!result.fatal, result.fatal);
+  const bad = result.steps.filter(s => !s.ok);
+  ok(!bad.length, () => bad.map(s => `${s.name}: ${s.error}`).join(' || '));
+});
+const the = (name) => window.__spike.steps.find(s => s.name.includes(name)).v;
+test('a ridge is one valid solid, and its volume is the area of the tooth times how far it turns about the axis', () => {
+  for (const how of ['frenet', 'guided']) {
+    const v = the(`four turns (${how})`);
+    ok(v.valid && v.type === 'Solid', how); near(v.vol, v.exact, 0.01, how);
+    for (const part of the(`a turn and a half (${how})`)) { ok(part.valid, how); near(part.vol, part.exact, 0.01, `${how} ${part.turns}`); }
+  }
+});
+test('core and ridge join into one valid threaded rod with flat ends; the same thread is cut out of a block', () => {
+  const rod = the('14 mm long'), nut = the('in a block'), long = the('60 mm long (17');
+  ok(rod.valid && rod.solids === 1); near(rod.vol, rod.exact, 0.05); near(rod.box, [[-15, -15, 0], [15, 15, 14]], 1e-3);
+  ok(nut.valid && nut.solids === 1); near(nut.vol, nut.exact, 1);
+  ok(long.valid); near(long.vol, long.exact, 0.2);
+});
+test('a tooth with its base or a corner in the wall of the core does not join: no valid single solid comes out', () => {
+  for (const name of ['stands on the wall', 'a corner in the wall']) { const v = the(name); ok(v.said !== 'nothing' || !v.valid || v.solids !== 1, name); }
+  const fine = the('crosses the wall'); ok(fine.said === 'nothing' && fine.valid && fine.solids === 1);
+});
+run();
+</script>

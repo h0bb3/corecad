@@ -175,3 +175,46 @@ const shape = r.cast(b.Shape());
   then `.distanceTo(face) < 1e-6`; delete both).
 - A profile that reaches across the axis is not refused by the kernel; check
   it in the sketch plane before building.
+
+## A profile turned about an axis while it rises along it (a thread)
+
+Tried in `test/spike-helix.test.html` (2026-11-26). No feature uses it yet.
+
+```js
+const helix = r.makeHelix(pitch, height, radius, [0, 0, z0]);        // a Wire about +Z, from (radius, 0, z0)
+const ridge = r.genericSweep(profileWire, helix, { frenet: true });  // a Solid
+// or, the same solid: the axis carries the profile and the helix guides the turning
+const ridge = r.genericSweep(profileWire, axisWire, { auxiliarySpine: helix });
+```
+
+- Both give a valid `Solid`. A profile of four lines makes 6 faces: one
+  `BSPLINE_SURFACE` for each line, however many turns, and two flat ends,
+  where the profile was drawn and where it ends up.
+- **The volume is exact, and there is a formula for it**: the first moment
+  of the profile about the axis, times the angle in radians. That is the
+  volume of an ordinary revolve by the same angle; the rise adds nothing,
+  because along the axis the profile moves within its own plane. (A tooth
+  2.15 deep at radius 15: four turns 1395.529 against 1395.529; a quarter
+  of a turn and a turn and a half are as close.)
+- Fast: 12 to 150 ms; 20 turns in 35 ms.
+- **Joining the ridge to a core is where the time and the danger are.** With
+  CoreCAD's own boolean (`HasErrors`, then `SimplifyResult`):
+  - A tooth whose flanks go on into the core (by 0.3 here), so that the
+    ridge crosses the core's wall: one valid solid, the volume right to
+    0.003 in 8395 (14 mm long) and to 0.05 in 35981 (60 mm, 17 turns). The
+    join takes 1 s for 6 turns and 3.9 s for 20; cutting the ends off flat
+    (a `common` with a cylinder) 0.5 to 1 s. The 60 mm rod has 23 faces and
+    41,882 triangles, meshed in 1.2 s.
+  - A tooth that stands on the core's wall (its base lies in the wall): the
+    builder reports no error, after 6 s, and the result is two solids and
+    not valid. The check of validity after a boolean catches it.
+  - A tooth with a corner in the wall that goes on inside: `StdFail_NotDone`
+    after 5 s.
+  - replicad's own `a.fuse(b)` does not ask for errors: for that last tooth
+    on a 60 mm rod it gave back the ridge alone, valid, with the core gone.
+    Do not use it here.
+- The same thread cut out of a block, 0.3 bigger all round: one valid solid,
+  the cut itself 0.2 s, the volume within 0.4 of 18576.
+- For comparison, the thread as a stair of wedges, 36 to a turn, each joined
+  to what is there: 63 ms a wedge over the first two turns (72 wedges, 364
+  faces). 17 turns are 612 wedges.
