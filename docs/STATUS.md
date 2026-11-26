@@ -81,11 +81,12 @@ Not verified:
 - **A headset, in detail.** No test here has a headset: a headless Chrome
   has no WebXR, and `src/view/xr.js` runs in the tests against stand-ins for
   the session, the poses and the buttons. The owner tried it in a Quest 3 on
-  2026-11-26 and reported: "the controls work I think". Which of the two
-  ways it was (the Headset button, or the watching page), and what of it was
-  tried (holding, sizing, pointing, the cut, see-through, the numbers), is
-  not written down; nor how fast it is or whether the cut surfaces are
-  filled there.
+  2026-11-26 and reported: "the controls work I think". It was the Headset
+  button on the page itself, with a box made there: so the kernel runs in
+  the Quest's browser, for a box at least. What of it was tried (holding,
+  sizing, pointing, the cut, see-through, the numbers) is not written down;
+  nor how fast it is or whether the cut surfaces are filled there. The
+  watching page has not been tried in a headset.
 - **A printed thread.** Bolt and nut come out of the kernel as valid solids
   with the volumes they must have. Whether a thread made this way screws
   together when printed, and with what clearance, nobody has tried.
