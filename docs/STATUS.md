@@ -49,15 +49,24 @@ Verified on this build, 2026-11-26:
 - On the public site: `e2e_api.py` against the published page, and
   `e2e_bridge.py --live` through the public relay.
 
+Used for a real thing (the owner, 2026-11-26): a wall-mounted tablet holder
+with dovetails was designed in CoreCAD in three variations and printed, and
+it works quite well. So the whole way from the commands to a printed part
+that does its job has been gone once. The project files are not in this
+repository, and which export format and which slicer were used is not
+written down here.
+
 Not verified:
 
-- **By hand.** What the owner has reported from use is in the log (turning
-  parts, which led to the rings; a 3MF opened in Bambu Studio). Everything
-  else rests on the scripts.
-- **A slicer.** Bambu Studio opened a 3MF from CoreCAD with the message "The
-  3mf file has invalid config, load geometry data only"; the geometry was
-  right. What causes the message was not found, and whether the parts arrive
-  as separate named objects with their colours is not confirmed.
+- **By hand, feature by feature.** What the owner has reported from use is
+  the holder above and what is in the log (turning parts, which led to the
+  rings; a 3MF opened in Bambu Studio). There is no report from use yet of
+  Section, X-ray or the signs of an agent at work: they rest on the scripts.
+- **A slicer, in detail.** Bambu Studio opened a 3MF from CoreCAD with the
+  message "The 3mf file has invalid config, load geometry data only"; the
+  geometry was right. What causes the message was not found, and whether the
+  parts arrive as separate named objects with their colours is not
+  confirmed.
 - **Claude's own connector.** The relay has been used by the test clients
   and by an agent of the owner's. Adding it in Claude as a custom connector
   has not been reported.
@@ -128,6 +137,24 @@ To settle for each before it is built, with one way to say each thing:
 - **Sweep**: an area of one sketch along a path from another. It is the
   first operation that takes two sketches.
 - **Loft**: areas of two or more sketches, in order.
+
+Also raised on 2026-11-26, when the owner asked what is missing. None of it
+is decided or ordered, and it was reasoned from the command list and from a
+description of the tablet holder, not from the holder's files:
+
+- **Numbers with a name, shared between sketches, with arithmetic.** Today
+  every dimension stands alone and arithmetic in a field is worked out once.
+  A variation of a part is then every affected dimension changed one by one,
+  and a socket cannot follow its tail with a clearance
+  (`socket = tail + 2 × clearance`).
+- **Import** of STEP and STL. `STEPControl_Reader` and `StlAPI_Reader` are in
+  the kernel build and have not been run here.
+- **A sketch that refers to the body it sits on.** A hole "5 mm from the
+  edge" is a number from the origin, and stays where it is when the plate
+  grows.
+- **An agent's work as one thing**: a mark in the history where it began,
+  and a way back to it. Undo goes a command at a time.
+- **A helix** as a path, for threads: the paths of a sketch are flat.
 
 What a new operation touches (revolve, commit `65a526a`, is the pattern):
 
