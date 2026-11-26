@@ -1136,6 +1136,57 @@ main {
   background: #dfefea;
   color: #0e7b68;
 }
+/* Looking inside: where the cut is, under the view bar. */
+.sectionbar {
+  position: absolute;
+  top: 56px;
+  left: 18px;
+  display: flex;
+  align-items: center;
+  z-index: 2;
+  padding: 3px 5px;
+  background: #fdfefee8;
+  box-shadow: 0 2px 8px #2b4b4b05;
+  border: 1px solid #dce5e5;
+  border-radius: 6px;
+  gap: 2px;
+  font-size: 10px;
+  color: #6a7f83;
+}
+.sectionbar[hidden] {
+  display: none;
+}
+.sectionbar button {
+  font-size: 10px;
+  color: #6a7f83;
+  padding: 5px 8px;
+}
+.sectionbar button.on {
+  background: #dfefea;
+  color: #0e7b68;
+}
+.sectionbar .bar-label {
+  padding: 0 6px 0 4px;
+}
+.sectionbar input[type='range'] {
+  width: 170px;
+  margin: 0 8px;
+  accent-color: var(--accent);
+}
+.sectionbar .bar-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 6px;
+}
+.sectionbar .bar-field input {
+  width: 58px;
+  font-size: 11px;
+  padding: 3px 5px;
+}
+#viewport.sectioning .context-note {
+  top: 100px;
+}
 .dim-input {
   position: absolute;
   z-index: 4;

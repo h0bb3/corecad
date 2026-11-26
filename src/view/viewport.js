@@ -1,5 +1,6 @@
 import * as M from './camera-math.js';
-import { buildPickData, pickFace, pickEdge, projectEdges } from './pick3d.js';
+import { buildPickData, pickFace, pickEdge, projectEdges, countHits } from './pick3d.js';
+import { halfSpaceIn, rayRange, cutOutline } from './section.js';
 import { basePlane, canonicalFrame, toWorld } from '../core/plane.js';
 import * as Mat from '../core/mat.js';
 
@@ -31,8 +32,19 @@ export function createViewport(host, callbacks = {}) {
     preview = null,
     ghosts = [],
     inverses = [],
+    cut = null, // looking inside: the half of space that is drawn ({ n, d }: every p with n.p <= d), or null
+    seeThrough = false, // the solids drawn see-through, every edge showing
+    geometries = [], // of the bodies as they are drawn, for their cut surfaces
     queued = false;
-  let T, renderer, scene, camera, solids, highlights, toolGroup;
+  let T, renderer, scene, camera, solids, highlights, toolGroup, cuts, clipPlane;
+  /** How the model is looked into. Neither while a sketch is drawn: there the plane of the sketch is what is looked at. */
+  const active = () => (frame ? null : cut),
+    through = () => seeThrough && !frame,
+    clips = () => (active() ? [clipPlane] : null);
+  function aim() {
+    // three.js draws where normal.p + constant >= 0
+    if (T && cut) clipPlane.set(new T.Vector3(-cut.n[0], -cut.n[1], -cut.n[2]), cut.d);
+  }
   const cache = new Map();
   const dirty = () => {
     if (!queued) {
@@ -68,6 +80,8 @@ export function createViewport(host, callbacks = {}) {
     if (!T) return;
     free(solids);
     free(toolGroup);
+    geometries = [];
+    const xr = through();
     for (const b of bodies) {
       // A body's own colour (b.color), else the plain one; the selected part is tinted towards the accent.
       // Painted faces (b.faceColors: face number -> colour) are drawn through a colour for every vertex:
@@ -99,8 +113,13 @@ export function createViewport(host, callbacks = {}) {
           polygonOffset: true,
           polygonOffsetFactor: 1,
           polygonOffsetUnits: 1,
+          clippingPlanes: clips(),
+          transparent: xr,
+          opacity: xr ? 0.3 : 1,
+          depthWrite: !xr,
         })
       );
+      geometries.push(g0);
       solids.add(place(mesh, b.matrix));
       const g = new T.BufferGeometry(),
         segments = b.mesh.edgeSegs,
@@ -116,7 +135,7 @@ export function createViewport(host, callbacks = {}) {
         place(
           new T.LineSegments(
             g,
-            new T.LineBasicMaterial({ color: b.chosen ? 0x0b7f6e : 0x41585d, transparent: true, opacity: b.chosen ? 0.95 : 0.72 })
+            new T.LineBasicMaterial({ color: b.chosen ? 0x0b7f6e : 0x41585d, transparent: true, opacity: b.chosen || xr ? 0.95 : 0.72, clippingPlanes: clips() })
           ),
           b.matrix
         )
@@ -128,7 +147,7 @@ export function createViewport(host, callbacks = {}) {
         place(
           new T.Mesh(
             geometry(b.mesh),
-            new T.MeshBasicMaterial({ color: 0x5b83b8, transparent: true, opacity: 0.2, depthWrite: false, side: T.DoubleSide })
+            new T.MeshBasicMaterial({ color: 0x5b83b8, transparent: true, opacity: 0.2, depthWrite: false, side: T.DoubleSide, clippingPlanes: clips() })
           ),
           b.matrix
         )
@@ -142,11 +161,91 @@ export function createViewport(host, callbacks = {}) {
           opacity: 0.22,
           depthWrite: false,
           side: T.DoubleSide,
+          clippingPlanes: clips(),
         })
       );
       toolGroup.add(place(mesh, preview.matrix));
     }
+    buildCut();
     dirty();
+  }
+  /** The cut surfaces of the bodies and their outlines, where the model is cut open. Made again when the cut moves. */
+  function buildCut() {
+    if (!T) return;
+    for (const c of [...cuts.children]) {
+      cuts.remove(c);
+      if (c.userData.own) c.geometry.dispose(); // the others are the bodies' own geometry
+      c.material.dispose();
+    }
+    const half = active();
+    if (!half || !bodies.length) return;
+    const boxes = bodies.map((b) => (b.matrix ? Mat.box(b.matrix, b.bbox) : b.bbox)),
+      lo = [0, 1, 2].map((i) => Math.min(...boxes.map((b) => b[0][i]))),
+      hi = [0, 1, 2].map((i) => Math.max(...boxes.map((b) => b[1][i]))),
+      centre = M.mul(M.add(lo, hi), 0.5),
+      onPlane = M.sub(centre, M.mul(half.n, M.dot(half.n, centre) - half.d)),
+      size = Math.max(10, M.len(M.sub(hi, lo))) * 4,
+      turn = new T.Quaternion().setFromUnitVectors(new T.Vector3(0, 0, 1), new T.Vector3(...half.n));
+    bodies.forEach((b, i) => {
+      // Of the faces that are left of a closed solid, a pixel that looks into the cut has one more
+      // turned away from the eye than towards it: counted in the stencil buffer, body by body, and
+      // a sheet in the plane is drawn where the count is not nothing.
+      const order = 10 + i;
+      for (const [side, op] of [
+        [T.BackSide, T.IncrementWrapStencilOp],
+        [T.FrontSide, T.DecrementWrapStencilOp],
+      ]) {
+        const counted = new T.Mesh(
+          geometries[i],
+          new T.MeshBasicMaterial({
+            side,
+            clippingPlanes: [clipPlane],
+            depthWrite: false,
+            depthTest: false,
+            colorWrite: false,
+            stencilWrite: true,
+            stencilFunc: T.AlwaysStencilFunc,
+            stencilFail: op,
+            stencilZFail: op,
+            stencilZPass: op,
+          })
+        );
+        counted.renderOrder = order;
+        cuts.add(place(counted, b.matrix));
+      }
+      const sheet = new T.Mesh(
+        new T.PlaneGeometry(size, size),
+        new T.MeshBasicMaterial({
+          // the body's own colour, darker: material that was cut through
+          color: new T.Color(b.color ?? (b.chosen ? 0xa8d2c8 : b.instance ? 0xb9c4d6 : 0xbac8ca)).multiplyScalar(0.55),
+          side: T.DoubleSide,
+          stencilWrite: true,
+          stencilRef: 0,
+          stencilFunc: T.NotEqualStencilFunc,
+          stencilFail: T.ReplaceStencilOp,
+          stencilZFail: T.ReplaceStencilOp,
+          stencilZPass: T.ReplaceStencilOp,
+          polygonOffset: true,
+          polygonOffsetFactor: 1,
+          polygonOffsetUnits: 1,
+        })
+      );
+      sheet.userData.own = true;
+      sheet.position.fromArray(onPlane);
+      sheet.quaternion.copy(turn);
+      sheet.renderOrder = order + 0.5;
+      sheet.onAfterRender = (r) => r.clearStencil();
+      cuts.add(sheet);
+      const outline = cutOutline(b.mesh, halfSpaceIn(half, b.matrix));
+      if (outline.length) {
+        const g = new T.BufferGeometry();
+        g.setAttribute('position', new T.BufferAttribute(outline, 3));
+        const lines = new T.LineSegments(g, new T.LineBasicMaterial({ color: 0x1f2f33 }));
+        lines.userData.own = true;
+        lines.renderOrder = order + 0.6;
+        cuts.add(place(lines, b.matrix));
+      }
+    });
   }
   function highlightsNow() {
     if (!T) return;
@@ -174,13 +273,14 @@ export function createViewport(host, callbacks = {}) {
             polygonOffset: true,
             polygonOffsetFactor: -2,
             polygonOffsetUnits: -2,
+            clippingPlanes: clips(),
           })
         );
       } else if (h.type === 'edge') {
         const a = m.edgeSegs[2 * h.edge] * 3,
           n = m.edgeSegs[2 * h.edge + 1] * 3;
         g.setAttribute('position', new T.BufferAttribute(m.edgeLines.slice(a, a + n), 3));
-        object = new T.LineSegments(g, new T.LineBasicMaterial({ color, depthTest: false }));
+        object = new T.LineSegments(g, new T.LineBasicMaterial({ color, depthTest: false, clippingPlanes: clips() }));
       }
       if (object) {
         object.renderOrder = 5;
@@ -295,25 +395,58 @@ export function createViewport(host, callbacks = {}) {
   /** What is under a pixel. A hit's `point` is in the frame of the body's part (where its faces
    *  and references are); `world` is the same point in space; `key` names the exact geometry the
    *  face or edge number belongs to (it is another body's once the model is rebuilt). */
+  /** What a ray meets first of what is drawn: a face ({ i, face, t, point }, i the body's number and
+   *  point in its frame), or where the model is cut open the cut surface of a body ({ i, cut: true, t });
+   *  null when it meets nothing. */
+  function first(ray) {
+    const half = active();
+    let t0 = 0,
+      t1 = Infinity;
+    if (half) {
+      const range = rayRange(half, ray);
+      if (!range) return null;
+      [t0, t1] = range;
+      // Coming into what is left from inside a solid: what is seen there is its cut surface.
+      if (t0 > 0)
+        for (let i = 0; i < pickBodies.length; i++)
+          if (countHits(pickBodies[i].mesh, picks[i], rayIn(i, ray), t0) % 2) return { i, cut: true, t: t0 };
+    }
+    const from = t0 > 0 ? { o: M.add(ray.o, M.mul(ray.d, t0)), d: ray.d } : ray;
+    let best = null;
+    for (let i = 0; i < pickBodies.length; i++) {
+      const hit = pickFace(pickBodies[i].mesh, picks[i], rayIn(i, from), t1 - t0);
+      if (hit && (!best || hit.t + t0 < best.t)) best = { i, ...hit, t: hit.t + t0 };
+    }
+    return best;
+  }
   function pick(x, y, filter = 'all', hidden = false) {
-    const ray = M.ray(view, vp, x, y);
+    const ray = M.ray(view, vp, x, y),
+      half = active(),
+      front = first(ray);
     let face = null,
       edge = null;
-    for (let i = 0; i < pickBodies.length; i++) {
-      const b = pickBodies[i],
-        hit = pickFace(b.mesh, picks[i], rayIn(i, ray));
-      if (hit && (!face || hit.t < face.t))
-        face = { type: 'face', body: b.id, key: b.key, ...hit, world: b.matrix ? Mat.point(b.matrix, hit.point) : hit.point };
+    if (front && !front.cut) {
+      const b = pickBodies[front.i];
+      face = {
+        type: 'face',
+        body: b.id,
+        key: b.key,
+        face: front.face,
+        t: front.t,
+        point: front.point,
+        world: b.matrix ? Mat.point(b.matrix, front.point) : front.point,
+      };
     }
     if (filter !== 'face')
       for (let i = 0; i < pickBodies.length; i++) {
         const b = pickBodies[i],
-          hit = pickEdge(b.mesh, projectEdges(b.mesh, view, vp, b.matrix), x, y, 8);
+          hit = pickEdge(b.mesh, projectEdges(b.mesh, view, vp, b.matrix), x, y, 8, half && halfSpaceIn(half, b.matrix));
         if (!hit) continue;
         const world = b.matrix ? Mat.point(b.matrix, hit.point) : hit.point,
           depth = M.dot(M.sub(world, ray.o), ray.d),
           tolerance = Math.max(0.01, M.mmPerPx(view, vp) * 2);
-        if (!hidden && face && depth > face.t + tolerance) {
+        // See-through, every edge is seen. Otherwise an edge behind what the ray meets first is hidden.
+        if (!hidden && !through() && front && depth > front.t + tolerance) {
           // At silhouettes a subpixel rounding change can put the ray just inside
           // the solid. Test a tiny neighbourhood of the edge itself, not the mouse.
           const s = M.project(view, vp, world),
@@ -324,11 +457,9 @@ export function createViewport(host, callbacks = {}) {
               [0, -0.75],
             ].some(([dx, dy]) => {
               const r = M.ray(view, vp, s[0] + dx, s[1] + dy),
-                z = M.dot(M.sub(world, r.o), r.d);
-              return !pickBodies.some((body, j) => {
-                const h = pickFace(body.mesh, picks[j], rayIn(j, r));
-                return h && h.t < z - tolerance;
-              });
+                z = M.dot(M.sub(world, r.o), r.d),
+                f = first(r);
+              return !f || f.t >= z - tolerance;
             });
           if (!visible) continue;
         }
@@ -445,6 +576,30 @@ export function createViewport(host, callbacks = {}) {
       dirty();
     },
     pick,
+    /** Cuts the model open for looking inside: what is drawn, and what can be pointed at, is every
+     *  point p with n.p <= d of half = { n, d } (section.js), with the cut surfaces filled in. null: whole again. */
+    section(half) {
+      const was = !!cut;
+      cut = half;
+      aim();
+      if (was !== !!cut) buildSolids();
+      else buildCut();
+      highlightsNow();
+      dirty();
+    },
+    /** Draws the solids see-through, with every edge showing (and every edge can then be pointed at). */
+    xray(on) {
+      if (seeThrough === !!on) return;
+      seeThrough = !!on;
+      buildSolids();
+      highlightsNow();
+      dirty();
+    },
+    /** The body whose cut surface is under a pixel (its id), or null. */
+    cutAt(x, y) {
+      const f = first(M.ray(view, vp, x, y));
+      return f?.cut ? pickBodies[f.i].id : null;
+    },
     overlay(fn) {
       drawOverlay = fn;
       dirty();
@@ -463,6 +618,11 @@ export function createViewport(host, callbacks = {}) {
       if (f) {
         view = { ...M.lookAtFrame(view, f), ortho: true };
         if (box) view = M.fitInPlane(view, vp, f, box);
+      }
+      if (cut || seeThrough) {
+        // neither is shown while a sketch is drawn
+        buildSolids();
+        highlightsNow();
       }
       dirty();
     },
@@ -524,7 +684,10 @@ export function createViewport(host, callbacks = {}) {
   import('https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js')
     .then((three) => {
       T = three;
-      renderer = new T.WebGLRenderer({ antialias: true, alpha: true });
+      renderer = new T.WebGLRenderer({ antialias: true, alpha: true, stencil: true });
+      renderer.localClippingEnabled = true;
+      clipPlane = new T.Plane();
+      aim();
       renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
       surface.append(renderer.domElement);
       scene = new T.Scene();
@@ -540,7 +703,8 @@ export function createViewport(host, callbacks = {}) {
       solids = new T.Group();
       highlights = new T.Group();
       toolGroup = new T.Group();
-      scene.add(solids, highlights, toolGroup);
+      cuts = new T.Group();
+      scene.add(solids, cuts, highlights, toolGroup);
       resize();
       buildSolids();
       highlightsNow();

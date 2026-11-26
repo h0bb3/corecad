@@ -141,8 +141,9 @@ export function projectEdges(mesh, view, vp, m = null) {
   return out;
 }
 
-/** The edge nearest to a pixel within tolPx: { edge, distPx, point: [x,y,z], depth } or null. No occlusion test here. */
-export function pickEdge(mesh, proj, sx, sy, tolPx) {
+/** The edge nearest to a pixel within tolPx: { edge, distPx, point: [x,y,z], depth } or null. No occlusion test here.
+ *  half: a half space in the mesh's frame ({ n, d }, see section.js); what is outside it cannot be taken. */
+export function pickEdge(mesh, proj, sx, sy, tolPx, half = null) {
   let best = tolPx * tolPx,
     hit = null;
   const nEdge = mesh.edgeSegs.length / 2,
@@ -164,6 +165,12 @@ export function pickEdge(mesh, proj, sx, sy, tolPx) {
         ey = ay + uy * t - sy,
         d2 = ex * ex + ey * ey;
       if (d2 < best) {
+        if (half) {
+          const x = L[a] + (L[b] - L[a]) * t,
+            y = L[a + 1] + (L[b + 1] - L[a + 1]) * t,
+            z = L[a + 2] + (L[b + 2] - L[a + 2]) * t;
+          if (half.n[0] * x + half.n[1] * y + half.n[2] * z > half.d + 1e-6) continue;
+        }
         best = d2;
         hit = {
           edge: e,
@@ -179,4 +186,71 @@ export function pickEdge(mesh, proj, sx, sy, tolPx) {
     }
   }
   return hit;
+}
+
+/** How many times a ray passes through the surface of a mesh between t0 and t1. A closed solid is
+ *  passed an odd number of times from a point inside it. */
+export function countHits(mesh, pd, ray, t0 = 0, t1 = Infinity) {
+  const P = mesh.positions,
+    I = mesh.indices,
+    B = pd.box;
+  const ox = ray.o[0],
+    oy = ray.o[1],
+    oz = ray.o[2],
+    dx = ray.d[0],
+    dy = ray.d[1],
+    dz = ray.d[2];
+  const ix = 1 / dx,
+    iy = 1 / dy,
+    iz = 1 / dz,
+    PAD = 1e-6;
+  let count = 0;
+  const nFace = mesh.faceTris.length / 2;
+  for (let f = 0; f < nFace; f++) {
+    const b = f * 6; // slab test against the face's box, as in pickFace
+    let a0 = (B[b] - PAD - ox) * ix,
+      a1 = (B[b + 3] + PAD - ox) * ix;
+    if (a0 > a1) [a0, a1] = [a1, a0];
+    let u0 = (B[b + 1] - PAD - oy) * iy,
+      u1 = (B[b + 4] + PAD - oy) * iy;
+    if (u0 > u1) [u0, u1] = [u1, u0];
+    let w0 = (B[b + 2] - PAD - oz) * iz,
+      w1 = (B[b + 5] + PAD - oz) * iz;
+    if (w0 > w1) [w0, w1] = [w1, w0];
+    const near = Math.max(a0, u0, w0),
+      far = Math.min(a1, u1, w1);
+    if (!(near <= far) || far < t0 || near > t1) continue;
+    const start = mesh.faceTris[2 * f],
+      end = start + mesh.faceTris[2 * f + 1];
+    for (let k = start; k < end; k += 3) {
+      const a = I[k] * 3,
+        bb = I[k + 1] * 3,
+        c = I[k + 2] * 3;
+      const e1x = P[bb] - P[a],
+        e1y = P[bb + 1] - P[a + 1],
+        e1z = P[bb + 2] - P[a + 2];
+      const e2x = P[c] - P[a],
+        e2y = P[c + 1] - P[a + 1],
+        e2z = P[c + 2] - P[a + 2];
+      const px = dy * e2z - dz * e2y,
+        py = dz * e2x - dx * e2z,
+        pz = dx * e2y - dy * e2x;
+      const det = e1x * px + e1y * py + e1z * pz;
+      if (det > -1e-12 && det < 1e-12) continue;
+      const inv = 1 / det,
+        tx = ox - P[a],
+        ty = oy - P[a + 1],
+        tz = oz - P[a + 2];
+      const u = (tx * px + ty * py + tz * pz) * inv;
+      if (u < 0 || u > 1) continue;
+      const qx = ty * e1z - tz * e1y,
+        qy = tz * e1x - tx * e1z,
+        qz = tx * e1y - ty * e1x;
+      const v = (dx * qx + dy * qy + dz * qz) * inv;
+      if (v < 0 || u + v > 1) continue;
+      const t = (e2x * qx + e2y * qy + e2z * qz) * inv;
+      if (t > t0 && t < t1) count++;
+    }
+  }
+  return count;
 }

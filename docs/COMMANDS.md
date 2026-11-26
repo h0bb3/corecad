@@ -186,6 +186,39 @@ between two clicked things, and the Dimensions view). An agent gets the same:
   mean.
 - `screenshot { dimensions: true }` draws the driving numbers on the picture.
 
+## Looking inside
+
+A model can be complicated inside. Two ways of looking in, for the person in
+the page (Section and X-ray in the view bar) and for an agent:
+
+- `set_section { plane: "XZ", at: 12 }` cuts the model open along a plane
+  square to an axis: `"XY"` (the cut moves along z), `"XZ"` (along y) or
+  `"YZ"` (along x). What lies above `at` along that axis is not drawn
+  (`flip: true`: what lies below it); the cut through each solid is filled in
+  with the part's own colour, darker. `at` left out is the middle of the
+  model; `plane: null` puts the model back whole.
+- `set_xray { on: true }` draws the solids see-through, with every edge
+  showing.
+- Both change how the model is shown, in the page and in `screenshot`. They
+  never change the model, and they are not saved with it. While a sketch is
+  drawn the model is shown whole.
+- What a cut shows is as real as the outside: the faces inside can be pointed
+  at, clicked and measured (`"this"`, `measure`), and in X-ray an edge that
+  was hidden can be clicked. A click on the cut itself means the part.
+- `get_selection` says how the person is looking, under `looking`:
+
+```json
+"looking": {
+  "camera": { "view": "home", "towards": [-0.5774, 0.5774, -0.5774], "up": [-0.4082, 0.4082, 0.8165], "projection": "orthographic" },
+  "section": { "plane": "XZ", "at": 0, "flip": true, "text": "cut along XZ at y = 0 mm: everything with y below that is taken away" },
+  "xray": false
+}
+```
+
+  `camera.view` is the name of a standard view when the camera stands in one
+  (else null); `towards` is the way it looks, in space. When the person says
+  "here" with the model cut open, what they point at is likely inside.
+
 ## Colours and export
 
 - `set_color { part, color }` colours a part; `set_color { faces, color }`
@@ -214,7 +247,7 @@ Arguments in brackets are optional.
 | Command | Arguments | What it does |
 |---|---|---|
 | `get_state` | - | The model at a glance: parts with their place, parent and history; features with status and main numbers; bodies with volume and bounding box in space; the current part. Start here. |
-| `get_selection` | - | What the person has clicked and what their mouse rests on: faces, edges, part, feature and number, with where they are and what made them. |
+| `get_selection` | - | What the person has clicked and what their mouse rests on: faces, edges, part, feature and number, with where they are and what made them; and how they are looking at the model (camera, cut, see-through). |
 | `measure` | [from], [to] | How big a face or an edge is; how far apart or at what angle two are. |
 | `get_document` | - | The whole project as JSON, as Save writes it. |
 | `load_document` | document | Replaces the open project. |
@@ -248,6 +281,8 @@ Arguments in brackets are optional.
 | `export` | [format], [part], [per_part], [download] | 3MF (an object for each part, named and coloured), STL or STEP. |
 | `screenshot` | [max], [dimensions] | The 3D view as it stands, as a PNG data URL, with the driving numbers on it if asked. |
 | `set_view` | [view], [fit] | Turns the camera to a standard view and fits the model. |
+| `set_section` | plane, [at], [flip] | Cuts the model open along a plane to look inside, or (plane null) shows it whole again. |
+| `set_xray` | on | Draws the solids see-through, or solid again. |
 | `reload_app` | - | Reloads the tab so that it runs the newest CoreCAD; the project is kept. |
 
 `edit_feature` takes, for an extrusion: `distance`, `through_all`,

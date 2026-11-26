@@ -23,6 +23,8 @@ export const INSTRUCTIONS =
   'When the user says "this", "here" or "that": they have clicked something in the page or hold their mouse on it. get_selection tells what; ' +
   'and the word "this" can be given wherever a command takes a face, edges, a part or a feature id. ' +
   'measure tells how big something is and how far apart two things are. ' +
+  'To look inside a model, set_section cuts it open along a plane and set_xray draws it see-through; both change the picture, not the model, and screenshot shows them. ' +
+  'The user has the same in the page, and get_selection says how they are looking ("looking"): what they point at may be inside. ' +
   'set_color colours a part or single faces. For printing, export as "3mf": every part is then an object of its own in the slicer, with its name and colours. ' +
   'CoreCAD is updated often: get_state says under "app" when a newer one is published, and reload_app loads it.';
 

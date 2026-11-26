@@ -1,0 +1,95 @@
+<!doctype html><meta charset="utf-8"><title>Looking inside</title><script type="module">
+import {test,eq,ok,near,throws,run} from './harness.js';
+import {checkSection,halfSpace,halfSpaceIn,rayRange,cutOutline,reachAlong,sectionText,sectionAxis} from '../src/view/section.js';
+import {buildPickData,pickFace,pickEdge,countHits} from '../src/view/pick3d.js';
+import * as Mat from '../src/core/mat.js';
+
+// A box from lo to hi as the kernel hands a mesh over: six faces of two triangles, each with vertices of its own.
+function box(lo,hi){
+ const c=(i)=>[i&1?hi[0]:lo[0],i&2?hi[1]:lo[1],i&4?hi[2]:lo[2]],positions=[],indices=[],faceTris=[],edgeLines=[],edgeSegs=[];
+ for(const q of [[0,2,6,4],[1,5,7,3],[0,4,5,1],[2,3,7,6],[0,1,3,2],[4,6,7,5]]){
+  const at=positions.length/3;for(const i of q)positions.push(...c(i));
+  faceTris.push(indices.length,6);indices.push(at,at+1,at+2,at,at+2,at+3);
+ }
+ for(const [a,b] of [[0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]]){edgeSegs.push(edgeLines.length/3,2);edgeLines.push(...c(a),...c(b));}
+ return {positions:new Float32Array(positions),indices:new Uint32Array(indices),faceTris:new Uint32Array(faceTris),edgeLines:new Float32Array(edgeLines),edgeSegs:new Uint32Array(edgeSegs)};
+}
+
+test('A section is a plane square to an axis, a place along it and the side that is taken away',async()=>{
+ eq(checkSection({plane:'xz',at:12.34567}),{plane:'XZ',at:12.346,flip:false});
+ eq(halfSpace({plane:'XY',at:20,flip:false}),{n:[0,0,1],d:20},'what is above z = 20 is gone: z <= 20 stays');
+ eq(halfSpace({plane:'XZ',at:5,flip:true}),{n:[0,-1,0],d:-5},'flipped: y >= 5 stays');
+ eq(halfSpace({plane:'YZ',at:-3,flip:false}),{n:[1,0,0],d:-3});
+ eq(sectionAxis({plane:'YZ'}),'x');
+ eq(sectionText({plane:'XY',at:20,flip:false}),'cut along XY at z = 20 mm: everything with z above that is taken away');
+ eq(sectionText({plane:'XZ',at:0,flip:true}),'cut along XZ at y = 0 mm: everything with y below that is taken away');
+ await throws(()=>checkSection({plane:'top',at:0}),/"XY", "XZ" or "YZ"/);
+ await throws(()=>checkSection({plane:'XY'}),/"at" is a number/);
+ await throws(()=>checkSection({plane:'XY',at:'12'}),/"at" is a number/);
+ await throws(()=>checkSection(null),/"XY", "XZ" or "YZ"/);
+});
+test('The reach of a model along the axis of a plane',()=>{
+ eq(reachAlong('XY',[[[0,0,0],[10,20,30]],[[-5,0,12],[5,5,44]]]),[0,44]);
+ eq(reachAlong('YZ',[[[0,0,0],[10,20,30]],[[-5,0,12],[5,5,44]]]),[-5,10]);
+ eq(reachAlong('XZ',[]),null);
+});
+test('Of a ray, the stretch that lies in the half that stays',()=>{
+ const half={n:[0,0,1],d:20};
+ eq(rayRange(half,{o:[0,0,100],d:[0,0,-1]}),[80,Infinity],'from above: it comes in at the plane');
+ eq(rayRange(half,{o:[0,0,-100],d:[0,0,1]}),[0,120],'from below: it is in until the plane');
+ eq(rayRange(half,{o:[0,0,10],d:[1,0,0]}),[0,Infinity],'along the plane, inside');
+ eq(rayRange(half,{o:[0,0,30],d:[1,0,0]}),null,'along the plane, outside');
+ eq(rayRange(half,{o:[0,0,30],d:[0,0,1]}),null,'going away from it');
+ near(rayRange(half,{o:[0,0,30],d:[0.6,0,-0.8]})[0],12.5,1e-9);
+});
+test('A half space in the frame of a part that is moved and turned is the same half of space',()=>{
+ const m=Mat.fromPlacement([10,-4,7],[30,45,60]),half={n:[0,0,1],d:20},own=halfSpaceIn(half,m);
+ near(Math.hypot(...own.n),1,1e-12);
+ for(const q of [[0,0,0],[3,-8,12],[-20,5,40],[7,7,-7]]){
+  const p=Mat.point(m,q);
+  near(own.n[0]*q[0]+own.n[1]*q[1]+own.n[2]*q[2]-own.d,p[2]-20,1e-9,'the same distance from the plane');
+ }
+ eq(halfSpaceIn(half,null),half);
+});
+test('The outline of a cut through a box is the rectangle it is cut in',()=>{
+ const mesh=box([0,0,0],[60,40,30]),o=cutOutline(mesh,{n:[0,0,1],d:20});
+ eq(o.length%6,0);
+ let length=0;
+ for(let i=0;i<o.length;i+=6){
+  near(o[i+2],20,1e-5);near(o[i+5],20,1e-5);
+  length+=Math.hypot(o[i+3]-o[i],o[i+4]-o[i+1]);
+ }
+ near(length,200,1e-4,'all the way round, once: 2 (60 + 40)');
+ eq(cutOutline(mesh,{n:[0,0,1],d:31}).length,0,'beside the box: nothing');
+ near([...cutOutline(mesh,{n:[1,0,0],d:10})].filter((v,i)=>i%3===0),new Array(16).fill(10),1e-5,'along YZ: every point at x = 10');
+});
+test('A ray passes the surface of a closed solid an odd number of times from inside it',()=>{
+ const mesh=box([0,0,0],[60,40,30]),pd=buildPickData(mesh),down={o:[20.3,10.7,100],d:[0,0,-1]};
+ eq(countHits(mesh,pd,down),2);
+ eq(countHits(mesh,pd,down,80),1,'from z = 20, inside the box, to the bottom');
+ eq(countHits(mesh,pd,down,60,80),1,'only the top is between 40 and 20');
+ eq(countHits(mesh,pd,down,101),0,'from under the box');
+ eq(countHits(mesh,pd,{o:[70.3,10.7,100],d:[0,0,-1]}),0,'beside it');
+ eq(countHits(mesh,pd,{o:[-10,10.2,15.1],d:[1,0,0]},10.5),1,'sideways, from inside');
+});
+test('Where a model is cut open, what is first met of what is left is its inside',()=>{
+ // A box with nothing in it stands for what a ray meets: from above, cut at z = 20, the ray comes
+ // in at the plane, inside the solid (the cut surface is what is seen there); the first face of
+ // what is left is the bottom.
+ const mesh=box([0,0,0],[60,40,30]),pd=buildPickData(mesh),ray={o:[20.3,10.7,100],d:[0,0,-1]},[t0,t1]=rayRange({n:[0,0,1],d:20},ray);
+ eq(pickFace(mesh,pd,ray).face,5,'whole: the top');
+ const from={o:[ray.o[0],ray.o[1],ray.o[2]-t0],d:ray.d},hit=pickFace(mesh,pd,from,t1-t0);
+ eq(hit.face,4,'cut: the bottom, from inside');near(hit.t+t0,100,1e-6);
+ eq(countHits(mesh,pd,ray,t0)%2,1,'and the ray comes into what is left inside the solid');
+});
+test('An edge in the half that is taken away cannot be taken',()=>{
+ const mesh=box([0,0,0],[60,40,30]),P=mesh.edgeLines,proj=new Float32Array(P.length);
+ for(let i=0;i<P.length;i+=3){proj[i]=P[i];proj[i+1]=P[i+1];proj[i+2]=-P[i+2];} // seen from above: x and y are the screen
+ const whole=pickEdge(mesh,proj,30,0.5,8);
+ ok(whole&&[0,2].includes(whole.edge),'the edges along x at y = 0: the bottom one and the top one lie on each other on the screen');
+ const cut=pickEdge(mesh,proj,30,0.5,8,{n:[0,0,1],d:20});
+ eq(cut.edge,0,'cut at z = 20: only the bottom one is left');near(cut.point,[30,0,0],1e-6);
+ eq(pickEdge(mesh,proj,30,0.5,8,{n:[0,0,1],d:-1}),null,'everything is taken away');
+});
+run();
+</script>

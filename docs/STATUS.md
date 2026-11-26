@@ -1,4 +1,4 @@
-# CoreCAD status — 2026-11-25
+# CoreCAD status — 2026-11-26
 
 This page begins with where the project stands, what is decided, what is
 open and what comes next. [The log](#the-log) under that is how it got there,
@@ -7,8 +7,8 @@ in the order the work was done.
 ## Where it stands
 
 CoreCAD is live at [h0bb3.github.io/corecad](https://h0bb3.github.io/corecad/):
-`main` is what is published. The page is build `4284988a19` (the files of
-commit `05622ab`; `src/version.js` names the build).
+`main` is what is published. The page is build `9009b83fdc`
+(`src/version.js` names the build).
 
 What it does:
 
@@ -21,20 +21,23 @@ What it does:
   arrows and rings to move and turn them.
 - **Sizes on the model**: where the mouse rests, between two clicked things,
   and the Dimensions view, where a number is clicked and typed over.
+- **Looking inside**: Section cuts the model open along a plane, with the
+  cuts filled in, and X-ray draws it see-through; what is inside is pointed
+  at and measured like the outside.
 - **Colours** for parts and for single faces. **Export** as 3MF (an object
   for each part), STL and STEP, of everything or of one part. Project files,
   and an autosave in the browser.
-- **For an agent**: 37 commands behind `window.corecad.run`
+- **For an agent**: 39 commands behind `window.corecad.run`
   ([COMMANDS.md](COMMANDS.md)), and the same list over MCP through a relay
-  ([bridge/README.md](../bridge/README.md)): 38 tools with the relay's own.
+  ([bridge/README.md](../bridge/README.md)): 40 tools with the relay's own.
   "This", "selected" and "pointed" mean what the person has clicked or rests
-  the mouse on.
+  the mouse on, and `get_selection` says how they are looking at the model.
 - A tab notices a newer published build and reloads into it (the **Update**
   button, `reload_app`).
 
-Verified on this build, 2026-11-25:
+Verified on this build, 2026-11-26:
 
-- `python tools/run_tests.py`: 114 tests in 15 pages; the kernel pages run
+- `python tools/run_tests.py`: 122 tests in 16 pages; the kernel pages run
   the real OpenCascade worker.
 - The end-to-end scripts in headless Chrome, all passing: `tools/e2e.py`,
   `e2e_more.py`, `e2e_parts.py` and `e2e_export.py` (real mouse and key
@@ -647,3 +650,57 @@ of commands is asserted exactly, and that only `new_document`,
 `edit_feature` and `edit_part` take a name, only `move_part` a position,
 only `add_to_sketch` shapes); `tools/e2e_export.py` and `tools/e2e_bridge.py`
 build their models from the primitives.
+
+## Looking inside: Section and X-ray (2026-11-26)
+
+Asked for: a way to inspect the inside of a model that is complicated
+inside, an X-ray or a cross section along the axis planes; to mark and
+measure things there; and for an agent to know what the owner is looking at.
+
+- **Section** (view bar). The model is cut open along a plane square to an
+  axis: XY, XZ or YZ, at a place along that axis. What lies beyond the plane
+  is not drawn; the cut through each solid is filled in with the part's
+  colour, darker, and outlined. Turned on, it takes the upright plane across
+  the view and takes away the half nearer the eye. A bar under the view bar
+  has the plane, a slider over the reach of the model, the number, Flip and
+  Whole; an arrow on the cut drags it in steps of 1 mm (Shift: 0.1 mm).
+- **X-ray** (view bar). The solids are drawn see-through with every edge
+  showing, and every edge can then be clicked.
+- **Measuring inside.** Pointing is exact about what is drawn: a ray is cut
+  to the half that is left, a ray that comes into it inside a solid meets
+  the cut (which is not a face: a click on it means the part), and an edge
+  in the half that is gone cannot be taken. So the faces that a cut shows
+  are rested on, clicked and measured as the outside is.
+- **For an agent.** `get_selection` has `looking`: the camera (the standard
+  view it stands in, the way it looks), the section and whether the model is
+  see-through. `set_section` and `set_xray` do what the two buttons do, so an
+  agent can look inside by `screenshot`. 39 commands.
+- Neither is part of the model: no undo step, nothing saved, whole again in
+  a tab that is opened. While a sketch is drawn the model is shown whole.
+
+How: three.js clipping planes; the cut surfaces by the stencil buffer (for
+each closed solid, the faces turned away from the eye are counted up and
+those turned towards it down, and a sheet in the plane is drawn where the
+count is not nothing); the outline from the triangles that cross the plane.
+`src/view/section.js` is the pure part (the half of space that stays, the
+stretch of a ray in it, the outline); `countHits` in `src/view/pick3d.js`
+tells whether a ray comes in inside a solid.
+
+Verification: `test/section.test.html` (8 tests of the pure part);
+`tools/e2e_api.py` with the real mouse: the Section button, the colours of
+the cuts in the picture, a wall inside saying its size, the depth of a pocket
+between two clicked faces, a click on a cut, the arrow dragged, a typed
+place, the other planes, Flip, Whole; X-ray and a hidden edge clicked; the
+two commands and their refusals; a sketch suspending the cut; the model
+unchanged by all of it.
+
+Limits:
+
+- The cut is square to an axis of space, not to a face or to a turned part.
+- One cut at a time, through every part alike.
+- The outline of a cut is drawn but cannot be clicked: sizes are taken from
+  the faces the cut shows, not from the cut itself.
+- A cut surface has one plain colour, without hatching.
+- In X-ray a click takes the nearest edge, or else the face in front: faces
+  behind are reached by cutting the model open.
+- Not tried by a person yet.

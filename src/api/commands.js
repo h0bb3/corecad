@@ -28,6 +28,7 @@ import { sizeOf, between, total } from './measure3d.js';
 import { faceRefFrom, edgeRefFrom, topoOfBody } from '../doc/refs.js';
 import { canonicalFrame, toLocal } from '../core/plane.js';
 import { STANDARD } from '../view/camera-math.js';
+import { sectionText } from '../view/section.js';
 
 const round = (v, digits = 4) => (Array.isArray(v) ? v.map((x) => round(x, digits)) : +Number(v).toFixed(digits));
 const positive = (v, what) => {
@@ -73,7 +74,7 @@ const tool = (name, description, properties = {}, required = []) => ({
 
 export const TOOLS = [
   tool('get_state', 'The model at a glance: the parts (each with its place, its parent, and its own history of features), the features with their status and main numbers, the bodies with volume (mm³) and bounding box in space, which part is current, and whether the page is in the middle of an edit. Start here.'),
-  tool('get_selection', 'What the person has clicked in the page and what their mouse last rested on: faces and edges with where they are in space, the part each is on, the point that was clicked ("point" in space, "at" in the face\'s own coordinates) and which features made a face. Call it when they say "this", "here" or "that" about the model. The word "this" can then be given wherever a command takes a face, edges, a part or a feature id.'),
+  tool('get_selection', 'What the person has clicked in the page and what their mouse last rested on: faces and edges with where they are in space, the part each is on, the point that was clicked ("point" in space, "at" in the face\'s own coordinates) and which features made a face. Call it when they say "this", "here" or "that" about the model. The word "this" can then be given wherever a command takes a face, edges, a part or a feature id. It also says how they are looking at the model ("looking"): which way the camera faces, whether the model is cut open and where (set_section), and whether it is drawn see-through (set_xray). What they point at may be inside the model.'),
   tool(
     'measure',
     'How big a face or an edge is, and how far apart or at what angle two of them are, where the parts stand. Nothing given: what the person has selected (one thing: its size; two: also what lies between them). "from" alone: its size. "from" and "to": between them. Round things are measured from their axis: two holes give the distance between their centres, a hole and a flat side the distance from the hole\'s centre to that side; two parallel faces give the thickness.',
@@ -233,6 +234,17 @@ export const TOOLS = [
     { max: numb('The longer side in pixels at most (default 1200).'), dimensions: bool('true: with the numbers that drive the model drawn on it, as the Dimensions view shows them.') }
   ),
   tool('set_view', 'Turns the camera to a standard view and fits the model in the picture.', { view: str('The view. Left out: the camera stays turned as it is.', { enum: VIEWS }), fit: bool('Fit the model (default true).') }),
+  tool(
+    'set_section',
+    'Cuts the model open to look inside, along a plane square to an axis: what lies beyond the plane is not drawn, the cut through each solid is filled in, and the faces inside can be seen, pointed at and measured. It changes how the model is shown, in the page and in screenshot, never the model. The person has the same in the page (Section); get_selection says how they are looking.',
+    {
+      plane: { type: ['string', 'null'], enum: [...PLANES, null], description: 'The plane the cut lies along: "XY" (the cut moves along z), "XZ" (along y) or "YZ" (along x). null: the model whole again.' },
+      at: numb('Where the cut is along that axis, in mm. Left out: through the middle of the model.'),
+      flip: bool('false (default): what lies above "at" along the axis is taken away. true: what lies below it.'),
+    },
+    ['plane']
+  ),
+  tool('set_xray', 'Draws the solids see-through, with every edge showing, or solid again. Like set_section it changes how the model is shown, not the model.', { on: bool('true: see-through. false: solid.') }, ['on']),
 ];
 
 // ------------------------------------------------------------------ the commands
@@ -256,6 +268,9 @@ export const TOOLS = [
  *   it is shown (for a linked copy, where the copy shows it); `pointed` also has `ms` (how long ago) and `over`.
  *   Also `dimension`: the number on the model they clicked, { feature, key, value, text, what, unit, change }.
  * @param {(on: boolean) => boolean} app.showDimensions   draws the driving numbers on the model or not; answers what it was
+ * @param {() => { camera: object, section: object | null, xray: boolean }} app.looking   how the person is looking at the model
+ * @param {(section: { plane: string, at?: number, flip?: boolean } | null) => object | null} app.setSection   cuts the model open (view/section.js)
+ * @param {(on: boolean) => boolean} app.setXray   draws the solids see-through
  * @param {(blob: Blob, name: string) => void} app.download
  * @param {(doc: object) => string} app.filename
  */
@@ -838,8 +853,10 @@ export function createCommands(app) {
     },
     async get_selection() {
       await settled();
+      const l = app.looking();
       return {
         ...selectionInfo(),
+        looking: { ...l, camera: { ...l.camera, towards: round(l.camera.towards), up: round(l.camera.up) } },
         how: 'Give "this" (or "selected", "pointed") wherever a command takes a face, edges, a part or a feature id. To draw where they clicked: add_sketch with "plane": "this", then shapes at "at", which is that point in the sketch\'s coordinates.',
       };
     },
@@ -1259,6 +1276,19 @@ export function createCommands(app) {
       if (a.view !== undefined) view.standard(a.view);
       if (a.fit !== false) view.fit();
       return { ...(a.view !== undefined ? { view: a.view } : {}), fitted: a.fit !== false };
+    },
+    async set_section(a) {
+      if (a.plane === null) {
+        app.setSection(null);
+        return { section: null };
+      }
+      await settled(); // "through the middle" is the middle of the model as it is now
+      const s = app.setSection({ plane: a.plane, ...(a.at !== undefined ? { at: a.at } : {}), flip: a.flip === true });
+      return { section: { ...s, text: sectionText(s) } };
+    },
+    async set_xray(a) {
+      if (typeof a.on !== 'boolean') throw Error('"on" is true or false.');
+      return { xray: app.setXray(a.on) };
     },
   };
 

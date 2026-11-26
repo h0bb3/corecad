@@ -80,6 +80,22 @@ and its own place.
   it is when the mouse is on it. Click a number, type, Enter.
 - Click a feature in the history and its own numbers are shown the same way.
 
+## Looking inside
+
+- **Section** cuts the model open along a plane, so that what is inside can
+  be seen: pockets, bores, a part standing in another. It starts with the
+  upright plane across the view and takes away the half nearer to you. The
+  bar under the view bar chooses the plane (XY, XZ, YZ), where the cut is (a
+  slider and a number), the other half (**Flip**) and the model whole again
+  (**Whole**). The arrow on the cut drags it, in steps of 1 mm (Shift: 0.1).
+- The cut through each part is filled in with its colour, darker. What the
+  cut shows is measured like the outside: rest the mouse on a wall inside for
+  its size, click a floor and Shift-click a top for the depth between them.
+- **X-ray** draws the solids see-through with every edge showing; an edge
+  that was hidden can then be clicked and measured.
+- Neither changes the model or is saved with it. An agent that is connected
+  is told how you are looking, and can cut the model open itself to look.
+
 Autosave keeps the last committed project in this browser. Download a project
 file for a portable copy; clearing browser storage removes the autosave.
 The **?** button lists shortcuts. Every control has hover help.

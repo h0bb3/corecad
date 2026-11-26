@@ -48,6 +48,7 @@ import { gizmoArrows, hitArrow, alongAxis, drawArrows, gizmoRings, hitRing, ring
 import { sizeOf, spansOf, between, total, boxOf } from './api/measure3d.js';
 import { dimensionsOf } from './api/dimensions.js';
 import { pill, pillWidth, line as inkLine, inBox, INK } from './view/annotate.js';
+import { checkSection, halfSpace, sectionText, sectionAxis, reachAlong, SECTION_PLANES } from './view/section.js';
 import { faceRefFrom, edgeRefFrom, frameOfSketch, resolveEdgeRef } from './doc/refs.js';
 import { canonicalFrame, basePlane, toWorld, toLocal } from './core/plane.js';
 import { parseNumber, formatNumber as fmt } from './core/num.js';
@@ -106,6 +107,11 @@ function setPref(name, on) {
 }
 let measureOn = pref('measure', true), // sizes where the mouse rests or clicks
   dimsOn = false; // every driving number of the selected part
+// Looking inside. Neither is part of the model, and neither is kept: a tab that is opened shows the model whole.
+let section = null, // the model cut open: { plane: 'XY' | 'XZ' | 'YZ', at, flip } (view/section.js)
+  xray = false, // the solids drawn see-through
+  sectionDrag = null, // the arrow on the cut, while it is dragged: { s0, at0, anchor, dir, sign }
+  sectionHot = false; // the mouse is on that arrow
 const REST_MS = 300; // how long the mouse must stay on something for it to be what the person points at
 const collapsed = new Set(); // the parts whose history is folded away in the browser
 const PRIMITIVES = ['box', 'cylinder', 'sphere'];
@@ -149,16 +155,25 @@ const view = createViewport(id('viewport'), {
   down: (p, e) => {
     if (editor) editor.down(p, e);
     else if (mover) moveDown(p, e);
-    else modelPress = p;
+    else if (!grabSection(p, e)) modelPress = p;
   },
   move: (p, e) => {
     if (editor) editor.move(p, e);
     else if (mover) moveDrag(p, e);
     else {
-      // A number on the model is clicked, not what lies under it.
-      const label = draft ? null : labelAt(p),
-        hit = label ? null : view.pick(...p, pickFilter(), e.altKey),
-        cursor = label ? (label.d.edit ? 'pointer' : 'default') : '',
+      if (sectionDrag) {
+        dragSection(p, e);
+        return;
+      }
+      const onArrow = overSectionArrow(p);
+      if (onArrow !== sectionHot) {
+        sectionHot = onArrow;
+        view.dirty();
+      }
+      // A number on the model is clicked, not what lies under it; the arrow on a cut is taken hold of.
+      const label = draft || onArrow ? null : labelAt(p),
+        hit = label || onArrow ? null : view.pick(...p, pickFilter(), e.altKey),
+        cursor = onArrow ? 'grab' : label ? (label.d.edit ? 'pointer' : 'default') : '',
         hot = label ? { feature: label.d.feature, key: label.d.key } : null;
       if (view.canvas.style.cursor !== cursor) view.canvas.style.cursor = cursor;
       if (hot?.feature !== hotDim?.feature || hot?.key !== hotDim?.key) {
@@ -187,12 +202,16 @@ const view = createViewport(id('viewport'), {
   up: (p, e) => {
     if (editor) editor.up();
     else if (mover) moveUp();
+    else if (sectionDrag) dropSection();
     else if (modelPress && Math.hypot(p[0] - modelPress[0], p[1] - modelPress[1]) < 5)
       modelClick(p, e);
     modelPress = null;
   },
   double: (p, e) => editor?.double(p, e),
-  cancel: () => (editor ? editor.cancel() : mover && moveUp()),
+  cancel: () => {
+    dropSection();
+    return editor ? editor.cancel() : mover && moveUp();
+  },
   error: toast,
   ready: () => {
     window.corecadReady = true;
@@ -204,7 +223,10 @@ view.overlay((ctx) => {
     drawProfiles(ctx);
     drawNumbers(ctx);
     if (mover) drawGizmo(ctx);
-    else if (!draft && bridgeOn()) drawPointed(ctx);
+    else {
+      if (!draft && bridgeOn()) drawPointed(ctx);
+      drawSectionArrow(ctx);
+    }
   }
 });
 // ------------------------------------------------------------------ numbers on the model
@@ -465,6 +487,140 @@ async function applyDimEdit() {
 function renderToggles() {
   id('dimensions').classList.toggle('on', dimsOn);
   id('measure').classList.toggle('on', measureOn);
+  id('section').classList.toggle('on', !!section);
+  id('xray').classList.toggle('on', xray);
+}
+// ------------------------------------------------------------------ looking inside
+/** The boxes of what is in the picture, where it stands. */
+const shownBoxes = () => view.pickBodies.map((b) => (b.matrix ? Mat.box(b.matrix, b.bbox) : b.bbox));
+/** The middle of what is in the picture. */
+function shownCentre() {
+  const boxes = shownBoxes();
+  return boxes.length ? [0, 1, 2].map((i) => (Math.min(...boxes.map((b) => b[0][i])) + Math.max(...boxes.map((b) => b[1][i]))) / 2) : [0, 0, 0];
+}
+/**
+ * Cuts the model open, moves the cut, or (null) puts the model back whole. It changes what is drawn and
+ * what can be pointed at, not the model. `at` left out: through the middle of what is in the picture.
+ * @param {{ plane: string, at?: number, flip?: boolean } | null} next
+ */
+function setSection(next) {
+  if (next) {
+    const plane = checkSection({ ...next, at: 0 }).plane, // says what is wrong with the plane
+      reach = reachAlong(plane, shownBoxes()) ?? [0, 0];
+    section = checkSection({ ...next, at: next.at ?? Math.round((reach[0] + reach[1]) * 5) / 10 });
+  } else section = null;
+  sectionDrag = null;
+  view.section(section ? halfSpace(section) : null);
+  renderToggles();
+  renderSectionBar();
+  return section;
+}
+function setXray(on) {
+  xray = !!on;
+  view.xray(xray);
+  renderToggles();
+  return xray;
+}
+/** The half that is nearer the eye is the one to take away: the cut then faces the person. */
+function flipFor(plane) {
+  return VM.basis(view.view).back[SECTION_PLANES[plane]] < 0;
+}
+/** The plane that is most square to the way the person looks; from a corner, the upright one across the view. */
+function planeForView() {
+  const back = VM.basis(view.view).back.map(Math.abs);
+  let best = 'XZ';
+  for (const plane of ['YZ', 'XY']) if (back[SECTION_PLANES[plane]] > back[SECTION_PLANES[best]] + 0.05) best = plane;
+  return best;
+}
+/** Where the cut is, under the view bar: the plane, a slider over the model, the number, the other half, whole again. */
+function renderSectionBar() {
+  const bar = id('sectionbar');
+  id('viewport').classList.toggle('sectioning', !!section);
+  bar.hidden = !section;
+  if (!section) return;
+  const reach = reachAlong(section.plane, shownBoxes()) ?? [-50, 50],
+    room = Math.max(1, (reach[1] - reach[0]) * 0.05),
+    lo = Math.min(Math.floor(reach[0] - room), Math.floor(section.at)),
+    hi = Math.max(Math.ceil(reach[1] + room), Math.ceil(section.at)),
+    step = [0.01, 0.05, 0.1, 0.5, 1, 5, 10].find((s) => (hi - lo) / s <= 400) ?? 10,
+    axis = sectionAxis(section);
+  // Built again only when the plane or the reach changes: a slider that is replaced while it is dragged lets go.
+  setHTML(
+    'sectionbar',
+    `<span class="bar-label">Cut along</span>${Object.keys(SECTION_PLANES)
+      .map((p) => `<button data-action="section-${p}" data-on="${p}" title="Cut along the ${p} plane; the cut moves along ${'xyz'[SECTION_PLANES[p]]}">${p}</button>`)
+      .join('')}<input id="section-slider" type="range" min="${lo}" max="${hi}" step="${step}" title="Where the cut is. Drag here, or drag the arrow on the cut in the view."><label class="bar-field" title="Where the cut is along ${axis}, in mm"><span>${axis} =</span><input id="section-at" inputmode="decimal"></label><button data-action="section-flip" data-on="flip" title="Show the other half">Flip</button><button data-action="section-off" title="Put the model back whole">Whole</button>`
+  );
+  for (const b of bar.querySelectorAll('[data-on]')) b.classList.toggle('on', b.dataset.on === 'flip' ? section.flip : b.dataset.on === section.plane);
+  id('section-slider').value = section.at;
+  if (document.activeElement !== id('section-at')) id('section-at').value = fmt(section.at);
+}
+id('sectionbar').addEventListener('input', (e) => {
+  if (e.target.id === 'section-slider' && section) setSection({ ...section, at: +e.target.value });
+});
+id('sectionbar').addEventListener('change', (e) => {
+  if (e.target.id !== 'section-at' || !section) return;
+  const v = parseNumber(e.target.value);
+  if (v === null) toast('Enter a number or arithmetic, such as 60/2.');
+  else setSection({ ...section, at: v });
+});
+id('sectionbar').addEventListener('keydown', (e) => {
+  if (e.target.id === 'section-at' && e.key === 'Enter') e.target.blur();
+});
+/** The arrow on the cut: from the middle of the model in the plane of the cut, towards what is taken away. */
+function sectionArrow() {
+  if (!section || editor || draft || mover) return null;
+  const half = halfSpace(section),
+    c = shownCentre(),
+    anchor = VM.sub(c, VM.mul(half.n, VM.dot(half.n, c) - half.d)),
+    arrow = gizmoArrows(view.view, view.vp, anchor, [half.n])[0];
+  return { ...arrow, axis: SECTION_PLANES[section.plane], anchor };
+}
+function overSectionArrow(p) {
+  const arrow = sectionArrow();
+  return !!arrow && hitArrow([arrow], p[0], p[1]) >= 0;
+}
+function grabSection(p, e) {
+  if (e.button !== 0 || !overSectionArrow(p)) return false;
+  const arrow = sectionArrow(),
+    s0 = alongAxis(view.view, view.vp, arrow.anchor, arrow.dir, p[0], p[1]);
+  if (s0 === null) return false;
+  sectionDrag = { s0, at0: section.at, anchor: arrow.anchor, dir: arrow.dir, sign: section.flip ? -1 : 1 };
+  return true;
+}
+/** The cut follows the mouse along its axis, in steps of 1 mm (Shift: 0.1 mm). */
+function dragSection(p, e) {
+  const g = sectionDrag,
+    s = alongAxis(view.view, view.vp, g.anchor, g.dir, p[0], p[1]);
+  if (s === null) return;
+  const step = e.shiftKey ? 0.1 : 1,
+    at = Math.round((g.at0 + (s - g.s0) * g.sign) / step) * step;
+  if (Math.abs(at - section.at) < 1e-9) return;
+  section = checkSection({ ...section, at });
+  view.section(halfSpace(section));
+  renderSectionBar();
+}
+function dropSection() {
+  if (!sectionDrag) return;
+  sectionDrag = null;
+  view.dirty();
+}
+function drawSectionArrow(ctx) {
+  const arrow = sectionArrow();
+  if (!arrow) return;
+  drawArrows(ctx, [arrow], sectionHot || sectionDrag ? arrow.axis : -1);
+  if (sectionDrag) pill(ctx, `${sectionAxis(section)} = ${fmt(section.at)}`, arrow.b[0], arrow.b[1] - 22, INK.measure);
+}
+/** How the person is looking at the model, for an agent: the way the camera looks, a cut, see-through. */
+function looking() {
+  const { back, up } = VM.basis(view.view),
+    near = (a, b) => VM.dot(a, b) > 0.9995,
+    named = Object.entries(VM.STANDARD).find(([, [b, u]]) => near(back, b) && (!u || near(up, u)))?.[0] ?? null;
+  return {
+    camera: { view: named, towards: back.map((v) => -v), up, projection: view.view.ortho ? 'orthographic' : 'perspective' },
+    section: section && !editor ? { ...section, text: sectionText(section) } : null,
+    xray: xray && !editor,
+  };
 }
 // ------------------------------------------------------------------ what the person points at
 const bridgeOn = () => {
@@ -586,6 +742,7 @@ function refreshScene() {
     mover ? ghostsOf(d, mover.id, b?.bodies ?? []) : []
   );
   view.origin(selectedPart && !editor ? worldOf(d).get(selectedPart) : null);
+  renderSectionBar(); // the slider reaches over the model as it is now
 }
 /** The part a new sketch goes into: the selected one, else the newest with a history; null when one must be made. */
 function homePart(d = store.state.doc) {
@@ -771,6 +928,12 @@ function modelClick(p, e) {
     selection = [];
     pointed = null;
     view.select([]);
+    // The cut surface of a part is not a face of it: the part is what is meant.
+    const cutBody = draft ? null : view.pickBodies.find((b) => b.id === view.cutAt(...p));
+    if (cutBody) {
+      if (cutBody.part !== selectedPart) selectPart(cutBody.part);
+      id('context-note').textContent = `The cut through ${partById(store.state.doc, cutBody.part)?.name ?? 'a part'} · Click a face inside to measure it; Shift-click another for the distance between them.`;
+    }
     return;
   }
   const key = (h) => `${h.body}:${h.type}:${h.face ?? h.edge}`;
@@ -2360,6 +2523,23 @@ const actions = {
     renderToggles();
     view.dirty();
   },
+  section: () => {
+    if (section) setSection(null);
+    else {
+      const plane = planeForView();
+      setSection({ plane, flip: flipFor(plane) });
+      toast('The model is cut open. Drag the arrow on the cut, or the slider. Faces inside can be clicked and measured.');
+    }
+  },
+  'section-XY': () => setSection({ plane: 'XY', flip: flipFor('XY') }),
+  'section-XZ': () => setSection({ plane: 'XZ', flip: flipFor('XZ') }),
+  'section-YZ': () => setSection({ plane: 'YZ', flip: flipFor('YZ') }),
+  'section-flip': () => section && setSection({ ...section, flip: !section.flip }),
+  'section-off': () => setSection(null),
+  xray: () => {
+    setXray(!xray);
+    if (xray) toast('See-through. Every edge shows and can be clicked; Shift-click a second one for the distance between them.');
+  },
   box: () => beginFeature('box'),
   cylinder: () => beginFeature('cylinder'),
   sphere: () => beginFeature('sphere'),
@@ -2747,7 +2927,8 @@ document.addEventListener('click', (e) => {
   if (d.action) {
     if (
       mover &&
-      !['apply-move', 'cancel-move', 'upright', 'fit', 'projection', 'planes', 'help', 'undo', 'connect', 'dimensions', 'measure'].includes(d.action)
+      !['apply-move', 'cancel-move', 'upright', 'fit', 'projection', 'planes', 'help', 'undo', 'connect', 'dimensions', 'measure', 'xray'].includes(d.action) &&
+      !d.action.startsWith('section')
     ) {
       toast('Apply or cancel the move first.');
       return;
@@ -3051,6 +3232,10 @@ const api = createCommands({
   currentPart: () => (partById(store.state.doc, selectedPart) ? selectedPart : homePart()),
   /** What the person has clicked, and what their mouse last rested on. */
   chosen,
+  /** How the person is looking at the model, and the two ways of looking inside. */
+  looking,
+  setSection,
+  setXray,
   /** Shows or hides the numbers that drive the model (for a picture); answers what it was. */
   showDimensions: (on) => {
     const was = dimsOn;
@@ -3281,6 +3466,22 @@ window.corecad = {
   },
   get viewport() {
     return view.view;
+  },
+  /** How the model is looked at: { camera, section, xray }. */
+  get looking() {
+    return structuredClone(looking());
+  },
+  /** The arrow on the cut, in page coordinates: { a, b }; null when the model is whole. */
+  get sectionArrow() {
+    const arrow = sectionArrow();
+    if (!arrow) return null;
+    const r = view.canvas.getBoundingClientRect();
+    return { a: [arrow.a[0] + r.left, arrow.a[1] + r.top], b: [arrow.b[0] + r.left, arrow.b[1] + r.top] };
+  },
+  /** The id of the body whose cut surface is at a point of the page, or null. */
+  cutAt(p) {
+    const r = view.canvas.getBoundingClientRect();
+    return view.cutAt(p[0] - r.left, p[1] - r.top);
   },
   get draft() {
     return draft?.feature ?? null;

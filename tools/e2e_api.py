@@ -21,7 +21,7 @@ COMMANDS = ('get_state get_selection measure get_document load_document new_docu
             'add_sketch add_to_sketch set_dimension add_dimension add_constraint remove_from_sketch '
             'extrude revolve fillet chamfer edit_feature '
             'add_part add_group combine move_part copy_part set_color edit_part unlink_part delete_part delete_feature '
-            'undo redo reload_app cancel_edit export screenshot set_view').split()
+            'undo redo reload_app cancel_edit export screenshot set_view set_section set_xray').split()
 GONE = ['add_box', 'add_cylinder', 'add_sphere', 'hole', 'ungroup', 'list_dimensions']
 
 
@@ -729,6 +729,134 @@ def run(p, url='index.html?test=1'):
     undo_to(untouched)
     step('revolve: a ring, part of a turn and the other way, about a side of the outline, a groove cut; its angle on the model')
 
+    # ---- looking inside: the model cut open along a plane, and see-through
+    call('new_document', name='Inside')
+    block('Housing', [60, 40, 30])                                                      # o1: f1, f2; x -30..30, y -20..20, z 0..30
+    sketch([{'type': 'rectangle', 'center': [0, 0], 'width': 40, 'height': 20}], plane='top')
+    call('extrude', operation='cut', distance=20)                                       # a pocket: x -20..20, y -10..10, down to z = 10
+    rod('Pin', 8, 22, position=[10, 0, 10])                                             # o2 stands in it
+    call('set_color', part='Pin', color='orange')
+    call('set_view', view='home')
+    housing, pin = [b['id'] for b in call('get_state')['bodies']]
+    look = call('get_selection')['looking']
+    assert look == {'camera': {'view': 'home', 'towards': [-0.5774, 0.5774, -0.5774], 'up': [-0.4082, 0.4082, 0.8165], 'projection': 'orthographic'}, 'section': None, 'xray': False}, look
+    assert p.js('document.getElementById("sectionbar").hidden')
+
+    def colour_at(point):
+        """The colour of the picture where a point of space is seen: [r, g, b]."""
+        shot = call('screenshot', max=4000)
+        return p.js("""(async () => {
+            const img = new Image(); img.src = %s; await img.decode();
+            const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+            const g = c.getContext('2d'); g.drawImage(img, 0, 0);
+            const r = document.querySelector('canvas.overlay').getBoundingClientRect(), at = corecad.screen(%s), k = img.width / r.width;
+            return [...g.getImageData(Math.round((at[0] - r.left) * k), Math.round((at[1] - r.top) * k), 1, 1).data].slice(0, 3);
+        })()""" % (json.dumps(shot['png']), json.dumps(point)))
+
+    # the person cuts it open: Section takes the upright plane across the view and takes away the half nearer the eye
+    wall_whole = colour_at([-25, 0, 15])
+    p.click('#section')
+    time.sleep(.2)
+    look = call('get_selection')['looking']
+    assert look['section'] == {'plane': 'XZ', 'at': 0, 'flip': True, 'text': 'cut along XZ at y = 0 mm: everything with y below that is taken away'}, look
+    assert not p.js('document.getElementById("sectionbar").hidden') and p.js('document.getElementById("section").classList.contains("on")')
+    assert p.js('document.getElementById("section-at").value') == '0' and p.js('document.querySelector("#sectionbar .on").textContent') == 'XZ'
+    # the cut through each solid is filled in, in its own colour, darker
+    cut_wall, cut_pin, air = colour_at([-25, 0, 15]), colour_at([10, 0, 20]), colour_at([-10, 0, 20])
+    assert all(105 < v < 180 for v in cut_wall) and max(cut_wall) - min(cut_wall) < 30 and cut_wall != wall_whole, 'the cut through the housing is its grey, darker: %s (whole: %s)' % (cut_wall, wall_whole)
+    assert cut_pin[0] > cut_pin[1] + 40 > cut_pin[2] + 60, 'the cut through the pin is its orange, darker: %s' % cut_pin
+    assert air != cut_wall and air != cut_pin, 'where the cut passes through the pocket nothing is filled in: %s' % air
+    step('Section in the view bar: the model is cut open towards the eye, the cuts are filled in each part\'s colour, get_selection says how')
+
+    # what the cut shows can be pointed at and measured; the cut itself is the part
+    assert p.js('corecad.cutAt(%s)' % json.dumps(page([-25, 0, 15]))) == housing and p.js('corecad.cutAt(%s)' % json.dumps(page([10, 0, 20]))) == pin
+    assert p.js('corecad.pick(%s)' % json.dumps(page([-25, 0, 15]))) is None, 'the cut is not a face'
+    rest([-10, 10, 15])                                                                 # the far wall of the pocket, seen through the cut
+    shown = [n['text'] for n in p.js('corecad.numbers') if n['kind'] == 'pointed']
+    assert shown == ['40', '20'], 'the wall inside says how big it is: %s' % shown
+    inside = call('get_selection')['pointed']
+    assert inside['kind'] == 'face' and inside['part'] == 'o1' and close(inside['point'], [-10, 10, 15]), inside
+    p.click(*page([-10, 5, 10]))                                                        # the floor of the pocket
+    p.click(*page([-25, 15, 30]), modifiers=8)                                          # and the top of the housing
+    time.sleep(.2)
+    m = call('measure')
+    assert m['between']['distance'] == 20 and m['between']['what'] == 'between parallel faces', m
+    assert p.js('corecad.measured').startswith('Between them: 20 mm (between parallel faces)')
+    p.click(*page([10, 0, 20]))                                                         # the cut through the pin
+    assert p.js('corecad.selection') == [] and p.js('corecad.selectedPart') == 'o2', (p.js('corecad.selection'), p.js('corecad.selectedPart'))
+    assert p.js('document.getElementById("context-note").textContent').startswith('The cut through Pin')
+    step('inside: a wall seen through the cut says its size, the depth of the pocket is measured between two clicked faces, a click on a cut is the part')
+
+    # the cut is moved by its arrow, by the number, and to another plane
+    arrow = p.js('corecad.sectionArrow')
+    along = [arrow['b'][0] - arrow['a'][0], arrow['b'][1] - arrow['a'][1]]
+    grip = [arrow['a'][0] + along[0] * .7, arrow['a'][1] + along[1] * .7]
+    p.drag(grip[0], grip[1], grip[0] + along[0] * .5, grip[1] + along[1] * .5, steps=8)
+    at = call('get_selection')['looking']['section']['at']
+    assert at < -2 and at == round(at), 'dragged along its arrow, the cut moves towards the eye in whole millimetres: %s' % at
+    assert float(p.js('document.getElementById("section-slider").value')) == at and float(p.js('document.getElementById("section-at").value')) == at, 'the slider and the number follow the arrow'
+    p.click('#section-at')
+    p.key('a', modifiers=2)
+    p.type('10/2')
+    p.key('Enter')
+    assert call('get_selection')['looking']['section']['at'] == 5 and float(p.js('document.getElementById("section-slider").value')) == 5, 'a typed place, arithmetic and all: %s' % call('get_selection')['looking']['section']
+    p.click('[data-action="section-XY"]')
+    look = call('get_selection')['looking']['section']
+    assert look == {'plane': 'XY', 'at': 16, 'flip': False, 'text': 'cut along XY at z = 16 mm: everything with z above that is taken away'}, look
+    rest([-10, 5, 10])                                                                  # the floor, from above now
+    shown = [n['text'] for n in p.js('corecad.numbers') if n['kind'] == 'pointed']
+    assert shown == ['40', '20'], 'the floor of the pocket, seen from above through the cut: %s' % shown
+    p.click('[data-action="section-flip"]')
+    assert call('get_selection')['looking']['section']['flip'] is True, 'Flip shows the other half'
+    assert p.js('corecad.pick(%s).world[2]' % json.dumps(page([-10, 5, 10]))) > 15.9, 'the other half: the floor is gone, the top is what is met'
+    p.click('[data-action="section-off"]')
+    assert call('get_selection')['looking']['section'] is None and p.js('document.getElementById("sectionbar").hidden') and not p.js('document.getElementById("section").classList.contains("on")'), 'Whole puts the model back'
+    assert colour_at([-25, 0, 15]) == wall_whole, 'whole again, the picture is what it was'
+    step('the cut follows its arrow in whole millimetres, takes a typed place, changes plane and side, and is taken away again')
+
+    # see-through: every edge shows, and a hidden one can be clicked
+    rim = page([14, 0, 10])                                                             # the rim of the pin's foot, behind the right wall of the housing
+    front = colour_at([-10, -20, 15])
+    p.click(*rim)
+    assert [h['type'] for h in p.js('corecad.selection')] == ['face'], 'solid, the click takes the face in front: %s' % p.js('corecad.selection')
+    p.click('#xray')
+    time.sleep(.2)
+    assert call('get_selection')['looking']['xray'] is True and p.js('document.getElementById("xray").classList.contains("on")'), 'X-ray is on'
+    p.click(*rim)
+    sel = call('get_selection')['selected']
+    assert [e['kind'] for e in sel] == ['edge'] and sel[0]['part'] == 'o2' and sel[0]['diameter'] == 8, 'see-through, the edge behind is taken: %s' % sel
+    assert colour_at([-10, -20, 15]) != front, 'the front of the housing is drawn see-through'
+    p.click('#xray')
+    assert call('get_selection')['looking']['xray'] is False and colour_at([-10, -20, 15]) == front, 'solid again'
+    p.key('Escape')
+    step('X-ray: the solids are see-through and an edge that was hidden is clicked and measured')
+
+    # the same for an agent: set_section and set_xray change the picture, not the model
+    before = call('get_document')
+    cut = call('set_section', plane='YZ', at=10)
+    assert cut == {'section': {'plane': 'YZ', 'at': 10, 'flip': False, 'text': 'cut along YZ at x = 10 mm: everything with x above that is taken away'}}, cut
+    assert call('get_selection')['looking']['section'] == cut['section'] and not p.js('document.getElementById("sectionbar").hidden')
+    assert p.js('document.querySelector("#sectionbar .on").textContent') == 'YZ' and p.js('document.getElementById("section-at").value') == '10'
+    orange = colour_at([10, 0, 20])
+    assert orange[0] > orange[1] + 40, 'the picture an agent takes shows the cut through the pin: %s' % orange
+    assert call('set_section', plane='xz')['section'] == {'plane': 'XZ', 'at': 0, 'flip': False, 'text': 'cut along XZ at y = 0 mm: everything with y above that is taken away'}, 'left out, "at" is the middle of the model'
+    fails('set_section', '"XY", "XZ" or "YZ"', plane='top')
+    fails('set_section', '"at" is a number', plane='XY', at='high')
+    fails('set_section', 'needs "plane"')
+    # while a sketch is drawn the model is whole: there the plane of the sketch is what is looked at
+    cut = call('set_section', plane='XY', at=16)['section']
+    p.click('[data-plane="XY"]')
+    p.wait('corecad.editing')
+    assert call('get_selection')['looking']['section'] is None, 'no cut while a sketch is drawn'
+    call('cancel_edit')
+    assert call('get_selection')['looking']['section'] == cut, 'and cut open again when the sketch is closed'
+    assert call('set_section', plane=None) == {'section': None}
+    assert call('set_xray', on=True) == {'xray': True} and call('get_selection')['looking']['xray'] is True
+    fails('set_xray', 'true or false', on='yes')
+    assert call('set_xray', on=False) == {'xray': False}
+    assert content(call('get_document')) == content(before), 'looking inside changes nothing in the model'
+    step('set_section and set_xray: the cut and the see-through for an agent; the model is untouched')
+
     # ---- one way to do each thing: these commands and no others; making takes neither a name, a place nor contents
     names = p.js('corecad.tools.map(t => t.name)')
     assert names == COMMANDS, sorted(set(names) ^ set(COMMANDS))
@@ -783,7 +911,9 @@ if __name__ == '__main__':
             run(b.page, sys.argv[1] if len(sys.argv) > 1 else 'index.html?test=1')
         except Exception as e:
             b.page.screenshot(ROOT / '.scratch' / 'e2e_api_failure.png')
-            print('FAILED:', e)
+            import traceback
+            where = traceback.extract_tb(e.__traceback__)[-1]
+            print('FAILED:', e or f'line {where.lineno}: {where.line}')
             for line in b.page.errors():
                 print('  ', line)
             sys.exit(1)
