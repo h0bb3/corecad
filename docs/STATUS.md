@@ -7,7 +7,7 @@ in the order the work was done.
 ## Where it stands
 
 CoreCAD is live at [h0bb3.github.io/corecad](https://h0bb3.github.io/corecad/):
-`main` is what is published. The page is build `cc8ab914a9`
+`main` is what is published. The page is build `6afdc30173`
 (`src/version.js` names the build).
 
 What it does:
@@ -45,7 +45,7 @@ What it does:
 
 Verified on this build, 2026-11-26:
 
-- `python tools/run_tests.py`: 146 tests in 18 pages; the kernel pages run
+- `python tools/run_tests.py`: 147 tests in 18 pages; the kernel pages run
   the real OpenCascade worker.
 - The end-to-end scripts in headless Chrome, all passing: `tools/e2e.py`,
   `e2e_more.py`, `e2e_parts.py` and `e2e_export.py` (real mouse and key
@@ -968,4 +968,40 @@ fine hold, a jerk before letting go and a squeeze that lasts no time).
 Not verified: in a headset. The numbers (how smooth, how fine, how long
 before) are first guesses; whether 110 ms is the jerk of a real finger and a
 fifth is fine enough is for a hand to say.
+
+## The watching page reads the QR code itself (2026-11-26)
+
+Why: the owner's Quest has no way to scan a QR code, so the code in the
+Connect dialog was of no use to it (the address was sent over USB instead).
+Asked for: scanning in CoreCAD itself.
+
+- `view.html` opened without a code asks which tab. **Scan the code** opens
+  a camera of the device (`getUserMedia`), shows its picture so that the
+  person can aim, and reads it frame by frame (`src/view/scan.js`: the
+  browser's own `BarcodeDetector` where it reads QR codes, else `jsQR` 1.4.0
+  from the CDN). A code of a CoreCAD tab in it is taken, anything else is
+  said to be something else, and nothing that is read is ever opened as an
+  address. **Another camera** goes on to the next camera: a headset has one
+  that shows the person's avatar.
+- An address can be pasted instead: the one of the watching page or the one
+  for Claude.
+- The page remembers the tab it watched last (in the browser's storage), so
+  the bare page can be a bookmark.
+- In the Connect dialog a click on the code shows it over the whole page:
+  a headset's camera sees a small code as a few pixels. The code has fewer
+  squares than before (error correction L: 33 a side for the public address).
+  The dialog also has a link to the watching page.
+
+Verification: `test/seat.test.html` (10 tests; the new one reads the code
+from addresses and from pictures of the QR code, four pixels a square and
+turned). `tools/e2e_view.py`: the bare page watches the tab it watched last;
+with nothing remembered it asks; a refused camera is said; a camera that
+looks at the code (a canvas played as a camera) is read and the page watches
+that tab; a pasted address does the same; the code is made big by a click.
+
+Not verified: **whether the Quest's browser gives a page its real cameras.**
+Meta documents a "headset camera" permission for web pages; people report
+that it is not there for everyone. If it is not, the page says that the
+browser did not let it use a camera, and the address has to come another way
+(paste, a bookmark, USB).
 

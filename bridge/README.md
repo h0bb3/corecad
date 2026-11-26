@@ -47,6 +47,13 @@ the model open and see through it; what it points at is "this" for an agent.
 It cannot change the model. Up to four devices may watch one tab. The address
 holds the tab's code: treat it like the address for Claude.
 
+A device that cannot scan a code by itself (a Quest without the system's
+scanner) opens `view.html` with no code: the page asks which tab, and reads
+the code through a camera of the device (**Scan the code**; click the code in
+the dialog first to make it big), or takes a pasted address. It remembers the
+tab it watched last, so a bookmark of the bare page is enough the next time.
+The picture of the camera is looked at in the page and goes nowhere.
+
 **Disconnect** cuts the client off. **New address** makes the old address
 useless. The tab reconnects by itself after a reload if it was left
 connected, and stays off if it was switched off.

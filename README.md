@@ -60,7 +60,8 @@ and its own place.
   pointed at there is what an agent takes "this" to mean.
 - **On another device**: when the tab is connected (**Connect**), the dialog
   shows a QR code. A headset or a phone that opens it shows this tab's model,
-  live, and points at it; the model, the kernel and the agent stay in the
+  live, and points at it (a headset that cannot scan opens `view.html` and
+  reads the code there through its own camera); the model, the kernel and the agent stay in the
   tab ([bridge/README.md](bridge/README.md)).
 - **Group** makes a container for parts: a name and a place, and no shape
   of its own. Drag parts onto it in the list, or make them while it is

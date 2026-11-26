@@ -3435,7 +3435,7 @@ function secondAddress(b) {
 async function drawQR(canvas, text) {
   try {
     const { default: qrcode } = await import('https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/+esm');
-    const qr = qrcode(0, 'M');
+    const qr = qrcode(0, 'L'); // the fewest squares: a headset's camera sees it small
     qr.addData(text);
     qr.make();
     const n = qr.getModuleCount(),
@@ -3458,7 +3458,7 @@ function secondSeat(b) {
   if (b.status !== 'on') return '';
   if (!b.viewing) return '<p class="bridge-note">A headset or a phone cannot watch this tab yet: the relay it is connected to is an older one.</p>';
   const address = secondAddress(b);
-  return `<div class="bridge-second"><canvas id="bridge-qr" width="1" height="1" title="Scan this with the headset or a phone"></canvas><div>
+  return `<div class="bridge-second"><canvas id="bridge-qr" width="1" height="1" title="Scan this with the headset or a phone. Click to make it big: a headset's camera needs that."></canvas><div>
     <p><b>See it on another device</b>: a headset or a phone opens this address and shows this model as it is here, at its real size in a headset. It can point, measure and cut the model open; it cannot change it.</p>
     <input id="bridge-second" readonly value="${esc(address)}" title="The address of the page that watches this tab. Treat it like a password: it holds the same code." />
     <p id="bridge-viewers">${b.viewers ? `${b.viewers} ${b.viewers === 1 ? 'device is' : 'devices are'} watching.` : 'Nobody is watching.'}</p></div></div>`;
@@ -3481,6 +3481,7 @@ function connectBody(b) {
         : ''
     }
     ${secondSeat(b)}
+    <p class="bridge-note">To watch a tab that is open on another computer from this device, open <a href="view.html" title="The page that watches a CoreCAD tab: it reads the code of that tab's Connect dialog through a camera, or takes its address">the watching page</a>.</p>
     <p class="bridge-note">While connected, whoever has this address can read and change the model in this tab, and nothing else in your browser. Commands pass through vibedit.app, and Claude sees the model. <b>New address</b> makes the old one useless.</p>`;
 }
 function openConnect() {
@@ -3512,6 +3513,21 @@ function openConnect() {
       have = qrMade.get(text);
     if (have) slot.replaceWith(have);
     else drawQR(slot, text).then((ok) => ok && qrMade.set(text, slot));
+    // a headset's camera needs it big: a click shows it over the whole page, and another takes it away
+    id('bridge-qr').onclick = () => {
+      const big = document.createElement('div'),
+        copy = document.createElement('canvas'),
+        from = id('bridge-qr');
+      big.id = 'qr-big';
+      big.className = 'qr-big';
+      big.title = 'Look at this with the headset or a phone. Click to make it small again.';
+      copy.width = from.width;
+      copy.height = from.height;
+      copy.getContext('2d').drawImage(from, 0, 0);
+      big.append(copy);
+      big.onclick = () => big.remove();
+      document.body.append(big);
+    };
   }
 }
 const qrMade = new Map();

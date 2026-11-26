@@ -105,6 +105,58 @@
         display: inline-block;
         min-width: 118px;
       }
+      .ask {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: min(520px, calc(100% - 48px));
+        padding: 22px 24px;
+        border-radius: 12px;
+        background: #fffffff2;
+        box-shadow: 0 4px 24px #0003;
+        line-height: 1.5;
+      }
+      .ask h1 {
+        font-size: 18px;
+        margin: 0 0 8px;
+      }
+      .ask input {
+        width: 100%;
+        box-sizing: border-box;
+        margin-top: 10px;
+        padding: 9px 10px;
+        font: 13px 'SFMono-Regular', Consolas, monospace;
+        border: 1px solid #c9d6d7;
+        border-radius: 8px;
+      }
+      .scanning {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        background: #10292ce6;
+        color: #fff;
+        z-index: 5;
+      }
+      .scanning video {
+        max-width: min(92vw, 1100px);
+        max-height: 68vh;
+        border-radius: 10px;
+        background: #000;
+      }
+      .scanning p {
+        margin: 0;
+        max-width: 760px;
+        text-align: center;
+        font-size: 16px;
+      }
+      .scanning p.bad {
+        color: #ffc9a8;
+      }
       [hidden] {
         display: none !important;
       }
@@ -118,7 +170,23 @@
       <button id="fit" title="Bring the whole model into view">Fit</button>
       <button id="xray" title="See through the solids, in the tab too">X-ray</button>
       <button id="whole" title="Take the cut away, in the tab too">Whole</button>
+      <button id="scan" title="Watch another CoreCAD tab: scan the code in its Connect dialog with a camera of this device">Scan a code</button>
       <button id="xr" class="primary big" hidden title="See the model in the headset, at its real size">Enter headset view</button>
+    </div>
+    <div id="ask" class="ask" hidden>
+      <h1>Which CoreCAD tab?</h1>
+      <div>In CoreCAD on the computer, choose <b>Connect</b>. The dialog shows a code: click it to make it big, then look at it with this device.</div>
+      <p><button id="scan-first" class="primary big" title="Look for the code with a camera of this device">Scan the code</button></p>
+      <div>Or paste the address that stands beside the code:</div>
+      <input id="paste" placeholder="https://…/view.html#…" autocomplete="off" spellcheck="false" title="The address of the watching page, or the address for Claude, from the Connect dialog" />
+    </div>
+    <div id="scanning" class="scanning" hidden>
+      <video id="camera" playsinline muted></video>
+      <p id="scan-says">Asking for the camera…</p>
+      <div>
+        <button id="scan-next" hidden title="A headset has a camera that shows your avatar, and it sees no screen: go on to the next camera">Another camera</button>
+        <button id="scan-stop" title="Stop looking">Cancel</button>
+      </div>
     </div>
     <div id="hands" class="hands" hidden>
       <div><b>Trigger</b> point and choose; hold the other trigger for a second thing: the distance</div>

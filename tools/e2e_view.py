@@ -64,6 +64,12 @@ def run(b, port):
     assert qr['text'] == address and 25 <= qr['n'] <= 80 and 0.2 < qr['dark'] / qr['n'] ** 2 < 0.6, qr
     assert 'Nobody is watching' in p.js('document.getElementById("bridge-viewers").textContent')
     assert all(p.js('[...document.querySelectorAll("#modal-root button, #modal-root input, #modal-root canvas")].map(e => !!e.title)')), 'every control explains itself'
+    p.click('#bridge-qr')
+    p.wait('!!document.getElementById("qr-big")')
+    big = p.js('(() => { const r = document.querySelector("#qr-big canvas").getBoundingClientRect(); return [r.width, r.height]; })()')
+    assert min(big) > 600, f'big enough for a headset\'s camera: {big}'
+    p.click('#qr-big')
+    p.wait('!document.getElementById("qr-big")')
     p.screenshot(ROOT / '.scratch' / 'e2e_view_dialog.png')
     step('the Connect dialog gives the address of the watching page and its QR code, once the tab is connected')
 
@@ -165,11 +171,57 @@ def run(b, port):
     v.wait('corecadView.on && corecadView.bodies === 1', timeout=20)
     assert v.js('document.getElementById("status").textContent') == 'Live from the CoreCAD tab'
     p.click('[data-modal="close"]')
-    # an address without a code says so
+    step('a watching page that is opened again, or whose tab goes away and comes back, shows the model again')
+
+    # ---- which tab, without an address: the one watched last; else the page asks, and reads the code itself
     w = b.new_page()
-    w.goto('view.html')
-    w.wait('document.getElementById("status").textContent.includes("no code")')
-    step('a watching page that is opened again, or whose tab goes away and comes back, shows the model again; an address without a code says so')
+    plain = 'view.html?bridge=' + bridge
+    w.goto(plain)
+    w.wait('window.corecadView && corecadView.on && corecadView.bodies === 1', timeout=40)
+    assert w.js('location.hash') == '#' + code, 'opened without a code, it watches the tab it watched last'
+    w.js('localStorage.removeItem("corecad.view.code")')
+    w.goto(plain + '&fresh=1')
+    w.wait('window.corecadView && !document.getElementById("ask").hidden')
+    assert 'Which CoreCAD tab' in w.js('document.getElementById("status").textContent') and not w.js('corecadView.on')
+    # a camera that sees nothing a page may use says so, and the page still asks
+    w.js('navigator.mediaDevices.getUserMedia = async () => { throw new DOMException("no", "NotAllowedError"); }')
+    w.click('#scan-first')
+    w.wait('document.getElementById("scan-says").textContent.includes("did not let this page use a camera")')
+    w.click('#scan-stop')
+    assert w.js('document.getElementById("scanning").hidden') and not w.js('corecadView.scanner.running')
+    # a camera that looks at the code, a little turned and not very big: the page reads it and watches that tab
+    w.js("""(async () => {
+      const { default: qrcode } = await import('https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/+esm');
+      const qr = qrcode(0, 'L'); qr.addData(%s); qr.make();
+      const n = qr.getModuleCount(), c = document.createElement('canvas'), g = c.getContext('2d'), k = 6;
+      c.width = 1280; c.height = 960;
+      const draw = () => {
+        g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = '#5a6b70'; g.fillRect(0, 0, c.width, c.height);
+        g.translate(640, 480); g.rotate(0.12); g.fillStyle = '#f4f4f4'; g.fillRect(-(n + 8) * k / 2, -(n + 8) * k / 2, (n + 8) * k, (n + 8) * k);
+        g.fillStyle = '#1b1b1b';
+        for (let r = 0; r < n; r++) for (let q = 0; q < n; q++) if (qr.isDark(r, q)) g.fillRect((q - n / 2) * k, (r - n / 2) * k, k, k);
+      };
+      draw(); setInterval(draw, 100);
+      const stream = c.captureStream(15);
+      navigator.mediaDevices.getUserMedia = async () => stream;
+      navigator.mediaDevices.enumerateDevices = async () => [{ kind: 'videoinput', deviceId: 'a', label: 'Avatar' }, { kind: 'videoinput', deviceId: 'b', label: 'Headset camera' }];
+      return n;
+    })()""" % json.dumps(address))
+    w.click('#scan-first')
+    w.wait('window.corecadView.on && corecadView.bodies === 1', timeout=40)
+    assert w.js('location.hash') == '#' + code and w.js('document.getElementById("scanning").hidden') and w.js('document.getElementById("ask").hidden')
+    assert not w.js('corecadView.scanner.running') and w.js('localStorage.getItem("corecad.view.code")') == code
+    # the address pasted instead: the one of the watching page, or the one for Claude
+    w.js('localStorage.removeItem("corecad.view.code")')
+    w.goto(plain + '&fresh=2')
+    w.wait('window.corecadView && !document.getElementById("ask").hidden')
+    w.js('(() => { const i = document.getElementById("paste"); i.value = "not an address"; i.dispatchEvent(new Event("change")); })()')
+    assert 'not the address of a CoreCAD tab' in w.js('document.getElementById("status").textContent')
+    w.js(f'(() => {{ const i = document.getElementById("paste"); i.value = {json.dumps(p.js("corecad.bridge.address"))}; i.dispatchEvent(new Event("change")); }})()')
+    w.wait('window.corecadView.on && corecadView.bodies === 1', timeout=40)
+    step('without an address the page watches the tab it watched last, or asks: it reads the QR code through a camera, or takes a pasted address; a refused camera is said')
+    errors = [e for e in w.errors() if 'favicon' not in e]
+    assert not errors, errors
 
     errors = [e for e in p.errors() + v.errors() if 'favicon' not in e]
     assert not errors, errors

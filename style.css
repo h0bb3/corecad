@@ -1204,6 +1204,22 @@ main {
   flex: none;
   image-rendering: pixelated;
   background: #fff;
+  cursor: zoom-in;
+}
+.qr-big {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ffffff;
+  cursor: zoom-out;
+}
+.qr-big canvas {
+  width: min(84vh, 84vw);
+  height: min(84vh, 84vw);
+  image-rendering: pixelated;
 }
 .bridge-second p {
   margin: 0 0 6px;

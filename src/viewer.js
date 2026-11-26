@@ -6,9 +6,19 @@
 import { createViewport } from './view/viewport.js';
 import { relayUrl } from './api/bridge.js';
 import { unpackMesh, unpackBodies } from './api/mirror.js';
+import { codeFrom, createScanner } from './view/scan.js';
 
 const id = (x) => document.getElementById(x);
-const code = decodeURIComponent(location.hash.slice(1));
+// The code of the tab that is watched: in the address behind the #, or the one this browser watched last.
+const KEY = 'corecad.view.code';
+const kept = () => {
+  try {
+    return localStorage.getItem(KEY);
+  } catch {
+    return null;
+  }
+};
+let code = codeFrom(decodeURIComponent(location.hash.slice(1))) ?? codeFrom(kept());
 const RETRY_S = [1, 2, 5, 10];
 let ws = null,
   attempt = 0,
@@ -129,6 +139,11 @@ function open() {
     if (m.type === 'watching') {
       attempt = 0;
       host(!!m.host);
+      try {
+        localStorage.setItem(KEY, code); // opened again without a code in its address, this page watches the same tab
+      } catch {
+        /* a browser without storage: the address has it */
+      }
     } else if (m.type === 'host') host(!!m.on);
     else if (m.type === 'show') show(m.data ?? {});
   };
@@ -161,5 +176,56 @@ id('xr').onclick = () => {
   );
 };
 
-if (!/^[A-Za-z0-9_-]{20,64}$/.test(code)) say('This address has no code. Open the Connect dialog in CoreCAD and scan the code there.', 'bad');
-else open();
+// ---- which tab: scan its code with a camera of this device, or paste its address
+/** Watches the tab with this code from now on. */
+function watch(next) {
+  code = next;
+  history.replaceState(null, '', location.pathname + location.search + '#' + code);
+  clearTimeout(timer);
+  attempt = 0;
+  const old = ws;
+  ws = null;
+  old?.close();
+  hostOn = false;
+  fitted = false;
+  list = [];
+  meshes.clear();
+  view.setBodies([]);
+  view.select([]);
+  view.labels([]);
+  id('ask').hidden = true;
+  open();
+}
+const scanner = createScanner({
+  video: id('camera'),
+  say: (text, kind = '') => {
+    id('scan-says').textContent = text;
+    id('scan-says').className = kind;
+  },
+  found: (found) => {
+    id('scanning').hidden = true;
+    watch(found);
+  },
+});
+id('scan').onclick = id('scan-first').onclick = () => {
+  id('scanning').hidden = false;
+  scanner.start().then(() => (id('scan-next').hidden = scanner.cameras < 2));
+};
+id('scan-next').onclick = () => scanner.next();
+id('scan-stop').onclick = () => {
+  scanner.stop();
+  id('scanning').hidden = true;
+};
+id('paste').onchange = id('paste').onpaste = (e) => {
+  const text = e.type === 'paste' ? e.clipboardData?.getData('text') : id('paste').value,
+    found = codeFrom(text);
+  if (found) watch(found);
+  else if (String(text ?? '').trim()) say('That is not the address of a CoreCAD tab. Copy it from the Connect dialog there.', 'bad');
+};
+window.corecadView.scanner = scanner;
+
+if (code) watch(code);
+else {
+  id('ask').hidden = false;
+  say('Which CoreCAD tab? Scan its code, or paste its address.');
+}
