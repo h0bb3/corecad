@@ -101,7 +101,19 @@ export function dimensionsOf(f, { frame = null, matrix = Mat.IDENTITY, sketch = 
   if (f.type === 'revolve' && frame && f.profiles?.length) {
     // at the outline it turns, in the sketch plane: where the turn starts
     const at = toWorld(frame, cornerOf(sketch, f.profiles[0]) ?? f.profiles[0].at);
-    return [item('angle', f.angle, fmt(f.angle) + '°', f.angle >= 360 ? 'revolve angle, all the way round' : 'revolve angle', [], at, change('angle'), '°')];
+    const turn = item('angle', f.angle, fmt(f.angle) + '°', f.rise > 0 && f.angle > 360 ? `revolve angle, ${fmt(f.angle / 360)} turns` : f.angle >= 360 ? 'revolve angle, all the way round' : 'revolve angle', [], at, change('angle'), '°');
+    if (!(f.rise > 0)) return [turn];
+    // how far it goes along the axis in one turn: drawn on the axis, from where the axis line begins
+    const ix = sketch && indexSketch(sketch),
+      line = ix?.entity(f.axis),
+      a = line && ix.point(line.a),
+      b = line && ix.point(line.b),
+      length = a && b ? Math.hypot(b.x - a.x, b.y - a.y) : 0;
+    if (!(length > 1e-9)) return [turn];
+    const s = (f.flip ? -f.rise : f.rise) / length,
+      from = toWorld(frame, [a.x, a.y]),
+      to = toWorld(frame, [a.x + (b.x - a.x) * s, a.y + (b.y - a.y) * s]);
+    return [turn, item('rise', f.rise, fmt(f.rise), f.left_handed ? 'rise in one turn, left-handed' : 'rise in one turn', [from, to], mid(from, to), change('rise'))];
   }
   if (f.type === 'hole' && f.face) {
     const fr = canonicalFrame(f.face.hint.n, f.face.hint.d),

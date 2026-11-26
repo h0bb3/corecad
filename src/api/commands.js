@@ -140,14 +140,16 @@ export const TOOLS = [
   ),
   tool(
     'revolve',
-    'Turns closed regions of a sketch about a line of that sketch into a solid: a new body, joined to the bodies it touches, cut out of them, or their intersection. The regions must lie on one side of the line; they may touch it.',
+    'Turns closed regions of a sketch about a line of that sketch into a solid: a new body, joined to the bodies it touches, cut out of them, or their intersection. The regions must lie on one side of the line; they may touch it. With a rise the regions also move along the line as they turn: a thread, a spring, a screw.',
     {
       sketch: SKETCH_ARG,
       profiles: { description: 'Which regions, as for extrude: "outer" (default), "all", or an array of region indices or of points [x, y] inside them.' },
       axis: str('The line to turn about: the id of a line of the sketch (get_sketch lists them). A construction line is the usual choice; a side of the outline will do.'),
-      angle: numb('Degrees: more than 0, at most 360. Left out: 360, all the way round. A turn that is not closed starts in the sketch plane and goes to the side the sketch faces.'),
+      angle: numb('Degrees: more than 0, at most 360; with a rise up to 36000, every 360 a turn. Left out: 360, all the way round. A turn that is not closed starts in the sketch plane and goes to the side the sketch faces.'),
+      rise: numb('How far, in mm, the regions move along the axis in each full turn. Left out or 0: none, an ordinary revolve. With a rise they go along the axis the way the axis line runs from its first point to its second, and turn as a right-handed screw does. A thread is a tooth drawn beside the axis, with a rise greater than the tooth is long along the axis, and an angle of 360 for each turn. A tooth that is joined to a body or cut from one must cross that body\'s surface: draw it reaching a little past the surface (0.2 mm will do), with no side lying in the surface and no corner on it.'),
+      left_handed: bool('With a rise: turn as a left-handed screw does.'),
       operation: str('Default: "new" when the sketch\'s part has no body yet, otherwise "join".', { enum: ['new', 'join', 'cut', 'intersect'] }),
-      flip: bool('Turn the other way.'),
+      flip: bool('Turn the other way. With a rise: go the other way along the axis.'),
     },
     ['axis']
   ),
@@ -155,14 +157,15 @@ export const TOOLS = [
   tool('chamfer', 'Bevels edges of a body by a distance.', { edges: EDGES_ARG, distance: numb('Millimetres.') }, ['edges', 'distance']),
   tool(
     'edit_feature',
-    'Changes a feature\'s parameters, name or suppression; the features after it are rebuilt. Extrude: distance, through_all, distance2, operation, flip. Revolve: angle, axis, operation, flip. Fillet: radius. Chamfer: distance. Combine: operation, with, keep. What a person made with the page\'s own tools is changed here too: a hole (diameter, depth, through_all, at), a box (size, origin), a cylinder (diameter, height, origin), a sphere (diameter, origin). (A sketch is changed with set_dimension, add_to_sketch and remove_from_sketch; where a part stands with move_part.)',
+    'Changes a feature\'s parameters, name or suppression; the features after it are rebuilt. Extrude: distance, through_all, distance2, operation, flip. Revolve: angle, rise, left_handed, axis, operation, flip. Fillet: radius. Chamfer: distance. Combine: operation, with, keep. What a person made with the page\'s own tools is changed here too: a hole (diameter, depth, through_all, at), a box (size, origin), a cylinder (diameter, height, origin), a sphere (diameter, origin). (A sketch is changed with set_dimension, add_to_sketch and remove_from_sketch; where a part stands with move_part.)',
     {
       id: str('The feature\'s id, such as "f3"; or "this": the feature the person has selected in the history, or the one that made the face or edge they have selected or point at (the wall or the rim of a hole, say).'),
       name: str('A new name.'),
       suppressed: bool('true: leave the feature out of the model without deleting it.'),
       distance: numb('mm'), through_all: bool('through everything'), distance2: numb('mm, the other way; 0: none'),
       operation: str('new, join, cut or intersect', { enum: ['new', 'join', 'cut', 'intersect'] }), flip: bool('reverse the direction'),
-      angle: numb('a revolve: degrees, up to 360'), axis: str('a revolve: the id of a line of its sketch'),
+      angle: numb('a revolve: degrees, up to 360, or with a rise 360 for each turn'), axis: str('a revolve: the id of a line of its sketch'),
+      rise: numb('a revolve: mm along the axis in each turn; 0: none'), left_handed: bool('a revolve with a rise: as a left-handed screw'),
       diameter: numb('mm'), depth: numb('mm'), at: { type: 'array', items: { type: 'number' }, description: '[x, y] on the face' }, radius: numb('mm'),
       size: VEC('a box: [x, y, z] in mm'), height: numb('mm'), origin: str('base, center or corner'),
       with: { type: 'array', items: { type: 'string' }, description: 'a combine: the other parts, by id or name' }, keep: bool('a combine: leave the other parts as they are'),
@@ -669,7 +672,7 @@ export function createCommands(app) {
         ...(f.flip ? { flip: true } : {}),
         profiles: f.profiles.length,
       };
-    if (f.type === 'revolve') return { sketch: f.sketch, axis: f.axis, angle: f.angle, operation: f.operation, ...(f.flip ? { flip: true } : {}), profiles: f.profiles.length };
+    if (f.type === 'revolve') return { sketch: f.sketch, axis: f.axis, angle: f.angle, ...(f.rise > 0 ? { rise: f.rise, ...(f.left_handed ? { left_handed: true } : {}) } : {}), operation: f.operation, ...(f.flip ? { flip: true } : {}), profiles: f.profiles.length };
     if (f.type === 'hole') return { diameter: f.diameter, ...(f.depth === 'all' ? { through_all: true } : { depth: f.depth }), at: round(f.at), on_body: f.face?.body };
     if (f.type === 'fillet') return { radius: f.radius, edges: f.edges.length };
     if (f.type === 'chamfer') return { distance: f.distance, edges: f.edges.length };
@@ -1034,6 +1037,8 @@ export function createCommands(app) {
         profiles: regions.map(profileRefFrom),
         axis: axisFrom(sk, a.axis),
         angle: a.angle ?? 360,
+        rise: a.rise ?? 0,
+        left_handed: !!a.left_handed,
         operation,
         flip: !!a.flip,
       });
@@ -1049,7 +1054,7 @@ export function createCommands(app) {
         {
           sketch: [],
           extrude: ['distance', 'through_all', 'distance2', 'operation', 'flip'],
-          revolve: ['angle', 'axis', 'operation', 'flip'],
+          revolve: ['angle', 'rise', 'left_handed', 'axis', 'operation', 'flip'],
           hole: ['diameter', 'depth', 'through_all', 'at'],
           fillet: ['radius'],
           chamfer: ['distance'],
@@ -1073,6 +1078,8 @@ export function createCommands(app) {
       }
       if (f.type === 'revolve') {
         if (a.angle !== undefined) next.angle = a.angle;
+        if (a.rise !== undefined) next.rise = a.rise;
+        if (a.left_handed !== undefined) next.left_handed = !!a.left_handed;
         if (a.axis !== undefined) next.axis = axisFrom(featureById(doc(), f.sketch) ?? { name: 'its sketch', entities: [], points: [] }, a.axis);
         if (a.operation !== undefined) next.operation = a.operation;
         if (a.flip !== undefined) next.flip = !!a.flip;

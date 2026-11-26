@@ -27,6 +27,8 @@ export const validEdgeRef = (r) =>
   vec(r.hint?.mid, 3) &&
   ['line', 'circle', 'other'].includes(r.hint.kind) &&
   Number.isFinite(r.hint.length);
+/** The most turns a revolve with a rise may have. */
+export const MAX_TURNS = 100;
 export function validateFeature(f) {
   const errors = [],
     check = (v, msg) => {
@@ -96,7 +98,15 @@ export function validateFeature(f) {
         'Select at least one closed profile.'
       );
       check(typeof f.axis === 'string' && /^e\d+$/.test(f.axis), 'Choose a line of the sketch to turn about.');
-      check(Number.isFinite(f.angle) && f.angle > 0 && f.angle <= 360, 'The angle is more than 0 and at most 360 degrees.');
+      check(f.rise === undefined || (Number.isFinite(f.rise) && f.rise >= 0), 'The rise in a turn is 0 (an ordinary turn) or more.');
+      check(f.left_handed === undefined || typeof f.left_handed === 'boolean', 'left_handed is true or false.');
+      check(!f.left_handed || f.rise > 0, 'Only a turn with a rise is right- or left-handed: give a rise, or leave left_handed out.');
+      check(
+        Number.isFinite(f.angle) && f.angle > 0 && f.angle <= (f.rise > 0 ? MAX_TURNS * 360 : 360),
+        f.rise > 0
+          ? `The angle is more than 0 and at most ${MAX_TURNS * 360} degrees (${MAX_TURNS} turns).`
+          : 'The angle is more than 0 and at most 360 degrees. More than a turn needs a rise: how far the profile moves along the axis in each turn.'
+      );
       check(['new', 'join', 'cut', 'intersect'].includes(f.operation), 'Choose a valid operation.');
       check(f.targets === null || (Array.isArray(f.targets) && f.targets.every((id) => typeof id === 'string')), 'Invalid target body list.');
       check(typeof f.flip === 'boolean', 'The direction of the turn is invalid.');

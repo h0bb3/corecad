@@ -15,6 +15,7 @@ export const INSTRUCTIONS =
   'Units are millimetres, Z is up. Start with get_state. A project is made of parts; each part has its own history of features and its own place. ' +
   'There is one way to do each thing, and a solid is made in these steps: add_part (an empty part), add_sketch (an empty sketch on a plane of it, or on a flat face), add_to_sketch (shapes), then extrude or revolve; fillet and chamfer work on its edges. ' +
   'A box is a rectangle extruded, a cylinder a circle extruded, a hole a circle on the face extruded as a cut, a ball a half disc revolved about its straight side. ' +
+  'A thread is one tooth revolved with a rise (one feature for all its turns, never a stack of slices): draw the tooth beside the axis line so that it reaches a little into the body, and give revolve a rise and 360 degrees for each turn. ' +
   'A new part stands at the origin: edit_part names it, move_part places it, copy_part repeats it (linked: the copy follows the original), combine joins another part to it or cuts one out of it. ' +
   'add_group makes a container (a place and no shape: moving, turning, hiding, colouring or exporting it does that to what is in it); move_part puts parts into it. ' +
   'Everything stays editable: set_dimension changes a sketch, edit_feature a feature, and what is built on it follows. ' +

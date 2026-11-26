@@ -6,7 +6,7 @@ import {makePart,addPart} from '../src/doc/parts.js';
 import {validateDocument} from '../src/doc/schema.js';
 import {validateFeature} from '../src/doc/features.js';
 import {findRegions,profileRefFrom} from '../src/sketch/profiles.js';
-import {sk,rect,line,arc} from './fixtures/sketches.js';
+import {sk,rect,line,arc,circle,con} from './fixtures/sketches.js';
 const k=createKernel(),PI=Math.PI;
 const good=r=>{eq(r.status,'done');ok(!r.features.some(f=>f.status==='error'),()=>JSON.stringify(r.features));return r;};
 const part=(d,data={})=>{const m=makePart(d,data);return [addPart(m.doc,m.part),m.part.id];};
@@ -73,6 +73,125 @@ test('What cannot be turned says why, and nothing is half made',async()=>{
  for(const bad of [{angle:0},{angle:400},{angle:NaN},{axis:'x'},{axis:''},{flip:1},{operation:'add'},{profiles:[]}]) ok(validateFeature({...doc.features.find(f=>f.id===rid),...bad}).length,JSON.stringify(bad));
  eq(validateFeature(doc.features.find(f=>f.id===rid)),[]);
  r=await k.rebuild(updateFeature(doc,rid,{angle:400}));eq(status(r,rid).status,'error');
+});
+// ---- with a rise: the profile moves along the axis as it turns
+/** A closed outline of lines through the points, as a person would draw it. */
+const poly=(s,pts)=>{const L=pts.map((a,i)=>line(s,...a,...pts[(i+1)%pts.length]));L.forEach((l,i)=>con(s,'coincident',[l.b,L[(i+1)%L.length].a]));return L;};
+/** The first moment of an outline about the line x = 0: times the angle it turns through, that is its volume, rise or no rise. */
+const moment=(pts)=>Math.abs(pts.reduce((m,[x0,y0],i)=>{const [x1,y1]=pts[(i+1)%pts.length];return m+(x0+x1)*(x0*y1-x1*y0);},0))/6;
+const TOOTH=[[12,-1.4],[15,-0.2],[15,0.2],[12,1.4]],RISE=3.5;
+/** A tooth beside the Z axis, on XZ; the axis line is drawn upwards unless told otherwise. */
+const tooth=(pts=TOOTH,down=false)=>(s)=>{poly(s,pts);return (down?line(s,0,10,0,0,{construction:true}):line(s,0,0,0,10,{construction:true})).id;};
+const screw=async(data,pts=TOOTH,down=false)=>{let d=createDocument('Screw'),p;[d,p]=part(d);const t=turn(d,p,tooth(pts,down),'XZ',{rise:RISE,...data});return {...t,r:await k.rebuild(t.d,{purpose:'commit'})};};
+
+test('With a rise the outline climbs the axis as it turns: one solid for all the turns, with its volume exact',async()=>{
+ await k.ready;const {d,sid,rid,r}=await screw({angle:1440});good(r);eq(validateDocument(d),[]);eq(r.bodies.length,1);
+ near(r.bodies[0].volume,moment(TOOTH)*2*PI*4,0.01,'the area of the tooth times how far it goes round: the rise adds nothing');
+ near(r.bodies[0].bbox,[[-15,-15,-1.4],[15,15,4*RISE+1.4]],2e-3);
+ const sides=d.features.find(f=>f.id===sid).entities.filter(e=>!e.construction).map(e=>`${rid}/side/${e.id}`);
+ eq(labels(r.bodies[0]),[...sides,rid+'/end',rid+'/start'].sort());eq(r.bodies[0].mesh.faces.length,4*8+2,'it is made half a turn at a time: a face for each line in each half turn, and two flat ends');
+ const start=r.bodies[0].mesh.faces.find(f=>f.labels.includes(rid+'/start'));near(Math.abs(start.plane.n[1]),1,1e-6,'it starts in the sketch plane');
+ // a turn and a bit, and changing the rise afterwards
+ let q=good(await k.rebuild(updateFeature(d,rid,{angle:450})));near(q.bodies[0].volume,moment(TOOTH)*2*PI*1.25,0.01);
+ for(const a of [1,37,100,181,333,577,725,1001,1234,1999]){q=good(await k.rebuild(updateFeature(d,rid,{angle:a})));near(q.bodies[0].volume,moment(TOOTH)*a*PI/180,0.01,a+' degrees');}
+ q=good(await k.rebuild(updateFeature(d,rid,{rise:6})));near(q.bodies[0].bbox,[[-15,-15,-1.4],[15,15,24+1.4]],2e-3);near(q.bodies[0].volume,moment(TOOTH)*2*PI*4,0.01,'the same volume at another rise');
+});
+test('It goes the way the axis line runs and turns as a right-handed screw; flip goes the other way, left_handed turns the other way',async()=>{
+ const quarter=async(data,down)=>good((await screw({angle:90,...data},TOOTH,down)).r).bodies[0].bbox,top=RISE/4+1.4;
+ near(await quarter({}),[[0,0,-1.4],[15,15,top]],2e-3,'up the axis, from +X towards +Y');
+ near(await quarter({left_handed:true}),[[0,-15,-1.4],[15,0,top]],2e-3,'left-handed: up, towards -Y');
+ near(await quarter({flip:true}),[[0,-15,-top],[15,0,1.4]],2e-3,'flip: down the axis, still right-handed');
+ near(await quarter({},true),[[0,-15,-top],[15,0,1.4]],2e-3,'the axis line drawn downwards: down');
+ near(await quarter({flip:true,left_handed:true}),[[0,0,-top],[15,15,1.4]],2e-3);
+});
+test('Many turns stay exact: sixty of them',async()=>{
+ const {rid,r}=await screw({angle:60*360});good(r);near(r.bodies[0].volume,moment(TOOTH)*2*PI*60,0.2);
+ near(r.bodies[0].bbox,[[-15,-15,-1.4],[15,15,60*RISE+1.4]],2e-3);eq(r.bodies[0].mesh.faces.length,4*120+2);
+ ok(r.bodies[0].mesh.faces.every(f=>f.labels.length===1&&f.labels[0].startsWith(rid+'/')));
+});
+test('A thread: a tooth joined to a rod, and the same thread cut in a block',async()=>{
+ // the tooth reaches 0.3 into the rod (radius 12.6): its flanks cross the rod's wall
+ const T=[[12.3,0.5],[15,1.8],[15,2.2],[12.3,3.5]],k0=1.3/2.7,OUT=[[12.6,0.5+0.3*k0],[15,1.8],[15,2.2],[12.6,3.5-0.3*k0]];
+ let d=createDocument('Bolt'),p,c;[d,p]=part(d);[d,c]=feat(d,'cylinder',p,{diameter:25.2,height:14});
+ const {d:doc,rid}=turn(d,p,tooth(T),'XZ',{rise:RISE,angle:900,operation:'join'});
+ let r=good(await k.rebuild(doc,{purpose:'commit'}));eq(r.bodies.length,1);eq(r.bodies[0].id,c);
+ near(r.bodies[0].volume,PI*12.6**2*14+moment(OUT)*2*PI*2.5,0.05,'the rod and what of the tooth is outside it');
+ near(r.bodies[0].bbox,[[-15,-15,0],[15,15,14]],2e-3);ok(labels(r.bodies[0]).includes(rid+'/start')&&labels(r.bodies[0]).includes(c+'/top'));
+ // a block with a hole (radius 12.9), and a groove 0.3 bigger than the tooth that runs out through both faces
+ const G=[[12.6,-4.65],[15.3,-3.35],[15.3,-2.65],[12.6,-1.35]],GOUT=[[12.9,-4.65+0.3*k0],[15.3,-3.35],[15.3,-2.65],[12.9,-1.35-0.3*k0]];
+ let e=createDocument('Nut'),q,b;[e,q]=part(e);[e,b]=feat(e,'box',q,{size:[40,40,10]});
+ const hole=turn(e,q,(s)=>{rect(s,0,-1,12.9,11);return line(s,0,0,0,10,{construction:true}).id;},'XZ',{operation:'cut'});
+ const nut=turn(hole.d,q,tooth(G),'XZ',{rise:RISE,angle:1620,operation:'cut'});
+ r=good(await k.rebuild(nut.d,{purpose:'commit'}));eq(r.bodies.length,1);near(r.bodies[0].bbox,[[-20,-20,0],[20,20,10]],1e-6);
+ near(r.bodies[0].volume,16000-10*(PI*12.9**2+2*PI*moment(GOUT)/RISE),1,'the thread is the same in every slice of the block');
+ ok(labels(r.bodies[0]).some(l=>l.startsWith(nut.rid+'/side/')));
+});
+test('An outline with a hole in it, and a round one: a hollow coil and a spring',async()=>{
+ const O=[[10,0],[14,0],[14,2.5],[10,2.5]],H=[[11,0.7],[13,0.7],[13,1.8],[11,1.8]];
+ let d=createDocument('Coil'),p;[d,p]=part(d);
+ const all=turn(d,p,(s)=>{poly(s,O);poly(s,H);return line(s,0,0,0,10,{construction:true}).id;},'XZ',{rise:4,angle:900});
+ // only the area between the two outlines: the one that has a hole
+ const walls=findRegions(all.d.features.find(f=>f.id===all.sid)).filter(g=>g.holes.length).map(profileRefFrom);eq(walls.length,1);
+ const coil={...all,d:updateFeature(all.d,all.rid,{profiles:walls})};
+ let r=good(await k.rebuild(coil.d,{purpose:'commit'}));eq(r.bodies.length,1);near(r.bodies[0].volume,(moment(O)-moment(H))*2*PI*2.5,0.05);
+ eq(labels(r.bodies[0]).filter(l=>l.includes('/side/')).length,8,'the four lines of the hole have their faces too');
+ let e=createDocument('Spring'),q;[e,q]=part(e);
+ const spring=turn(e,q,(s)=>{circle(s,10,0,1.5);return line(s,0,0,0,10,{construction:true}).id;},'XZ',{rise:5,angle:1800});
+ r=good(await k.rebuild(spring.d));near(r.bodies[0].volume,PI*1.5**2*10*2*PI*5,0.05);near(r.bodies[0].bbox,[[-11.5,-11.5,-1.5],[11.5,11.5,26.5]],2e-3);
+});
+test('What cannot rise says why',async()=>{
+ const said=async(data,pts,re)=>{const {rid,r}=await screw(data,pts);const st=status(r,rid);eq(st.status,'error',JSON.stringify(data));ok(re.test(st.message),st.message);eq(r.bodies.length,0);};
+ const TALL=[[10,0],[13,0],[13,4],[10,4]];
+ await said({rise:4,angle:720},TALL,/4 long along the axis and rises 4 in a turn: one turn would run into the next/);
+ await said({rise:3,angle:361},TALL,/run into the next/);
+ good((await screw({rise:3,angle:360},TALL)).r); // one turn cannot meet itself
+ await said({rise:4,angle:720},[[0,0],[6,0],[6,1],[0,1]],/A side of the profile lies on the axis/);
+ good((await screw({rise:4,angle:720},[[0,0],[6,-0.5],[6,0.5]])).r); // a corner on the axis will do
+ await said({rise:4,angle:720},[[-3,0],[6,0],[6,1],[-3,1]],/both sides of the axis/);
+ // the numbers themselves
+ const {d,rid}=await screw({angle:720}),f=d.features.find(x=>x.id===rid);eq(validateFeature(f),[]);
+ for(const bad of [{rise:-1},{rise:NaN},{rise:'3'},{left_handed:1},{angle:36001},{angle:0}]) ok(validateFeature({...f,...bad}).length,JSON.stringify(bad));
+ ok(/More than a turn needs a rise/.test(validateFeature({...f,rise:0})[0]),'two turns and no rise');
+ ok(/Only a turn with a rise/.test(validateFeature({...f,rise:0,angle:90,left_handed:true})[0]));
+ eq(validateFeature({...f,angle:36000}),[]);
+ // a file from before there was a rise has neither number, and is an ordinary revolve
+ const {rise,left_handed,...old}=f;eq(validateFeature({...old,angle:360}),[]);
+ const r=good(await k.rebuild(updateFeature(d,rid,{rise:undefined,left_handed:undefined,angle:360})));near(r.bodies[0].volume,moment(TOOTH)*2*PI,1e-6);eq(r.bodies[0].mesh.faces.length,4);
+});
+test('A tooth that only stands on the body does not join it, and is told what helps',async()=>{
+ // its base lies in the rod's wall: the kernel does not join that (KERNEL_NOTES), made from either end
+ let d=createDocument('Stands'),p,c;[d,p]=part(d);[d,c]=feat(d,'cylinder',p,{diameter:25.2,height:14});
+ const {d:doc,rid}=turn(d,p,tooth([[12.6,0.6],[15,1.8],[15,2.2],[12.6,3.4]]),'XZ',{rise:RISE,angle:900,operation:'join'});
+ const r=await k.rebuild(doc),st=status(r,rid);ok(['warning','error'].includes(st.status),st.status);ok(/must cross the surface of the body/.test(st.message),st.message);
+ near(r.bodies.find(b=>b.id===c).volume,PI*12.6**2*14,1e-6,'the rod is as it was');
+});
+test('A thread that runs out of the end of its rod; seven turns on a rod; a deeper tooth',async()=>{
+ // these are the joins the kernel got wrong, saying nothing, when a face of the ridge went more than half a turn round (KERNEL_NOTES)
+ const k0=1.3/2.7,core=PI*12.6**2*30;
+ for(const reach of [0.3,0.6]){
+  const T=[[12.6-reach,1.0+(0.3-reach)*k0],[15,2.3],[15,2.7],[12.6-reach,4.0-(0.3-reach)*k0]],OUT=[[12.6,1.0+0.3*k0],[15,2.3],[15,2.7],[12.6,4.0-0.3*k0]];
+  const inside=(moment(T)-moment(OUT))*2*PI; // of one turn: what of the tooth is inside the rod
+  for(const [turns,data] of [[7,{}],[7,{left_handed:true}],[10,{}],[12,{}]]){
+   let d=createDocument('Bolt'),p,c;[d,p]=part(d);[d,c]=feat(d,'cylinder',p,{diameter:25.2,height:30});
+   const {d:doc,rid}=turn(d,p,tooth(T),'XZ',{rise:RISE,angle:360*turns,operation:'join',...data});
+   const r=good(await k.rebuild(doc));eq(r.bodies.length,1,`${reach} ${turns}`);eq(status(r,rid).status,'ok');
+   // above the rod (its top is at 30, the tooth starts at 2.5) the whole tooth is there, not only its outside
+   near(r.bodies[0].volume,core+moment(OUT)*2*PI*turns+inside*Math.max(0,turns-27.5/RISE),turns>7?0.5:0.05,`reach ${reach}, ${turns} turns ${JSON.stringify(data)}`);
+  }
+ }
+});
+test('The same groove cut in holes that were made either way up, right- and left-handed',async()=>{
+ // the kernel lost this cut, or got it a little wrong, depending on which way the hole had been made (KERNEL_NOTES)
+ const G=[[12.6,-4.65],[15.3,-3.35],[15.3,-2.65],[12.6,-1.35]],k0=1.3/2.7,GOUT=[[12.9,-4.65+0.3*k0],[15.3,-3.35],[15.3,-2.65],[12.9,-1.35-0.3*k0]];
+ const want=16000-10*(PI*12.9**2+2*PI*moment(GOUT)/RISE);
+ for(const [y0,y1] of [[0,10],[10,0]]){
+  let e=createDocument('Nut'),q,b;[e,q]=part(e);[e,b]=feat(e,'box',q,{size:[40,40,10]});
+  const hole=turn(e,q,(s)=>{rect(s,0,-1,12.9,11);return line(s,0,y0,0,y1,{construction:true}).id;},'XZ',{operation:'cut'});
+  for(const data of [{},{left_handed:true}]){
+   const nut=turn(hole.d,q,tooth(G),'XZ',{rise:RISE,angle:1620,operation:'cut',...data});
+   const r=good(await k.rebuild(nut.d));near(r.bodies[0].volume,want,1,JSON.stringify([y0,data]));eq(status(r,nut.rid).status,'ok','cut, with no warning');
+  }
+ }
 });
 run();
 </script>

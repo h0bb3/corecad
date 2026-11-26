@@ -59,7 +59,12 @@
  *  flip false: the direction is the sketch plane's normal; true: against it. targets null: every body the tool reaches. */
 
 /** @typedef {FeatureBase & { type: 'revolve', sketch: string, profiles: ProfileRef[], axis: string, angle: number,
+ *              rise?: number, left_handed?: boolean,
  *              flip: boolean, operation: 'new'|'join'|'cut'|'intersect', targets: string[] | null }} RevolveFeature
+ *  rise (left out in files from before it: 0): how far the profile moves along the axis in each full turn.
+ *  0: an ordinary turn, of at most 360 degrees. More: a screw, of up to 100 turns; it goes along the axis
+ *  the way the axis line runs from its first point to its second (flip: the other way) and turns as a
+ *  right-handed screw does (left_handed: as a left-handed one).
  *  axis: the id of a line of the sketch. angle: degrees, 0 < angle <= 360. A turn that is not closed starts in the
  *  sketch plane and goes to the side the sketch faces; flip true: the other way. */
 

@@ -52,6 +52,7 @@ The command set is a toolbox of primitives. It has no shortcuts:
 | a cylinder | the same with a circle |
 | a ball | `add_sketch` on XZ, `add_to_sketch` with a half disc (an arc and the line that closes it), `revolve` about that line |
 | a hole | `add_sketch` on the face, `add_to_sketch` with a circle, `extrude` with `operation: "cut"` (a cut on a face goes into the body) |
+| a thread, a spring | `add_sketch` on a plane the axis lies in, `add_to_sketch` with one tooth (or the wire's outline) and the axis line, `revolve` with a `rise`: one feature for all the turns ([Threads](#threads-revolve-with-a-rise)) |
 | a part in a group | `move_part` with `parent` |
 | taking a group away | `move_part` with `parent` for each part in it, then `delete_part` |
 | moving by an offset | `get_state` for where it is, `move_part` with the new `position` |
@@ -186,6 +187,42 @@ between two clicked things, and the Dimensions view). An agent gets the same:
   mean.
 - `screenshot { dimensions: true }` draws the driving numbers on the picture.
 
+## Threads: revolve with a rise
+
+`revolve` with a `rise` moves the outline along the axis as it turns:
+`rise` millimetres in each full turn. One feature makes all the turns of a
+thread, a spring or a screw conveyor; do not stack slices.
+
+```js
+// a bolt: a rod of radius 12.6, and a tooth that climbs it for seven turns
+run('add_to_sketch', { sketch, shapes: [                     // a sketch on XZ of the rod's part
+  { type: 'polyline', closed: true, points: [[12.3, 1], [15, 2.3], [15, 2.7], [12.3, 4]] },
+  { type: 'line', from: [0, 0], to: [0, 10], construction: true } ] });
+run('revolve', { sketch, axis, rise: 3.5, angle: 360 * 7 });   // axis: the id of that construction line
+```
+
+- **Which way.** The outline goes along the axis the way the axis line runs
+  from its first point to its second, and turns about it as a right-handed
+  screw does. `flip` sends it the other way along the axis; `left_handed`
+  makes it a left-handed screw. `angle` is 360 for each turn, up to 36000.
+- **The tooth must cross the surface** of the body it is joined to or cut
+  from. Draw it reaching a little past that surface (0.2 mm is enough): into
+  the rod for a bolt, into the air of the hole for a nut. A tooth that
+  stands on the surface, with a side lying in it or a corner on it, is not
+  joined, and the answer says so.
+- **The turns must not meet.** The outline has to be shorter along the axis
+  than the `rise`, or one turn would run into the next; that is refused with
+  both numbers. A real thread has a flat between its teeth.
+- **The ends are blunt**: flat, where the outline starts (in the sketch
+  plane) and where it stops. Let a thread run out past the end of its rod or
+  through the faces of its nut, or stop it inside.
+- **A fit needs clearance.** The thread of a nut is its own tooth, drawn a
+  little bigger than the bolt's (0.2 to 0.4 mm for a printed thread).
+- The outline may touch the axis at a corner, not along a side. It may have
+  a hole in it (a hollow coil) and may be round (a spring).
+- It takes a second or two for a few turns and longer for many: 17 turns
+  joined to a rod about 4 s, 30 turns about 9 s.
+
 ## Looking inside
 
 A model can be complicated inside. Two ways of looking in, for the person in
@@ -262,7 +299,7 @@ Arguments in brackets are optional.
 | `add_constraint` | [sketch], type, refs | Adds a geometric constraint; refused with the reason if it conflicts or repeats. |
 | `remove_from_sketch` | [sketch], ids | Removes entities, dimensions or constraints. |
 | `extrude` | [sketch], [profiles], [distance], [through_all], [operation], [distance2], [flip] | Extrudes regions of a sketch: new body, join, cut or intersect. |
-| `revolve` | [sketch], [profiles], axis, [angle], [operation], [flip] | Turns regions of a sketch about a line of that sketch: new body, join, cut or intersect. |
+| `revolve` | [sketch], [profiles], axis, [angle], [rise], [left_handed], [operation], [flip] | Turns regions of a sketch about a line of that sketch: new body, join, cut or intersect. With a `rise` they also move along the line as they turn: a thread. |
 | `fillet` | edges, radius | Rounds edges. |
 | `chamfer` | edges, distance | Bevels edges. |
 | `edit_feature` | id, and what to change | Changes a feature's parameters, name or suppression. |
@@ -287,7 +324,7 @@ Arguments in brackets are optional.
 
 `edit_feature` takes, for an extrusion: `distance`, `through_all`,
 `distance2` (0 for none), `operation`, `flip`; for a revolve: `angle`,
-`axis`, `operation`, `flip`; for a fillet: `radius`; for a chamfer:
+`rise`, `left_handed`, `axis`, `operation`, `flip`; for a fillet: `radius`; for a chamfer:
 `distance`; for a combine: `operation`, `with`, `keep`. For what a person
 made with the page's own tools: a hole `diameter`, `depth`, `through_all`,
 `at`; a box `size`, `origin`; a cylinder `diameter`, `height`, `origin`; a

@@ -70,7 +70,7 @@ placement (`core/mat.js`, `doc/parts.js`). Moving a part rebuilds nothing.
 A sketch on an origin plane lies on that plane of its part.
 
 `revolve` turns closed areas of a sketch about a line of the same sketch:
-`{sketch, profiles, axis, angle, flip, operation, targets}`. `axis` is the id
+`{sketch, profiles, axis, angle, rise, left_handed, flip, operation, targets}`. `axis` is the id
 of a line (a construction line, or a side of the outline); the areas lie on
 one side of it and may touch it. `angle` is in degrees, more than 0 and at
 most 360. A turn that is not closed starts in the sketch plane and goes to
@@ -78,6 +78,17 @@ the side the sketch faces, whichever way the line was drawn; `flip` turns it
 the other way. Its faces are labelled `side/<entity>` for what each line or
 arc of the outline sweeps, and `start` and `end` for the flat ends of a turn
 that is not closed. `operation` and `targets` are those of an extrusion.
+
+With a `rise` (millimetres along the axis in each full turn; 0 or left out:
+none) the areas move along the axis as they turn: a thread. `angle` is then
+360 for each turn, up to 36000. They go along the axis the way the axis line
+runs from its first point to its second (`flip`: the other way) and turn as
+a right-handed screw does (`left_handed`: as a left-handed one). The outline
+must be shorter along the axis than the rise when there is more than a turn,
+and may touch the axis at a corner only. Its faces are labelled as those of a
+turn, with `start` (in the sketch plane) and `end` always there; each line of
+the outline has a face for every half turn. A file without `rise` is read as
+an ordinary revolve.
 
 Features `box`, `cylinder` and `sphere` make a solid without a sketch, with
 named faces. They begin a part of their own.

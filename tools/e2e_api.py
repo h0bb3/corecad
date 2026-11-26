@@ -729,6 +729,85 @@ def run(p, url='index.html?test=1'):
     undo_to(untouched)
     step('revolve: a ring, part of a turn and the other way, about a side of the outline, a groove cut; its angle on the model')
 
+    # ---- revolve with a rise: a thread is one feature, a tooth that climbs its axis as it turns
+    call('new_document', name='Thread')
+
+    def moment(pts):
+        """The first moment of an outline about the line x = 0: times the angle it turns through, its volume."""
+        return abs(sum((x0 + x1) * (x0 * y1 - x1 * y0) for (x0, y0), (x1, y1) in zip(pts, pts[1:] + pts[:1]))) / 6
+
+    P, k0 = 3.5, 1.3 / 2.7                                                              # the rise in a turn; how a flank leans
+    bolt = rod('Bolt', 25.2, 30)                                                        # radius 12.6, z 0..30
+    tooth = [[12.3, 1.0], [15, 2.3], [15, 2.7], [12.3, 4.0]]                             # reaches 0.3 into the rod: its flanks cross the wall
+    outside = [[12.6, 1.0 + 0.3 * k0], [15, 2.3], [15, 2.7], [12.6, 4.0 - 0.3 * k0]]
+    t = sketch([{'type': 'polyline', 'points': tooth, 'closed': True},
+                {'type': 'line', 'from': [0, 0], 'to': [0, 10], 'construction': True}], plane='XZ', part=bolt)
+    axis = next(e['id'] for e in t['sketch']['entities'] if e.get('construction'))
+    before = call('get_document')
+    fails('revolve', 'More than a turn needs a rise', sketch=t['id'], axis=axis, angle=720)
+    fails('revolve', 'Only a turn with a rise', sketch=t['id'], axis=axis, left_handed=True)
+    fails('revolve', '36000', sketch=t['id'], axis=axis, rise=P, angle=36001)
+    fails('revolve', 'one turn would run into the next', sketch=t['id'], axis=axis, rise=2.5, angle=720)
+    assert call('get_document') == before, 'a thread that is refused leaves nothing behind'
+    thread = call('revolve', sketch=t['id'], axis=axis, rise=P, angle=360 * 7)          # seven turns, joined: the part has a body
+    tid = thread['id']
+    assert thread['status'] == 'ok' and len([b for b in thread['bodies'] if b['part'] == bolt]) == 1, thread
+    core = math.pi * 12.6 ** 2 * 30
+    near(vol(thread, bolt), core + moment(outside) * 2 * math.pi * 7, 0.2, 'the rod and what of the tooth is outside it')
+    box = next(b for b in thread['bodies'] if b['part'] == bolt)['box']
+    assert [[round(v, 2) for v in c] for c in box] == [[-15, -15, 0], [15, 15, 30]], box
+    assert {k: feature(tid).get(k) for k in ('angle', 'rise', 'left_handed', 'operation')} == {'angle': 2520, 'rise': 3.5, 'left_handed': None, 'operation': 'join'}, feature(tid)
+    near(vol(call('edit_feature', id=tid, angle=1800), bolt), core + moment(outside) * 2 * math.pi * 5, 0.2, 'five turns')
+    near(vol(call('edit_feature', id=tid, left_handed=True), bolt), core + moment(outside) * 2 * math.pi * 5, 0.2, 'left-handed: as much of it')
+    assert feature(tid)['left_handed'] is True
+    fails('edit_feature', 'More than a turn needs a rise', id=tid, rise=0)
+    fails('edit_feature', 'one turn would run into the next', id=tid, rise=3)
+    call('edit_feature', id=tid, left_handed=False, angle=360 * 7)
+    # the numbers on the model: the angle, and the rise drawn on the axis; the rise is typed over there
+    p.click(f'[data-feature="{tid}"]')
+    labels = {l['key']: l for l in p.js('corecad.dimensions') if l['feature'] == tid}
+    assert labels['angle']['text'] == '2520°' and labels['rise']['text'] == '3.5' and labels['rise']['editable'], labels
+    p.click(labels['rise']['x'], labels['rise']['y'])
+    p.wait('!!document.querySelector(".dim-input")')
+    p.key('a', modifiers=2)
+    p.type('3.6')
+    p.key('Enter')
+    p.wait('!corecad.busy && corecad.doc.features.find(f => f.id === ' + json.dumps(tid) + ').rise === 3.6')
+    near(vol(call('get_state'), bolt), core + moment(outside) * 2 * math.pi * 7, 0.2, 'the same thread at another rise, by the number on the model')
+    call('edit_feature', id=tid, rise=P)
+    # the nut: a block with a hole as anyone makes one, and the same tooth 0.3 bigger cut out of it. The groove
+    # runs out through both faces. (The kernel loses this cut made one way; the page then makes it the other way.)
+    nut = block('Nut', [40, 40, 10])
+    h = sketch([{'type': 'circle', 'center': [0, 0], 'diameter': 25.8}], part=nut)
+    call('extrude', sketch=h['id'], operation='cut', through_all=True)
+    groove = [[12.6, -4.65], [15.3, -3.35], [15.3, -2.65], [12.6, -1.35]]
+    gout = [[12.9, -4.65 + 0.3 * k0], [15.3, -3.35], [15.3, -2.65], [12.9, -1.35 - 0.3 * k0]]
+    g = sketch([{'type': 'polyline', 'points': groove, 'closed': True},
+                {'type': 'line', 'from': [0, 0], 'to': [0, 10], 'construction': True}], plane='XZ', part=nut)
+    gaxis = next(e['id'] for e in g['sketch']['entities'] if e.get('construction'))
+    cut = call('revolve', sketch=g['id'], axis=gaxis, rise=P, angle=1620, operation='cut')
+    assert cut['status'] == 'ok', cut
+    near(vol(cut, nut), 16000 - 10 * (math.pi * 12.9 ** 2 + 2 * math.pi * moment(gout) / P), 1, 'the thread is the same in every slice of the nut')
+    # a tooth that only stands on the rod is not joined, and the answer says what helps
+    stand = sketch([{'type': 'polyline', 'points': [[12.6, 1.0], [15, 2.3], [15, 2.7], [12.6, 4.0]], 'closed': True},
+                    {'type': 'line', 'from': [0, 0], 'to': [0, 10], 'construction': True}], plane='XZ', part=part('Stands'))
+    rod_only = sketch([{'type': 'circle', 'center': [0, 0], 'diameter': 25.2}], part=stand['part'])
+    call('extrude', sketch=rod_only['id'], distance=30)
+    stood = call('revolve', sketch=stand['id'], axis=next(e['id'] for e in stand['sketch']['entities'] if e.get('construction')), rise=P, angle=720)
+    assert 'must cross the surface of the body' in json.dumps(stood), stood
+    call('delete_part', part=stand['part'])
+    # the nut on the bolt, cut open: the picture a person looks at
+    call('move_part', part=nut, position=[0, 0, 12.5])                                  # where its grooves lie round the bolt's teeth
+    call('set_color', part=nut, color='orange')
+    call('set_view', view='front')
+    call('set_section', plane='XZ', flip=True)                                          # the front half away: the cut faces the eye
+    time.sleep(.3)
+    p.screenshot(ROOT / '.scratch' / 'e2e_api_thread_section.png')
+    call('set_section', plane=None)
+    call('set_view', view='home')
+    p.screenshot(ROOT / '.scratch' / 'e2e_api_thread.png')
+    step('revolve with a rise: a bolt and its nut, each thread one feature; turns, rise and hand changed; what is refused; the rise on the model')
+
     # ---- looking inside: the model cut open along a plane, and see-through
     call('new_document', name='Inside')
     block('Housing', [60, 40, 30])                                                      # o1: f1, f2; x -30..30, y -20..20, z 0..30

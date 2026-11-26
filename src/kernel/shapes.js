@@ -1,9 +1,10 @@
-import { kernel, scope, hashOf, listToArray } from './occ.js';
+import { kernel, scope, hashOf, listToArray, errorText, isFatal } from './occ.js';
 import { FeatureError } from '../core/errors.js';
 import { add, sub, mul, len, dot, unit } from '../core/vec.js';
 import { toWorld } from '../core/plane.js';
 import { loopArea, pieceMid, polygonOf } from '../sketch/geom2d.js';
 import { sortLabels } from '../doc/refs.js';
+import { formatNumber } from '../core/num.js';
 
 export function indexShape(shape) {
   const faces = shape.faces,
@@ -77,24 +78,28 @@ const reversed = (loop) =>
     .slice()
     .reverse()
     .map((p) => ({ ...p, a: p.b, b: p.a, ccw: p.kind === 'line' ? undefined : !p.ccw }));
+/** A loop of a sketch as a wire in space, at `t` along the plane's normal: counter-clockwise about the normal
+ *  when `positive`. `origins` is told which entity each edge is; `own` is given what must be deleted. */
+function loopWire(frame, loop, positive, t, origins, own) {
+  const { r } = kernel(),
+    P = (p) => toWorld(frame, p, t),
+    ordered = loopArea(loop) > 0 === positive ? loop : reversed(loop);
+  const edges = ordered.map((p) => {
+    if (p.kind === 'circle') {
+      origins.push({ entity: p.entity, circle: true, c: P(p.c) });
+      return own(r.makeCircle(p.r, P(p.c), p.ccw === false ? mul(frame.n, -1) : frame.n));
+    }
+    const m = pieceMid(p);
+    origins.push({ entity: p.entity, mid: P(m) });
+    return own(p.kind === 'line' ? edgeLine(P(p.a), P(p.b)) : edgeArc(P(p.a), P(m), P(p.b)));
+  });
+  return own(r.assembleWire(edges));
+}
 export function profileFace(frame, region, t = 0) {
   const { r } = kernel(),
     own = scope(),
     origins = [];
-  const P = (p) => toWorld(frame, p, t);
-  function wire(loop, positive) {
-    const ordered = loopArea(loop) > 0 === positive ? loop : reversed(loop);
-    const edges = ordered.map((p) => {
-      if (p.kind === 'circle') {
-        origins.push({ entity: p.entity, circle: true, c: P(p.c) });
-        return own(r.makeCircle(p.r, P(p.c), p.ccw === false ? mul(frame.n, -1) : frame.n));
-      }
-      const m = pieceMid(p);
-      origins.push({ entity: p.entity, mid: P(m) });
-      return own(p.kind === 'line' ? edgeLine(P(p.a), P(p.b)) : edgeArc(P(p.a), P(m), P(p.b)));
-    });
-    return own(r.assembleWire(edges));
-  }
+  const wire = (loop, positive) => loopWire(frame, loop, positive, t, origins, own);
   let face;
   try {
     face = r.makeFace(
@@ -257,6 +262,164 @@ export function revolved(fid, frame, region, axis, angle, flip = false) {
   } catch (e) {
     faces?.forEach((f) => f.delete());
     shape?.delete();
+    throw e;
+  } finally {
+    own.end();
+  }
+}
+/** How much of a turn the kernel is given in one piece: half a turn. A face that goes further round is cut
+ *  and joined wrongly by the kernel, which says nothing: bodies come back as they were, or a little short,
+ *  or without a part of themselves. With half turns every case that was tried came out right (KERNEL_NOTES,
+ *  "A profile turned about an axis while it rises along it"). */
+const TURNS_A_PIECE = 0.5;
+/** A piece of a helix of radius 1 about the axis through `o` along `dir`: from turn t0 to turn t1 of it, as
+ *  a wire. The pieces of one helix lie on one cylinder, so each begins where the one before it ended. */
+function helixArc(o, dir, rise, t0, t1, left) {
+  const { OC, r } = kernel(),
+    own = scope();
+  try {
+    const length = Math.hypot(2 * Math.PI, rise),
+      line = own(new OC.Geom2d_Line(own(new OC.gp_Pnt2d(0, 0)), own(new OC.gp_Dir2d(left ? -2 * Math.PI : 2 * Math.PI, rise)))),
+      segment = own(new OC.GC_MakeSegment2d(own(line.Value(t0 * length)), own(line.Value(t1 * length)))),
+      surface = own(new OC.Geom_CylindricalSurface(own(r.makeAx3(o, dir)), 1)),
+      edge = own(new OC.BRepBuilderAPI_MakeEdge(own(segment.Value()), surface)).Edge(),
+      wire = own(new OC.BRepBuilderAPI_MakeWire(edge)).Wire();
+    OC.BRepLib.BuildCurves3d(wire);
+    return new r.Wire(wire);
+  } finally {
+    own.end();
+  }
+}
+/**
+ * A profile turned about a line of its sketch plane while it moves along that line: `rise` for each full turn.
+ * @param {{ p: number[], d: number[] }} axis  a point and a unit direction, in the plane's own coordinates. The
+ *   profile goes along the axis in that direction (`flip`: against it), and turns about it as a right-handed
+ *   screw does (`left`: as a left-handed one).
+ * @param {number} angle  degrees; every 360 is a turn, and there may be many
+ * @param {boolean} backwards  make the same solid from its far end back to the sketch plane. The kernel
+ *   loses a cut or a join of this solid with some bodies, without saying so, when it is made one way, and
+ *   does it rightly when it is made the other way (KERNEL_NOTES): the caller tries both.
+ * Faces: `fid/side/<entity>` for what each line or arc of the outline sweeps, `fid/start` for the flat end in
+ * the sketch plane and `fid/end` for the other.
+ */
+export function screwed(fid, frame, region, axis, angle, rise, flip = false, left = false, backwards = false) {
+  const { OC, r } = kernel(),
+    own = scope(),
+    off = ([x, y]) => axis.d[0] * (y - axis.p[1]) - axis.d[1] * (x - axis.p[0]), // from the axis, to its left: positive
+    up = ([x, y]) => axis.d[0] * (x - axis.p[0]) + axis.d[1] * (y - axis.p[1]), // along the axis
+    loops = [region.outer, ...region.holes],
+    polygons = loops.map((loop) => polygonOf(loop, 1e-4)),
+    reach = polygons.flat().map(off),
+    lo = Math.min(...reach),
+    hi = Math.max(...reach),
+    eps = 1e-6 * Math.max(1, hi - lo);
+  if (lo < -eps && hi > eps)
+    throw new FeatureError('axis-crosses', 'The profile lies on both sides of the axis. Keep it on one side.');
+  if (loops.some((loop) => loop.some((p) => p.kind === 'line' && Math.abs(off(p.a)) < eps && Math.abs(off(p.b)) < eps)))
+    throw new FeatureError('axis-touches', 'A side of the profile lies on the axis. With a rise the profile may touch the axis at a corner, not along a side.');
+  const heights = polygons[0].map(up),
+    tall = Math.max(...heights) - Math.min(...heights);
+  if (angle > 360 + 1e-9 && !(tall < rise - 1e-7))
+    throw new FeatureError(
+      'turns-meet',
+      `The profile is ${formatNumber(tall)} long along the axis and rises ${formatNumber(rise)} in a turn: one turn would run into the next. Give it a rise of more than ${formatNumber(tall)}, or make the profile shorter along the axis.`
+    );
+  // What a loop holds when it has turned: its first moment about the axis, times the angle. The rise adds
+  // nothing, for along the axis the profile moves within its own plane.
+  const radians = (angle * Math.PI) / 180,
+    holds = (poly) =>
+      (Math.abs(
+        poly.reduce((m, p, i) => {
+          const q = poly[(i + 1) % poly.length];
+          return m + (off(p) + off(q)) * (off(p) * up(q) - off(q) * up(p));
+        }, 0)
+      ) /
+        6) *
+      radians;
+  const o = toWorld(frame, axis.p),
+    dir = mul(unit(sub(toWorld(frame, [axis.p[0] + axis.d[0], axis.p[1] + axis.d[1]]), o)), flip ? -1 : 1),
+    turns = angle / 360,
+    count = Math.max(1, Math.ceil(turns / TURNS_A_PIECE - 1e-9)),
+    cuts = Array.from({ length: count + 1 }, (_, i) => (turns * i) / count); // pieces of one length: the kernel refuses some uneven ones ("Uncompatible wires")
+  const at = (t) => add(o, mul(dir, (backwards ? turns - t : t) * rise)), // t turns from where the kernel begins
+    way = backwards ? mul(dir, -1) : dir,
+    ends = backwards ? ['end', 'start'] : ['start', 'end'];
+  let done = null;
+  try {
+    own(profileFace(frame, region, 0).face); // refuses an outline that is not a valid face
+    // The axis carries the outline, and a helix about it says how far it has turned.
+    const spine = own(r.assembleWire(cuts.slice(1).map((t, i) => own(edgeLine(at(cuts[i]), at(t)))))),
+      guide = own(r.assembleWire(cuts.slice(1).map((t, i) => own(helixArc(at(0), way, rise, cuts[i], t, left)))));
+    const turned = (loop, poly) => {
+      const origins = [],
+        drawn = loopWire(frame, loop, true, 0, origins, own),
+        ids = drawn.edges.map((edge) => {
+          try {
+            return originOf(edge, origins);
+          } finally {
+            edge.delete();
+          }
+        }),
+        // backwards: the outline where it ends up, its edges in the same order
+        wire = backwards ? own(drawn.clone().rotate(left ? -angle : angle, o, dir).translate(mul(dir, turns * rise))) : drawn,
+        builder = own(new OC.BRepOffsetAPI_MakePipeShell(spine.wrapped));
+      if (ids.some((id) => !id)) throw new FeatureError('profile-invalid', 'The kernel could not identify a profile edge.');
+      let shape;
+      try {
+        builder.SetMode(guide.wrapped, false, OC.BRepFill_TypeOfContact.BRepFill_NoContact);
+        builder.Add(wire.wrapped, false, false);
+        builder.Build();
+        if (!builder.MakeSolid()) throw new Error('not closed');
+        shape = r.cast(builder.Shape());
+      } catch (e) {
+        if (e instanceof FeatureError || isFatal(e)) throw e;
+        throw new FeatureError('invalid-result', 'The kernel could not turn this profile into a solid.', { detail: errorText(e) });
+      }
+      const indexed = indexShape(shape),
+        faces = indexed.faces,
+        labels = faces.map(() => []);
+      try {
+        const put = (raw, label) => {
+          try {
+            const i = indexed.find(raw);
+            if (i >= 0) labels[i].push(label);
+          } finally {
+            raw.delete();
+          }
+        };
+        put(builder.FirstShape(), `${fid}/${ends[0]}`);
+        put(builder.LastShape(), `${fid}/${ends[1]}`);
+        wire.edges.forEach((edge, i) => {
+          try {
+            for (const g of listToArray(builder.Generated(edge.wrapped))) put(g, `${fid}/side/${ids[i]}`);
+          } finally {
+            edge.delete();
+          }
+        });
+        const want = holds(poly);
+        if (labels.some((l) => !l.length) || !isValid(shape) || !(Math.abs(volume(shape) - want) <= 0.005 * want + 1e-6))
+          throw new FeatureError('invalid-result', 'The turn with a rise did not produce a valid labelled solid.');
+        return { shape, faces, labels };
+      } catch (e) {
+        faces.forEach((f) => f.delete());
+        shape.delete();
+        throw e;
+      }
+    };
+    done = turned(loops[0], polygons[0]);
+    for (let i = 1; i < loops.length; i++) {
+      const hole = turned(loops[i], polygons[i]);
+      try {
+        const next = boolean('cut', done, hole, fid);
+        dispose(done);
+        done = next;
+      } finally {
+        dispose(hole);
+      }
+    }
+    return { shape: done.shape, faces: done.faces, labels: done.labels };
+  } catch (e) {
+    if (done) dispose(done);
     throw e;
   } finally {
     own.end();

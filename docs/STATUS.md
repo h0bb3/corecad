@@ -7,7 +7,7 @@ in the order the work was done.
 ## Where it stands
 
 CoreCAD is live at [h0bb3.github.io/corecad](https://h0bb3.github.io/corecad/):
-`main` is what is published. The page is build `e8bec3e081`
+`main` is what is published. The page is build `90df49af15`
 (`src/version.js` names the build).
 
 What it does:
@@ -15,7 +15,9 @@ What it does:
 - **Sketches** on origin planes and flat faces, with constraints and driving
   dimensions, solved by CoreCAD's own solver.
 - **Solids**: extrude and revolve (new body, join, cut, intersect), fillet
-  and chamfer, in an editable history with undo and redo.
+  and chamfer, in an editable history with undo and redo. A revolve with a
+  rise climbs its axis as it turns: a thread, a spring or a screw is one
+  feature.
 - **Parts**: each with its own history and its own place; groups; copies and
   linked copies; combine (join, cut, intersect) of parts where they stand;
   arrows and rings to move and turn them.
@@ -39,7 +41,7 @@ What it does:
 
 Verified on this build, 2026-11-26:
 
-- `python tools/run_tests.py`: 128 tests in 17 pages; the kernel pages run
+- `python tools/run_tests.py`: 137 tests in 17 pages; the kernel pages run
   the real OpenCascade worker.
 - The end-to-end scripts in headless Chrome, all passing: `tools/e2e.py`,
   `e2e_more.py`, `e2e_parts.py` and `e2e_export.py` (real mouse and key
@@ -62,6 +64,9 @@ Not verified:
   the holder above and what is in the log (turning parts, which led to the
   rings; a 3MF opened in Bambu Studio). There is no report from use yet of
   Section, X-ray or the signs of an agent at work: they rest on the scripts.
+- **A printed thread.** Bolt and nut come out of the kernel as valid solids
+  with the volumes they must have. Whether a thread made this way screws
+  together when printed, and with what clearance, nobody has tried.
 - **A slicer, in detail.** Bambu Studio opened a 3MF from CoreCAD with the
   message "The 3mf file has invalid config, load geometry data only"; the
   geometry was right. What causes the message was not found, and whether the
@@ -154,19 +159,8 @@ description of the tablet holder, not from the holder's files:
   grows.
 - **An agent's work as one thing**: a mark in the history where it began,
   and a way back to it. Undo goes a command at a time.
-- **A thread**: a profile turned about a line while it rises along it. The
-  paths of a sketch are flat, so the planned sweep would not give one. The
-  owner's agent, asked for a cube with a large threaded bolt through it,
-  built the thread as a stair of wedges, about 36 to a turn (2026-11-26).
-  Tried in the kernel the same day (`test/spike-helix.test.html`,
-  [KERNEL_NOTES.md](KERNEL_NOTES.md)): a tooth turned up a helix is one
-  valid solid with an exact volume in a tenth of a second; joined to its
-  core, a rod 60 mm long with 17 turns is one valid solid in about 5 s, and
-  the same thread is cut out of a block with a clearance. The tooth must
-  reach into the core: one that stands on the core's wall does not join.
-  A way to say it that keeps one way for each thing: `revolve` with a rise
-  for each turn, and angles past 360; an ordinary revolve is then the one
-  with no rise. Not decided.
+- **A thread** was on this list and is done: `revolve` with a `rise`
+  (the log, "A thread is one feature").
 
 What a new operation touches (revolve, commit `65a526a`, is the pattern):
 
@@ -776,3 +770,77 @@ Limits: only commands that come through the bridge count. A script in the
 tab that calls `corecad.run` itself, or an agent that drives the page with
 mouse and keys, is not seen as one. The page does not stop the person from
 working while an agent does.
+
+## A thread is one feature: revolve with a rise (2026-11-26)
+
+Why: the owner's agent, asked for a cube with a large threaded bolt through
+it, built the thread as a stair of wedges, about 36 to a turn. It worked and
+was very slow (the owner). There was no other way: a thread is a helix, and
+nothing in the toolbox made one.
+
+- **`revolve` has a `rise`**: how far the outline moves along the axis in
+  each full turn. 0 or left out is the revolve there was. With a rise,
+  `angle` is 360 for each turn, up to 36000; the outline goes along the axis
+  the way the axis line runs from its first point to its second (`flip`: the
+  other way) and turns as a right-handed screw does (`left_handed`: as a
+  left-handed one). It is the same command, so there is still one way to
+  turn a sketch about a line. `edit_feature` changes the three numbers,
+  `get_state` shows them, and the rise stands on the model, drawn on the
+  axis, where it is clicked and typed over. No dialog and no button, as for
+  the revolve.
+- **What a client is told** (the bridge's instructions and the `rise`
+  argument): a thread is one tooth revolved with a rise, never a stack of
+  slices; the tooth reaches a little into the body.
+- **What is refused, with the reason**: more than a turn without a rise;
+  an outline as long along the axis as the rise, when there is more than a
+  turn (the turns would run into each other); a side of the outline on the
+  axis; `left_handed` without a rise; more than 100 turns. A tooth that only
+  stands on the body is not joined: the answer says that it must cross the
+  body's surface.
+- **The kernel** (`screwed` in `src/kernel/shapes.js`): the axis carries
+  the outline and a helix guides the turning, half a turn at a time. Why
+  half a turn, and the other dangers, is in
+  [KERNEL_NOTES.md](KERNEL_NOTES.md): with longer pieces the kernel cut and
+  joined these solids wrongly and said nothing (a cut that removed nothing,
+  a join 51 mm3 short, a body that vanished). Every solid `screwed` makes is
+  checked against the volume it must have. A cut or a join that did nothing
+  is tried once more with the solid made from its far end.
+- The join of a tool with a body is now worked out once, not twice
+  (`applyTool`): it was tried to see whether the two touch, and then done
+  again.
+- A file from before has no `rise`: it is read as an ordinary revolve.
+
+Verification: `test/kernel-revolve.test.html` (14 tests, 9 of them new):
+the volume against its formula at four turns, at ten odd angles and at sixty
+turns; which way it goes for flip, left_handed and an axis line drawn
+downwards; a bolt and its nut with exact volumes; a hollow coil and a
+spring; the joins and cuts the kernel got wrong with longer pieces (7, 10
+and 12 turns on a rod with two depths of tooth, a thread that runs out of
+the end of its rod; one groove in holes made either way up, right- and
+left-handed); every refusal. `tools/e2e_api.py` as an agent does it: a bolt
+on an extruded rod, turns, rise and hand changed, the rise typed over on the
+model, a nut with a hole made by an extruded cut, the refusals, the tooth
+that only stands. Pictures: `.scratch/e2e_api_thread.png` and
+`e2e_api_thread_section.png`.
+
+Limits:
+
+- **The kernel is not to be trusted with these solids beyond what was
+  tried.** The solid a revolve with a rise makes is checked against its
+  formula. What a join or a cut makes of it cannot be checked that way.
+  It came out right in every case tried with half turns (the tests above,
+  and 28 joins and cuts at kernel level); before that, with longer pieces,
+  wrong results came with valid shapes and no error. A thread on a body of
+  another kind (a cone, a curved wall, another thread) has not been tried.
+  After a thread is cut or joined, look at the volume in the answer and at
+  the picture.
+- The tooth is the agent's to draw: there is no table of standard threads
+  and nothing works out a clearance.
+- The ends of a thread are blunt. A thread that tapers out needs something
+  the toolbox does not have.
+- Time: joined to a rod, 7 turns about 2 s, 17 turns about 4 s, 30 turns
+  about 9 s, and each rebuild of what comes after it in the history costs
+  that again.
+- Each line of the outline has a face for every half turn, so a long thread
+  has hundreds of faces. Picking and measuring work on each as on any face.
+

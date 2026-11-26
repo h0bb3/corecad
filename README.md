@@ -46,7 +46,9 @@ and its own place.
 - **Revolve** (by command, for now without a dialog in the page) turns closed
   areas of a sketch about a line of that sketch: anything that is turned on
   a lathe. It has a row in the history, and its angle stands on the model
-  where it can be clicked and typed over.
+  where it can be clicked and typed over. With a **rise** the areas climb the
+  line as they turn, so a thread, a spring or a screw is one feature: a
+  tooth, a rise for each turn and 360 degrees for each turn.
 - **Group** makes a container for parts: a name and a place, and no shape
   of its own. Drag parts onto it in the list, or make them while it is
   selected. Moving, turning, hiding, copying or exporting a group does that

@@ -178,43 +178,75 @@ const shape = r.cast(b.Shape());
 
 ## A profile turned about an axis while it rises along it (a thread)
 
-Tried in `test/spike-helix.test.html` (2026-11-26). No feature uses it yet.
+First tried in `test/spike-helix.test.html`; it is what `revolve` with a
+`rise` does (`screwed` in `src/kernel/shapes.js`, tested in
+`test/kernel-revolve.test.html`). **Read the dangers before changing it: the
+kernel gets this wrong in several ways without saying so.**
 
 ```js
-const helix = r.makeHelix(pitch, height, radius, [0, 0, z0]);        // a Wire about +Z, from (radius, 0, z0)
-const ridge = r.genericSweep(profileWire, helix, { frenet: true });  // a Solid
-// or, the same solid: the axis carries the profile and the helix guides the turning
-const ridge = r.genericSweep(profileWire, axisWire, { auxiliarySpine: helix });
+const b = new OC.BRepOffsetAPI_MakePipeShell(spine.wrapped);         // spine: the axis, as a wire
+b.SetMode(guide.wrapped, false, OC.BRepFill_TypeOfContact.BRepFill_NoContact); // guide: a helix about the axis
+b.Add(profileWire.wrapped, false, false);
+b.Build();
+b.MakeSolid();                                                       // false, or it throws, when it cannot
+const shape = r.cast(b.Shape());
 ```
 
-- Both give a valid `Solid`. A profile of four lines makes 6 faces: one
-  `BSPLINE_SURFACE` for each line, however many turns, and two flat ends,
-  where the profile was drawn and where it ends up.
+- The axis carries the outline and the helix says how far it has turned.
+  The same solid comes from the helix as the spine with `SetMode(true)`
+  (its own frame). The names have no suffix in this build (`SetMode`, `Add`,
+  `Build()` without a progress).
+- The result is a valid `Solid`. Each edge of the outline makes one
+  `BSPLINE_SURFACE` for each edge of the spine; there are two flat ends.
+  `b.Generated(edge.wrapped)` lists the faces an edge of the outline made
+  (one for each piece of the spine), `b.FirstShape()` and `b.LastShape()`
+  are the flat ends.
 - **The volume is exact, and there is a formula for it**: the first moment
-  of the profile about the axis, times the angle in radians. That is the
+  of the outline about the axis, times the angle in radians. That is the
   volume of an ordinary revolve by the same angle; the rise adds nothing,
-  because along the axis the profile moves within its own plane. (A tooth
-  2.15 deep at radius 15: four turns 1395.529 against 1395.529; a quarter
-  of a turn and a turn and a half are as close.)
-- Fast: 12 to 150 ms; 20 turns in 35 ms.
-- **Joining the ridge to a core is where the time and the danger are.** With
-  CoreCAD's own boolean (`HasErrors`, then `SimplifyResult`):
-  - A tooth whose flanks go on into the core (by 0.3 here), so that the
-    ridge crosses the core's wall: one valid solid, the volume right to
-    0.003 in 8395 (14 mm long) and to 0.05 in 35981 (60 mm, 17 turns). The
-    join takes 1 s for 6 turns and 3.9 s for 20; cutting the ends off flat
-    (a `common` with a cylinder) 0.5 to 1 s. The 60 mm rod has 23 faces and
-    41,882 triangles, meshed in 1.2 s.
-  - A tooth that stands on the core's wall (its base lies in the wall): the
-    builder reports no error, after 6 s, and the result is two solids and
-    not valid. The check of validity after a boolean catches it.
-  - A tooth with a corner in the wall that goes on inside: `StdFail_NotDone`
-    after 5 s.
-  - replicad's own `a.fuse(b)` does not ask for errors: for that last tooth
-    on a 60 mm rod it gave back the ridge alone, valid, with the core gone.
-    Do not use it here.
-- The same thread cut out of a block, 0.3 bigger all round: one valid solid,
-  the cut itself 0.2 s, the volume within 0.4 of 18576.
-- For comparison, the thread as a stair of wedges, 36 to a turn, each joined
-  to what is there: 63 ms a wedge over the first two turns (72 wedges, 364
-  faces). 17 turns are 612 wedges.
+  because along the axis the outline moves within its own plane. `screwed`
+  checks every solid against it.
+- Fast by itself: a tenth of a second for a few turns, half a second for thirty.
+
+The dangers, each seen here with a valid shape and no error:
+
+- **More than about thirty turns in one piece: the solid is wrong.** 40
+  turns had 13.5 % too little volume, 60 turns half. With the axis and the
+  helix both cut into pieces it is exact to 100 turns. Pieces of the axis
+  alone do not help.
+- **A face that goes more than half a turn round is cut and joined
+  wrongly.** With pieces of one turn or more, of 7 to 12 turns joined to a
+  rod: 51 mm3 missing of 17180; an extra solid; no faces at all; the rod
+  gone. A groove cut through a block with a hole: nothing removed at all
+  when the hole's cylinder had been made one way up, right when it had been
+  made the other way up, and the reverse when the groove was made from its
+  far end. Pieces of one turn: the joins right, most of the cuts 0.1 to
+  0.6 mm3 off. **Pieces of half a turn: all 28 cases right to 0.006**
+  (joins and cuts, made from either end, right- and left-handed, the seam
+  of the rod or the hole at 0, 77, 133 and 200 degrees), and a quarter turn
+  the same but slower. So `screwed` makes half turns.
+- **Pieces of uneven length are refused** now and then
+  (`StdFail_NotDone Uncompatible wires`: a turn and a quarter as 0.5, 0.5,
+  0.25): the pieces are all made the same length.
+- replicad's `makeHelix` always starts at the same angle, so its pieces
+  must be whole turns. `helixArc` in `shapes.js` makes any piece: a segment
+  of a `Geom2d_Line` on one `Geom_CylindricalSurface`, as `makeHelix` does.
+- **A tooth that stands on the body** (its base in the body's wall, or a
+  corner on it) is not joined: two solids, or `StdFail_NotDone`. Its flanks
+  must cross the wall. `revolve` says so.
+- **Turns that run into each other** (an outline as long along the axis as
+  the rise, or longer) give a valid solid with the volume of the formula:
+  it overlaps itself. Checked before building.
+- **A side of the outline on the axis**: not valid. A corner on the axis is
+  fine.
+- replicad's own `a.fuse(b)` does not ask for errors: for a tooth with a
+  corner in the wall it gave back the ridge alone, valid, the rod gone.
+- `revolve` still makes the solid a second time, from its far end, when a
+  cut or a join did nothing: that put right the lost cuts when the pieces
+  were longer. With half turns no case is known that needs it.
+
+Times, with CoreCAD's own boolean and half turns: joined to a rod, 7 turns
+1.7 s, 17 turns 3.8 s, 30 turns 8.3 s (the sweep itself 0.1 to 0.6 s of
+that, the mesh 0.1 to 0.3 s); a groove of 4.5 turns cut in a block 1 s. An
+outline with a hole is the outer one made solid and the hole's cut out of it
+(1.8 s for 2.5 turns).

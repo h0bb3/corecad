@@ -5,9 +5,9 @@ import { findRegions, resolveProfile } from '../sketch/profiles.js';
 import { indexSketch } from '../sketch/model.js';
 import { canonicalFrame, toWorld } from '../core/plane.js';
 import { sub, mul, dot } from '../core/vec.js';
-import { prism, revolved, boolean, cylinder, blend, edgesOf, bounds, volume, countSolids, boxSolid, cylinderSolid, sphereSolid, placed } from './shapes.js';
+import { prism, revolved, screwed, boolean, cylinder, blend, edgesOf, bounds, volume, countSolids, boxSolid, cylinderSolid, sphereSolid, placed } from './shapes.js';
 import { topoOf } from './topo.js';
-import { errorText } from './occ.js';
+import { errorText, isFatal } from './occ.js';
 
 export const emptyState = () => ({ bodies: [], sketches: new Map() });
 const fail = (code, message, data) => {
@@ -58,9 +58,11 @@ function applyTool(fid, operation, all, targets, tool, own, body, words) {
     result = {};
   if (operation === 'new') bodies.push(body(fid, tool));
   else if (operation === 'join') {
+    const tried = new Map(); // the join with each target is worked out once: a thread takes seconds
     const merges = targets.filter((t) => {
       if (!reached(t, tool)) return false;
       const fused = own(boolean('fuse', t, tool, fid));
+      tried.set(t, fused);
       return countSolids(fused.shape) < countSolids(t.shape) + countSolids(tool.shape);
     });
     if (!merges.length) {
@@ -68,7 +70,7 @@ function applyTool(fid, operation, all, targets, tool, own, body, words) {
       result = { code: 'join-made-body', message: words.madeBody };
     } else {
       let acc = tool;
-      for (const t of merges) acc = own(boolean('fuse', t, acc, fid));
+      for (const t of merges) acc = acc === tool ? tried.get(t) : own(boolean('fuse', t, acc, fid));
       const id = merges[0].id,
         ids = new Set(merges.map((b) => b.id));
       bodies = bodies.flatMap((b) => (b.id === id ? [body(id, acc)] : ids.has(b.id) ? [] : [b]));
@@ -191,13 +193,52 @@ export function evaluate(f, state, ctx) {
     const { regions, guessed } = regionsOf(f, sk, 'revolve');
     const targets = state.bodies.filter((b) => f.targets === null || f.targets.includes(b.id));
     if (!targets.length && ['cut', 'intersect'].includes(f.operation)) fail('no-target', 'There is no body to cut or intersect.');
-    const axis = { p: a, d: [(b[0] - a[0]) / length, (b[1] - a[1]) / length] };
-    let tool = null;
-    for (const region of regions) {
-      const shape = own(revolved(f.id, sk.frame, region, axis, f.angle, f.flip));
-      tool = tool ? own(boolean('fuse', tool, shape, f.id)) : shape;
+    const axis = { p: a, d: [(b[0] - a[0]) / length, (b[1] - a[1]) / length] },
+      rise = f.rise ?? 0;
+    const made = (backwards) => {
+      let tool = null;
+      for (const region of regions) {
+        const shape = own(rise > 0 ? screwed(f.id, sk.frame, region, axis, f.angle, rise, f.flip, !!f.left_handed, backwards) : revolved(f.id, sk.frame, region, axis, f.angle, f.flip));
+        tool = tool ? own(boolean('fuse', tool, shape, f.id)) : shape;
+      }
+      return tool;
+    };
+    let tool = made(false),
+      applied;
+    if (!(rise > 0) || f.operation === 'new') applied = applyTool(f.id, f.operation, state.bodies, targets, tool, own, body, WORDS.revolve);
+    else {
+      // The kernel loses the cut or the join of a risen solid with some bodies and says nothing: the body
+      // comes back as it was (KERNEL_NOTES, "A profile turned about an axis while it rises along it"). The
+      // same solid made from its far end is then cut or joined rightly. So what did nothing is tried again.
+      const NOTHING = ['no-effect', 'join-made-body'],
+        HINT = ' A profile that rises must cross the surface of the body it is joined to or cut from: let it reach a little past that surface, with no side lying in it and no corner on it.';
+      const attempt = (t) => {
+        try {
+          const done = applyTool(f.id, f.operation, state.bodies, targets, t, own, body, WORDS.revolve);
+          return { done, nothing: NOTHING.includes(done.result.code) };
+        } catch (e) {
+          if (isFatal(e) || (e instanceof FeatureError && !['kernel', 'invalid-result', 'empty-result'].includes(e.code))) throw e;
+          return { error: e, nothing: true };
+        }
+      };
+      let tried = attempt(tool);
+      if (tried.nothing) {
+        const other = made(true),
+          again = attempt(other);
+        if (!again.nothing || (tried.error && !again.error)) {
+          tried = again;
+          tool = other;
+        }
+      }
+      if (tried.error) {
+        const e = tried.error;
+        if (e instanceof FeatureError && e.code === 'empty-result') throw e;
+        fail(e instanceof FeatureError ? e.code : 'kernel', (e instanceof FeatureError ? e.message : 'The kernel could not do this: ' + errorText(e)).replace(/\.$/, '') + '.' + HINT);
+      }
+      applied = tried.done;
+      if (tried.nothing) applied = { ...applied, result: { ...applied.result, message: applied.result.message + ' If it does pass through the body, the kernel could not work it out.' + HINT } };
     }
-    let { bodies, result } = applyTool(f.id, f.operation, state.bodies, targets, tool, own, body, WORDS.revolve);
+    let { bodies, result } = applied;
     if (guessed) result = { code: 'profile-guessed', message: 'The profile outline changed. The area under the original selection was used.' };
     return { state: { ...state, bodies }, result, tool };
   }
