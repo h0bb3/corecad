@@ -8,7 +8,8 @@ import { createSketch, indexSketch } from '../src/sketch/model.js';
 import { findRegions } from '../src/sketch/profiles.js';
 import { setDimensions } from '../src/sketch/solver.js';
 import { findBody, findFace, findEdges, sidesOf, describeFaces, describeEdges } from '../src/api/select.js';
-import { toContent, addressFor, relayUrl, newCode } from '../src/api/bridge.js';
+import { toContent, addressFor, relayUrl, newCode, createBridge, activity, QUIET_MS } from '../src/api/bridge.js';
+import { TOOLS, READS } from '../src/api/commands.js';
 
 const xy = (s, id) => { const p = indexSketch(s).point(id); return [p.x, p.y]; };
 const ends = (s, id) => { const e = indexSketch(s).entity(id); return [xy(s, e.a), xy(s, e.b)]; };
@@ -204,6 +205,59 @@ test('the bridge: codes are long, URL-safe and never the same', () => {
   const codes = Array.from({ length: 200 }, newCode);
   ok(codes.every(c => /^[A-Za-z0-9_-]{24}$/.test(c)), codes[0]);
   eq(new Set(codes).size, 200);
+});
+
+test('an agent at work: what the person is told, and for how long', () => {
+  const reads = new Set(['get_state']), at = new Date(1_000_000);
+  eq(activity({ status: 'off', busy: 0, last: { name: 'extrude', ok: true, at } }, reads, 1_000_100), null, 'not connected: nobody is at work');
+  eq(activity({ status: 'on', busy: 0, last: null }, reads, 1_000_100), null, 'connected, and nothing asked yet');
+  eq(activity({ status: 'on', busy: 1, running: 'extrude', last: null }, reads, 1_000_100), { busy: true, text: 'An agent is changing the model · extrude', until: null });
+  eq(activity({ status: 'on', busy: 2, running: 'get_state', last: null }, reads, 1_000_100), { busy: true, text: 'An agent is looking at the model · get_state', until: null });
+  eq(activity({ status: 'on', busy: 0, last: { name: 'extrude', ok: true, at } }, reads, 1_000_100), { busy: false, text: 'An agent is at work · last: extrude', until: 1_000_000 + QUIET_MS }, 'between two commands it is still at work: it thinks');
+  eq(activity({ status: 'on', busy: 0, last: { name: 'fillet', ok: false, at } }, reads, 1_000_100).text, 'An agent is at work · last: fillet (refused)');
+  eq(activity({ status: 'on', busy: 0, last: { name: 'extrude', ok: true, at } }, reads, 1_000_000 + QUIET_MS), null, 'and after a while of nothing it is not');
+  ok([...READS].every(name => TOOLS.some(t => t.name === name)), 'the commands that only look are commands');
+  ok(!READS.has('extrude') && !READS.has('undo') && !READS.has('load_document') && READS.has('screenshot') && READS.has('set_section'));
+});
+
+test('the bridge: it knows what is being done for an agent, and what was done last', async () => {
+  const real = window.WebSocket, sockets = [], seen = [];
+  class Socket { constructor(url) { this.url = url; this.sent = []; this.readyState = 1; sockets.push(this); } send(text) { this.sent.push(JSON.parse(text)); } close() { this.readyState = 3; } }
+  Socket.OPEN = 1;
+  window.WebSocket = Socket;
+  try {
+    const waiting = [];
+    const run = (name, args) => new Promise(done => waiting.push({ name, args, done }));
+    const bridge = createBridge({ run, tools: [{ name: 'extrude', description: '', input: {} }, { name: 'get_state', description: '', input: {} }], onChange: s => seen.push({ busy: s.busy, running: s.running }), url: 'ws://localhost:1/x/ws', keySuffix: '.unit' });
+    bridge.connect();
+    const socket = sockets.at(-1);
+    socket.onopen();
+    eq(socket.sent[0].type, 'hello');
+    socket.onmessage({ data: JSON.stringify({ type: 'ready' }) });
+    eq([bridge.state.status, bridge.state.busy, bridge.state.running, bridge.state.recent], ['on', 0, null, []]);
+    socket.onmessage({ data: JSON.stringify({ type: 'call', id: 1, name: 'extrude', arguments: { distance: 5 } }) });
+    socket.onmessage({ data: JSON.stringify({ type: 'call', id: 2, name: 'get_state' }) });
+    await 0;
+    eq([bridge.state.busy, bridge.state.running], [2, 'extrude'], 'two asked: the first is the one being done');
+    eq(activity(bridge.state, new Set(['get_state'])).text, 'An agent is changing the model · extrude');
+    waiting[0].done({ ok: true, result: { id: 'f2' } });
+    await new Promise(r => setTimeout(r));
+    eq([bridge.state.busy, bridge.state.running, bridge.state.calls], [1, 'get_state', 1]);
+    eq(socket.sent.at(-1), { type: 'result', id: 1, content: [{ type: 'text', text: '{"id":"f2"}' }] });
+    waiting[1].done({ ok: false, error: 'No.' });
+    await new Promise(r => setTimeout(r));
+    eq([bridge.state.busy, bridge.state.running, bridge.state.calls], [0, null, 2]);
+    eq(bridge.state.recent.map(c => [c.name, c.ok]), [['extrude', true], ['get_state', false]]);
+    ok(bridge.state.recent.every(c => c.at instanceof Date && c.ms >= 0));
+    eq(activity(bridge.state, new Set(['get_state'])).text, 'An agent is at work · last: get_state (refused)');
+    ok(seen.some(s => s.busy === 2 && s.running === 'extrude') && seen.at(-1).busy === 0, 'the page is told when a command starts and when it ends');
+    // a tool that was not announced is answered without running anything, and is in the list all the same
+    socket.onmessage({ data: JSON.stringify({ type: 'call', id: 3, name: 'format_disk' }) });
+    await new Promise(r => setTimeout(r));
+    eq([waiting.length, bridge.state.recent.at(-1).name, bridge.state.recent.at(-1).ok, bridge.state.busy], [2, 'format_disk', false, 0]);
+    bridge.disconnect();
+    eq(activity(bridge.state, new Set()), null, 'disconnected: nobody is at work');
+  } finally { window.WebSocket = real; localStorage.removeItem('corecad.bridge.code.unit'); localStorage.removeItem('corecad.bridge.on.unit'); }
 });
 
 run();

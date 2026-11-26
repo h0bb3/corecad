@@ -7,7 +7,7 @@ in the order the work was done.
 ## Where it stands
 
 CoreCAD is live at [h0bb3.github.io/corecad](https://h0bb3.github.io/corecad/):
-`main` is what is published. The page is build `9009b83fdc`
+`main` is what is published. The page is build `e8bec3e081`
 (`src/version.js` names the build).
 
 What it does:
@@ -32,12 +32,14 @@ What it does:
   ([bridge/README.md](../bridge/README.md)): 40 tools with the relay's own.
   "This", "selected" and "pointed" mean what the person has clicked or rests
   the mouse on, and `get_selection` says how they are looking at the model.
+  While an agent is at work the page says so: a frame round the view, a line
+  with what it does, the Connect button.
 - A tab notices a newer published build and reloads into it (the **Update**
   button, `reload_app`).
 
 Verified on this build, 2026-11-26:
 
-- `python tools/run_tests.py`: 122 tests in 16 pages; the kernel pages run
+- `python tools/run_tests.py`: 124 tests in 16 pages; the kernel pages run
   the real OpenCascade worker.
 - The end-to-end scripts in headless Chrome, all passing: `tools/e2e.py`,
   `e2e_more.py`, `e2e_parts.py` and `e2e_export.py` (real mouse and key
@@ -704,3 +706,34 @@ Limits:
 - In X-ray a click takes the nearest edge, or else the face in front: faces
   behind are reached by cutting the model open.
 - Not tried by a person yet.
+
+## An agent at work is seen (2026-11-26)
+
+Asked for: a status or indicator that an agent is working in the model.
+
+- The bridge (`src/api/bridge.js`) now knows what is asked of the tab and not
+  answered yet (`busy`, `running`) and keeps the last dozen commands
+  (`recent`: name, refused or not, when, how long).
+- `activity()` there turns that into what the person is told: while a
+  command runs, "An agent is changing the model · extrude" (or "is looking at
+  the model" for the commands in `READS` of `src/api/commands.js`, which
+  never change it); after it, "An agent is at work · last: extrude", with
+  "(refused)" when it was; nothing once twenty seconds have passed without a
+  command, or when the tab is not connected.
+- The page shows it three ways: an orange frame round the view, a line at
+  the lower left of the view (a button: it opens the Connect dialog), and the
+  Connect button reading "Agent working". The Connect dialog lists the last
+  eight commands, newest first.
+
+Verification: `test/api-shapes.test.html` (the sentences and their timing; a
+bridge on a stand-in socket: two commands asked at once, the first being
+done, then the list; a tool that was not announced). `tools/e2e_bridge.py`
+with a real relay and MCP client: the line and the frame after commands,
+"(refused)", the sentence caught while the whole model is built again by
+`load_document`, the list in the dialog, the line opening the dialog, gone
+after twenty seconds, gone at once on Disconnect.
+
+Limits: only commands that come through the bridge count. A script in the
+tab that calls `corecad.run` itself, or an agent that drives the page with
+mouse and keys, is not seen as one. The page does not stop the person from
+working while an agent does.

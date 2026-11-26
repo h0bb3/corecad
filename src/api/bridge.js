@@ -62,6 +62,24 @@ export function toContent(answer) {
   return { content: [{ type: 'text', text: JSON.stringify(r ?? null) }] };
 }
 
+/** How long after its last command an agent still counts as being at work: it thinks between commands. */
+export const QUIET_MS = 20000;
+
+/**
+ * What to tell the person at the page about an agent that uses the tab, from the bridge's state:
+ * null when none is at work; else `busy` (a command is running now), a sentence, and `until`
+ * (when the sentence stops being true by itself, in ms; null while a command runs).
+ * @param {object} b       the bridge's state
+ * @param {Set<string>} reads   the commands that look at the model and do not change it
+ */
+export function activity(b, reads, now = Date.now()) {
+  if (b?.status !== 'on') return null;
+  if (b.busy > 0) return { busy: true, text: `An agent is ${reads.has(b.running) ? 'looking at' : 'changing'} the model · ${b.running}`, until: null };
+  if (b.last && now - b.last.at < QUIET_MS)
+    return { busy: false, text: `An agent is at work · last: ${b.last.name}${b.last.ok ? '' : ' (refused)'}`, until: +b.last.at + QUIET_MS };
+  return null;
+}
+
 const RETRY_S = [1, 2, 5, 10, 30, 60];
 const MAX_ANSWER = 6e6; // the relay takes 8 MB; leave room
 
@@ -99,7 +117,10 @@ export function createBridge({ run, tools, onChange = () => {}, url = relayUrl()
     wanted = false,
     attempt = 0,
     timer = null;
-  const state = { status: 'off', note: '', calls: 0, last: null, seenAt: null };
+  // busy: commands that were asked and are not answered yet; running: the one that is being done;
+  // recent: the last dozen, oldest first: { name, ok, at, ms }.
+  const state = { status: 'off', note: '', calls: 0, last: null, seenAt: null, busy: 0, running: null, recent: [] },
+    asked = [];
   const changed = () => onChange(view());
   const view = () => ({ ...state, code, address: addressFor(url, code), wanted });
 
@@ -150,7 +171,12 @@ export function createBridge({ run, tools, onChange = () => {}, url = relayUrl()
   }
 
   async function answer(socket, m) {
+    const started = Date.now();
     let result;
+    asked.push(m);
+    state.busy = asked.length;
+    state.running = asked[0].name; // commands are done one at a time, in the order they were asked
+    changed();
     try {
       // Only the commands that were announced; run() refuses anything else by name anyway.
       result = toContent(tools.some((t) => t.name === m.name) ? await run(m.name, m.arguments ?? {}) : { ok: false, error: `CoreCAD has no tool "${m.name}".` });
@@ -164,8 +190,12 @@ export function createBridge({ run, tools, onChange = () => {}, url = relayUrl()
         id: m.id,
         ...toContent({ ok: false, error: `The answer is ${Math.round(payload.length / 1e6)} MB, too large to send. For an export, ask for download: true (it is saved in the user's browser).` }),
       });
+    asked.splice(asked.indexOf(m), 1);
+    state.busy = asked.length;
+    state.running = asked[0]?.name ?? null;
     state.calls++;
     state.last = { name: m.name, ok: !result.isError, at: new Date() };
+    state.recent = [...state.recent, { ...state.last, ms: Date.now() - started }].slice(-12);
     state.seenAt = state.last.at;
     if (socket.readyState === WebSocket.OPEN) socket.send(payload);
     changed();

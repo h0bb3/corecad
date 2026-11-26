@@ -54,8 +54,8 @@ import { canonicalFrame, basePlane, toWorld, toLocal } from './core/plane.js';
 import { parseNumber, formatNumber as fmt } from './core/num.js';
 import { projectBlob, readProject, filename, download } from './persist.js';
 import { escapeHTML as esc, icon, tool, field, selectField, check, head } from './ui.js';
-import { createCommands } from './api/commands.js';
-import { createBridge } from './api/bridge.js';
+import { createCommands, READS } from './api/commands.js';
+import { createBridge, activity } from './api/bridge.js';
 import { BUILD, published, freshReload } from './update.js';
 
 const $ = (s) => document.querySelector(s),
@@ -549,7 +549,7 @@ function renderSectionBar() {
     'sectionbar',
     `<span class="bar-label">Cut along</span>${Object.keys(SECTION_PLANES)
       .map((p) => `<button data-action="section-${p}" data-on="${p}" title="Cut along the ${p} plane; the cut moves along ${'xyz'[SECTION_PLANES[p]]}">${p}</button>`)
-      .join('')}<input id="section-slider" type="range" min="${lo}" max="${hi}" step="${step}" title="Where the cut is. Drag here, or drag the arrow on the cut in the view."><label class="bar-field" title="Where the cut is along ${axis}, in mm"><span>${axis} =</span><input id="section-at" inputmode="decimal"></label><button data-action="section-flip" data-on="flip" title="Show the other half">Flip</button><button data-action="section-off" title="Put the model back whole">Whole</button>`
+      .join('')}<input id="section-slider" type="range" min="${lo}" max="${hi}" step="${step}" title="Where the cut is. Drag here, or drag the arrow on the cut in the view."><label class="bar-field" title="Where the cut is along ${axis}, in mm"><span>${axis} =</span><input id="section-at" inputmode="decimal" title="Where the cut is along ${axis}, in mm. Type a number or arithmetic, then Enter."></label><button data-action="section-flip" data-on="flip" title="Show the other half">Flip</button><button data-action="section-off" title="Put the model back whole">Whole</button>`
   );
   for (const b of bar.querySelectorAll('[data-on]')) b.classList.toggle('on', b.dataset.on === 'flip' ? section.flip : b.dataset.on === section.plane);
   id('section-slider').value = section.at;
@@ -3292,6 +3292,9 @@ const bridge = createBridge({
   onChange: renderBridge,
 });
 const clock = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const clockS = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+/** The last commands an agent gave, newest first: "21:14:05 extrude", "21:14:09 fillet (refused)". */
+const recentLines = (b, most = 8) => [...b.recent].reverse().slice(0, most).map((c) => ({ ok: c.ok, text: `${clockS(c.at)}  ${c.name}${c.ok ? '' : '  (refused)'}` }));
 function bridgeStatus(b) {
   if (b.status === 'on')
     return b.last
@@ -3313,6 +3316,13 @@ function connectBody(b) {
       <li>Ask Claude to build or change something in CoreCAD. You see every change here, and Undo takes it back.</li>
       <li>Say <b>this</b> or <b>here</b>: Claude can see what you have clicked, and what your mouse last rested on (it is marked with a ring).</li>
     </ol>
+    ${
+      b.recent.length
+        ? `<p>What the agent did last, newest first:</p><ul class="bridge-recent">${recentLines(b)
+            .map((c) => `<li class="${c.ok ? '' : 'refused'}">${esc(c.text)}</li>`)
+            .join('')}</ul>`
+        : ''
+    }
     <p class="bridge-note">While connected, whoever has this address can read and change the model in this tab, and nothing else in your browser. Commands pass through vibedit.app, and Claude sees the model. <b>New address</b> makes the old one useless.</p>`;
 }
 function openConnect() {
@@ -3338,12 +3348,31 @@ function openConnect() {
   );
   modal.kind = 'connect';
 }
+let agentTimer = null;
+/** Says when an agent is at work in the model: a frame round the view, a line that says what it does
+ *  (and, held over, what it did last), and the Connect button. It stays for a while after a command:
+ *  an agent thinks between commands. */
+function renderAgent(b) {
+  const a = activity(b, READS),
+    pill = id('agent');
+  clearTimeout(agentTimer);
+  id('viewport').classList.toggle('agent-active', !!a);
+  pill.hidden = !a;
+  if (!a) return null;
+  pill.className = 'agent' + (a.busy ? ' busy' : '');
+  pill.lastChild.textContent = a.text;
+  pill.title = `An agent is at work in this model. What it did last, newest first:\n${recentLines(b).map((c) => c.text).join('\n')}\nClick for the connection.`;
+  // When nothing more is asked, the line goes away by itself.
+  if (a.until) agentTimer = setTimeout(() => renderBridge(bridge.state), Math.max(50, a.until - Date.now() + 30));
+  return a;
+}
 function renderBridge(b) {
-  const button = id('connect-button');
+  const button = id('connect-button'),
+    working = renderAgent(b);
   if (button) {
     button.hidden = !(BRIDGE_LIVE || bridgeAsked || b.wanted);
-    button.className = 'connect-button ' + b.status;
-    button.lastChild.textContent = b.status === 'on' ? 'Connected' : 'Connect';
+    button.className = 'connect-button ' + b.status + (working ? ' working' : '');
+    button.lastChild.textContent = working ? 'Agent working' : b.status === 'on' ? 'Connected' : 'Connect';
   }
   if (modal?.kind === 'connect') openConnect();
   view.dirty(); // the ring on what is pointed at is drawn while connected

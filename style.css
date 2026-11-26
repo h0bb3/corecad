@@ -1136,6 +1136,69 @@ main {
   background: #dfefea;
   color: #0e7b68;
 }
+/* An agent is at work in the model: a frame round the view and a line that says what it does. */
+#viewport.agent-active::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 2px solid #d98a2b;
+  pointer-events: none;
+  z-index: 3;
+}
+.agent {
+  position: absolute;
+  left: 18px;
+  bottom: 44px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px 7px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #6b4a16;
+  background: #fff6e6f2;
+  border: 1px solid #ecc88f;
+  border-radius: 999px;
+  box-shadow: 0 2px 10px #5b3c0a14;
+}
+.agent[hidden] {
+  display: none;
+}
+.agent i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d98a2b;
+}
+.agent.busy i {
+  animation: agent-pulse 0.9s ease-in-out infinite;
+}
+@keyframes agent-pulse {
+  0%,
+  100% {
+    transform: scale(0.7);
+    opacity: 0.55;
+  }
+  50% {
+    transform: scale(1.25);
+    opacity: 1;
+  }
+}
+.connect-button.working i {
+  background: #d98a2b;
+}
+.bridge-recent {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  color: #5d7378;
+  font-family: Consolas, monospace;
+}
+.bridge-recent li.refused {
+  color: #a8572c;
+}
 /* Looking inside: where the cut is, under the view bar. */
 .sectionbar {
   position: absolute;

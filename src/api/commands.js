@@ -72,6 +72,9 @@ const tool = (name, description, properties = {}, required = []) => ({
   input: { type: 'object', properties, required, additionalProperties: false },
 });
 
+/** The commands that look at the model, or change how it is shown, and never change the model itself. */
+export const READS = new Set(['get_state', 'get_selection', 'measure', 'get_document', 'get_sketch', 'list_faces', 'list_edges', 'export', 'screenshot', 'set_view', 'set_section', 'set_xray']);
+
 export const TOOLS = [
   tool('get_state', 'The model at a glance: the parts (each with its place, its parent, and its own history of features), the features with their status and main numbers, the bodies with volume (mm³) and bounding box in space, which part is current, and whether the page is in the middle of an edit. Start here.'),
   tool('get_selection', 'What the person has clicked in the page and what their mouse last rested on: faces and edges with where they are in space, the part each is on, the point that was clicked ("point" in space, "at" in the face\'s own coordinates) and which features made a face. Call it when they say "this", "here" or "that" about the model. The word "this" can then be given wherever a command takes a face, edges, a part or a feature id. It also says how they are looking at the model ("looking"): which way the camera faces, whether the model is cut open and where (set_section), and whether it is drawn see-through (set_xray). What they point at may be inside the model.'),

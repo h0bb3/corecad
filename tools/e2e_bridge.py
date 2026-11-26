@@ -16,6 +16,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -135,8 +136,34 @@ def run(p, relay_port=None):
     assert p.js('document.getElementById("metrics").textContent').startswith('1 body'), 'the person sees it'
     step('a plate with a hole and four fillets, built over MCP: 23,360 mm3')
 
+    # ---- the person is told that an agent is at work: a line in the view, a frame round it, the Connect button
+    told = lambda: p.js('document.getElementById("agent").hidden ? null : document.getElementById("agent").textContent.trim()')
+    assert told() == 'An agent is at work · last: fillet', told()
+    assert p.js('document.getElementById("viewport").classList.contains("agent-active")'), 'a frame round the view'
+    assert p.js('document.getElementById("connect-button").textContent.trim()') == 'Agent working'
+    assert 'extrude' in p.js('document.getElementById("agent").title') and 'fillet' in p.js('document.getElementById("agent").title')
+    # while a command is being done it says which, and whether it changes the model: the whole model is built again here
+    whole = ok(mcp.call('get_document'))
+    assert told() == 'An agent is at work · last: get_document', told()
+    seen, done = set(), threading.Event()
+    worker = threading.Thread(target=lambda: (mcp.call('load_document', document=whole), done.set()))
+    worker.start()
+    while not done.is_set():
+        seen.add(p.js('document.getElementById("agent").className + " | " + document.getElementById("agent").textContent.trim()'))
+    worker.join()
+    assert 'agent busy | An agent is changing the model · load_document' in seen, seen
+    assert told() == 'An agent is at work · last: load_document' and abs(ok(mcp.call('get_state'))['bodies'][0]['volume'] - 23360) < 0.01
+    # the connection (its dialog is still open) lists what was done, newest first
+    lines = p.js('[...document.querySelectorAll(".bridge-recent li")].map(e => e.textContent)')
+    assert 'get_state' in lines[0] and 'load_document' in lines[1] and 'get_document' in lines[2] and len(lines) == 8, lines
+    # and when nothing more is asked for a while, it is over: the tab is only connected again
+    p.wait('document.getElementById("agent").hidden', timeout=40)
+    assert not p.js('document.getElementById("viewport").classList.contains("agent-active")') and p.js('document.getElementById("connect-button").textContent.trim()') == 'Connected'
+    step('an agent at work: the view says what it does while it does it and what it did last; the connection lists it; after a while of nothing it is over')
+
     bad = mcp.call('fillet', edges={'parallel': 'z'}, radius=500)
     assert bad['isError'] and 'cannot be built' in bad['content'][0]['text'], bad
+    assert told() == 'An agent is at work · last: fillet (refused)', told()
     assert abs(ok(mcp.call('get_state'))['bodies'][0]['volume'] - 23360) < 0.01
     wrong = mcp.call('extrude', distanse=3)
     assert wrong['isError'] and 'no argument "distanse"' in wrong['content'][0]['text'], wrong
@@ -170,8 +197,9 @@ def run(p, relay_port=None):
     assert deeper['type'] == 'extrude' and abs(deeper['bodies'][0]['volume'] - (23360 - math.pi * 2.25 * 6)) < 0.01, deeper
     ok(mcp.call('undo'))
     assert abs(ok(mcp.call('undo'))['bodies'][0]['volume'] - 23360) < 0.01, 'both are undo steps'
-    p.click('#connect-button')
+    p.click('#agent')                                   # the line in the view opens the connection
     p.wait('!!document.getElementById("bridge-address")')
+    assert 'undo' in p.js('document.querySelector(".bridge-recent li").textContent')
     step('"a hole here" over MCP: a circle on the face that was clicked, where it was clicked, cut; then "this hole" deeper, by pointing at it')
 
     # ---- the agent reloads the tab itself
@@ -188,8 +216,11 @@ def run(p, relay_port=None):
     step('reload_app over MCP: the tab comes back by itself, connected, with its project')
 
     # ---- the person is in charge: disconnect, a new address
+    ok(mcp.call('get_state'))
+    assert p.js('!document.getElementById("agent").hidden'), 'an agent was at work a moment ago'
     p.click('[data-modal="toggle"]')
     p.wait('corecad.bridge.status === "off"')
+    assert p.js('document.getElementById("agent").hidden') and not p.js('document.getElementById("viewport").classList.contains("agent-active")'), 'disconnected: nobody is at work in the model'
     gone = mcp.call('get_state')
     assert gone['isError'] and 'No CoreCAD tab is connected' in gone['content'][0]['text'], gone
     assert 'No CoreCAD tab' in mcp.call('corecad_status')['content'][0]['text']

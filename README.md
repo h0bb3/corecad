@@ -158,7 +158,11 @@ relay: the tab names a code, you give Claude the address that ends in that
 code as a custom connector, and Claude can then build and change the model in
 your open tab while you watch. You can say "this" and "here": Claude is told
 what you have clicked and what your mouse last rested on (a ring marks it),
-so "a hole on this face" or "make this hole bigger" works by pointing. How it
+so "a hole on this face" or "make this hole bigger" works by pointing. While
+an agent is at work the view has an orange frame and a line that says what it
+is doing ("An agent is changing the model · extrude") or what it did last,
+and the Connect button reads **Agent working**; twenty seconds after its last
+command they go away. The Connect dialog lists its latest commands. How it
 works and what the code protects: [bridge/README.md](bridge/README.md).
 
 CoreCAD is updated often. A tab that has been open for a while shows an

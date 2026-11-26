@@ -23,6 +23,15 @@ hands them on, plus one of its own, `corecad_status`.
 3. Ask Claude to build something. Every change appears in the tab and is an
    undo step there.
 
+**While an agent is at work** the view in the tab has an orange frame and a
+line at its lower left: what the agent is doing while a command runs ("An
+agent is changing the model · extrude", or "is looking at the model" for a
+command that only reads), and after it what it did last. The Connect button
+reads **Agent working**. Twenty seconds after the last command they go away:
+an agent thinks between commands, so a short silence is not the end of its
+work. The line opens the Connect dialog, which lists the latest commands with
+their times and marks the ones that were refused.
+
 **Disconnect** cuts the client off. **New address** makes the old address
 useless. The tab reconnects by itself after a reload if it was left
 connected, and stays off if it was switched off.
@@ -74,7 +83,7 @@ accepted there.
 |---|---|
 | tab | `{ type: 'hello', code, tools: [{ name, description, inputSchema }], instructions }` |
 | relay | `{ type: 'ready', version }` |
-| relay | `{ type: 'call', id, name, arguments }` |
+| relay | `{ type: 'call', id, name, arguments }` (from its arrival to the tab's answer the tab counts an agent as busy) |
 | tab | `{ type: 'result', id, content: [...], isError? }` (MCP tool-result content) |
 | relay | `{ type: 'seen', what }` an MCP client listed the tools |
 | relay | `{ type: 'replaced' }` another tab connected with the same code |
