@@ -1080,5 +1080,9 @@ outward request refused, any camera gives a blank picture, the camera that
 sees the room only by name): the code is read. `test/seat.test.html`: the
 sentences.
 
-Not verified: on the Quest.
+Not verified: on the Quest. The owner's headset turned out to be on Horizon
+OS v74 with Browser 38.2 (its updates had been off), which is older than the
+Browser that gives a page the headset's cameras (40.1 by what is written),
+and its Software update page crashes. Until it is updated the scanner cannot
+work there; the page that watches still does, from a bookmark.
 
