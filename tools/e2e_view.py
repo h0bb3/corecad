@@ -187,8 +187,17 @@ def run(b, port):
     w.js('navigator.mediaDevices.getUserMedia = async () => { throw new DOMException("no", "NotAllowedError"); }')
     w.click('#scan-first')
     w.wait('document.getElementById("scan-says").textContent.includes("did not let this page use a camera")')
+    assert 'Headset cameras' in w.js('document.getElementById("scan-says").textContent') and not w.js('document.getElementById("scan-again").hidden')
     w.click('#scan-stop')
     assert w.js('document.getElementById("scanning").hidden') and not w.js('corecadView.scanner.running')
+    # a browser that has no camera for a page: what it said, what it lists, and what to allow in a headset
+    w.js('window.asked = []; navigator.mediaDevices.getUserMedia = async (c) => { asked.push(JSON.stringify(c.video)); throw new DOMException("none", "NotFoundError"); }; navigator.mediaDevices.enumerateDevices = async () => []')
+    w.click('#scan-first')
+    w.wait('document.getElementById("scan-says").textContent.includes("gave the page no camera (NotFoundError)")')
+    said = w.js('document.getElementById("scan-says").textContent')
+    assert 'lists no camera at all' in said and 'lock at the left of the address bar' in said and 'Headset cameras' in said, said
+    assert w.js('asked.length') == 2 and w.js('asked[1]') == 'true', 'asked for a camera that looks outward, then for any camera'
+    w.click('#scan-stop')
     # a camera that looks at the code, a little turned and not very big: the page reads it and watches that tab
     w.js("""(async () => {
       const { default: qrcode } = await import('https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/+esm');
@@ -202,14 +211,25 @@ def run(b, port):
         for (let r = 0; r < n; r++) for (let q = 0; q < n; q++) if (qr.isDark(r, q)) g.fillRect((q - n / 2) * k, (r - n / 2) * k, k, k);
       };
       draw(); setInterval(draw, 100);
-      const stream = c.captureStream(15);
-      navigator.mediaDevices.getUserMedia = async () => stream;
-      navigator.mediaDevices.enumerateDevices = async () => [{ kind: 'videoinput', deviceId: 'a', label: 'Avatar' }, { kind: 'videoinput', deviceId: 'b', label: 'Headset camera' }];
+      // as a headset's browser is: a plain request is refused, any camera gives the avatar (a blank picture),
+      // and the camera that sees the room has to be asked for by name
+      const blank = document.createElement('canvas'); blank.width = 640; blank.height = 480; blank.getContext('2d').fillRect(0, 0, 640, 480);
+      setInterval(() => blank.getContext('2d').fillRect(0, 0, 1, 1), 100);
+      const room = c.captureStream(15), avatar = blank.captureStream(15);
+      window.asked = [];
+      navigator.mediaDevices.getUserMedia = async (o) => {
+        asked.push(JSON.stringify(o.video));
+        if (o.video?.facingMode) throw new DOMException('cannot', 'OverconstrainedError');
+        return o.video?.deviceId?.exact === 'b' ? room : avatar;
+      };
+      navigator.mediaDevices.enumerateDevices = async () => [{ kind: 'videoinput', deviceId: 'a', label: 'Avatar camera' }, { kind: 'videoinput', deviceId: 'b', label: 'Passthrough camera left' }];
       return n;
     })()""" % json.dumps(address))
     w.click('#scan-first')
     w.wait('window.corecadView.on && corecadView.bodies === 1', timeout=40)
     assert w.js('location.hash') == '#' + code and w.js('document.getElementById("scanning").hidden') and w.js('document.getElementById("ask").hidden')
+    asked = w.js('asked')
+    assert len(asked) == 3 and 'facingMode' in asked[0] and asked[1] == 'true' and '"exact":"b"' in asked[2], f'refused, then any camera, then the one that sees the room: {asked}'
     assert not w.js('corecadView.scanner.running') and w.js('localStorage.getItem("corecad.view.code")') == code
     # the address pasted instead: the one of the watching page, or the one for Claude
     w.js('localStorage.removeItem("corecad.view.code")')

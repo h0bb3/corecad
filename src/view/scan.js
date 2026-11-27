@@ -56,12 +56,20 @@ export function qrReader() {
   return reader;
 }
 
-const WHY = {
-  NotAllowedError: 'The browser did not let this page use a camera. Allow it for this site (in a Quest: the headset camera), then try again.',
-  NotFoundError: 'This browser has no camera that a page may use.',
-  NotReadableError: 'The camera is in use by something else.',
-  OverconstrainedError: 'This browser has no camera that a page may use.',
-};
+/** A camera that sees the room, by its name: not the one that shows the person's avatar. */
+const REAL = /passthrough|headset|environment|back|rear|world|rgb/i,
+  AVATAR = /avatar|virtual|selfie|front|user/i;
+const HOW_QUEST =
+  ' In a Quest: press the lock at the left of the address bar and allow "Headset cameras" for this site, then try again. If that is not there: Settings, Privacy and safety, App permissions, Headset cameras, on for Browser; and the Browser app has to be version 40.1 or newer.';
+/** Why no camera could be had, for the person. listed: the cameras the browser names (it may name none it will not give). */
+export function whyNot(error, listed = []) {
+  const name = error?.name ?? '',
+    seen = listed.length ? ` It lists ${listed.length} camera${listed.length === 1 ? '' : 's'}${listed.some((c) => c.label) ? ': ' + listed.map((c) => c.label || 'unnamed').join(', ') : ''}.` : ' It lists no camera at all.';
+  if (name === 'NotAllowedError' || name === 'SecurityError') return 'The browser did not let this page use a camera.' + HOW_QUEST;
+  if (name === 'NotFoundError' || name === 'OverconstrainedError' || name === 'NoCamera') return `This browser gave the page no camera (${name}).` + seen + HOW_QUEST;
+  if (name === 'NotReadableError' || name === 'AbortError') return `The camera could not be opened (${name}): something else may be using it.` + seen;
+  return `The camera could not be started: ${error?.message ?? error} (${name || 'no name'}).` + seen;
+}
 
 /**
  * Looks through a camera for the code of a CoreCAD tab.
@@ -84,19 +92,49 @@ export function createScanner({ video, found, say, devices = navigator.mediaDevi
     stream = null;
     video.srcObject = null;
   };
+  const listed = async () => (await devices.enumerateDevices().catch(() => [])).filter((d) => d.kind === 'videoinput');
+  /** A camera, asked for in every way there is: browsers differ in what they refuse. */
+  async function ask(deviceId) {
+    if (deviceId) return devices.getUserMedia({ audio: false, video: { deviceId: { exact: deviceId }, width: { ideal: 1920 } } });
+    let last = null;
+    for (const video of [{ facingMode: { ideal: 'environment' }, width: { ideal: 1920 } }, true]) {
+      try {
+        return await devices.getUserMedia({ audio: false, video });
+      } catch (e) {
+        last = e;
+        if (e?.name === 'NotAllowedError' || e?.name === 'SecurityError') throw e; // the person said no: not asked again
+      }
+    }
+    for (const camera of await listed()) {
+      if (!camera.deviceId) continue;
+      try {
+        return await devices.getUserMedia({ audio: false, video: { deviceId: { exact: camera.deviceId } } });
+      } catch (e) {
+        last = e;
+      }
+    }
+    throw last ?? Object.assign(new Error('no camera'), { name: 'NoCamera' });
+  }
   async function open(deviceId) {
+    const next = await ask(deviceId);
     for (const track of stream?.getTracks() ?? []) track.stop();
-    stream = await devices.getUserMedia({
-      audio: false,
-      video: deviceId ? { deviceId: { exact: deviceId }, width: { ideal: 1920 } } : { facingMode: { ideal: 'environment' }, width: { ideal: 1920 } },
-    });
+    stream = next;
     video.srcObject = stream;
     await video.play().catch(() => {});
-    // their names are only told once a camera has been allowed
-    cameras = (await devices.enumerateDevices().catch(() => [])).filter((d) => d.kind === 'videoinput');
+    cameras = await listed(); // their names are only told once a camera has been allowed
     const now = stream.getVideoTracks()[0]?.getSettings?.().deviceId;
-    which = Math.max(0, cameras.findIndex((c) => c.deviceId === now));
-    return cameras[which]?.label || 'the camera';
+    which = Math.max(0, cameras.findIndex((c) => c.deviceId === (deviceId ?? now)));
+    return cameras[which]?.label || stream.getVideoTracks()[0]?.label || 'the camera';
+  }
+  /** The camera that sees the room, when the one that was given shows the avatar. */
+  async function real(name) {
+    const better = cameras.findIndex((c, i) => i !== which && c.deviceId && REAL.test(c.label) && !AVATAR.test(c.label));
+    if (better < 0 || (REAL.test(name) && !AVATAR.test(name))) return name;
+    try {
+      return await open(cameras[better].deviceId);
+    } catch {
+      return name; // the first one, then: the person can go on to another
+    }
   }
   async function look(read) {
     if (!running) return;
@@ -122,19 +160,29 @@ export function createScanner({ video, found, say, devices = navigator.mediaDevi
     get cameras() {
       return cameras.length;
     },
+    /** @returns {Promise<boolean>} whether a camera is looking now */
     async start() {
-      if (running) return;
-      if (!devices?.getUserMedia) return say(WHY.NotFoundError, 'bad');
+      if (running) return true;
+      if (!devices?.getUserMedia) {
+        say(whyNot({ name: 'NoCamera' }), 'bad');
+        return false;
+      }
       running = true;
       say('Asking for the camera…');
       try {
-        const [name, read] = await Promise.all([open(), qrReader()]);
-        if (!running) return stop();
+        const [first, read] = await Promise.all([open(), qrReader()]),
+          name = await real(first);
+        if (!running) {
+          stop();
+          return false;
+        }
         say(`Looking through ${name}. Look at the code in the Connect dialog of CoreCAD: click the code there to make it big.`);
         look(read);
+        return true;
       } catch (e) {
         stop();
-        say(WHY[e?.name] ?? 'The camera could not be started: ' + (e?.message ?? e), 'bad');
+        say(whyNot(e, await listed()), 'bad');
+        return false;
       }
     },
     /** The next camera of the device: a headset has one that shows an avatar, which sees no screen. */
@@ -144,7 +192,7 @@ export function createScanner({ video, found, say, devices = navigator.mediaDevi
         const name = await open(cameras[(which + 1) % cameras.length].deviceId);
         say(`Looking through ${name}.`);
       } catch (e) {
-        say(WHY[e?.name] ?? 'That camera could not be started: ' + (e?.message ?? e), 'bad');
+        say(whyNot(e, cameras), 'bad');
       }
     },
     stop,

@@ -6,7 +6,7 @@ import {INK,kindOf,between2,beside,line} from '../src/view/annotate.js';
 import {knifeSection,scaleText,twoHands,standing,createXR,xrMode,XR_SCALE,FINE,REWIND_MS,oneEuro,quatEuro,oneHandStep,twoHandsStep} from '../src/view/xr.js';
 import {halfSpace} from '../src/view/section.js';
 import * as T from 'https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js';
-import {codeFrom,qrReader} from '../src/view/scan.js';
+import {codeFrom,qrReader,whyNot} from '../src/view/scan.js';
 const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
 const mesh=(n=1)=>({positions:new Float32Array([0,0,0,n,0,0,0,n,0]),normals:new Float32Array([0,0,1,0,0,1,0,0,1]),indices:new Uint32Array([0,1,2]),faceTris:new Uint32Array([0,3]),edgeSegs:new Uint32Array([0,2]),edgeLines:new Float32Array([0,0,0,n,0,0])});
 const body=(id,key,n=1,more={})=>({id,key,part:'o1',bbox:[[0,0,0],[n,n,0]],mesh:mesh(n),...more});
@@ -103,6 +103,10 @@ test('The code of a tab is read out of an address and out of a picture of its QR
   g.fillStyle='#eeeeee';g.fillRect(-(n+8)*k/2,-(n+8)*k/2,(n+8)*k,(n+8)*k);g.fillStyle='#222222';for(let r=0;r<n;r++)for(let q=0;q<n;q++)if(qr.isDark(r,q))g.fillRect((q-n/2)*k,(r-n/2)*k,k,k);return c;};
  const read=await qrReader();eq(await read(picture(8,0)),text);eq(await read(picture(4,0.2)),text,'four pixels a square, turned');eq(codeFrom(await read(picture(5,-0.4))),code);
  const empty=document.createElement('canvas');empty.width=640;empty.height=480;empty.getContext('2d').fillRect(0,0,640,480);eq(await read(empty),null,'nothing in it');
+ // why there is no camera: what the browser said, what it lists, and what to allow in a headset
+ ok(/did not let this page use a camera.*Headset cameras/.test(whyNot({name:'NotAllowedError'})));ok(/no camera \(NotFoundError\)\. It lists no camera at all\..*lock at the left/.test(whyNot({name:'NotFoundError'})));
+ ok(/\(OverconstrainedError\)\. It lists 2 cameras: Avatar, unnamed\./.test(whyNot({name:'OverconstrainedError'},[{label:'Avatar'},{label:''}])));ok(/It lists 1 camera\./.test(whyNot({name:'NotFoundError'},[{label:''}])));
+ ok(/something else may be using it/.test(whyNot({name:'NotReadableError'})));ok(/could not be started: boom \(TypeError\)/.test(whyNot({name:'TypeError',message:'boom'})));
 });
 test('A steady hand: the smoothing, and what a hand does to what it holds, in full and fine',()=>{
  // at rest it is smooth; in a quick move it does not hang back

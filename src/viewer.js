@@ -207,9 +207,13 @@ const scanner = createScanner({
     watch(found);
   },
 });
-id('scan').onclick = id('scan-first').onclick = () => {
+id('scan').onclick = id('scan-first').onclick = id('scan-again').onclick = () => {
   id('scanning').hidden = false;
-  scanner.start().then(() => (id('scan-next').hidden = scanner.cameras < 2));
+  id('scan-again').hidden = true;
+  scanner.start().then((looking) => {
+    id('scan-next').hidden = !looking || scanner.cameras < 2;
+    id('scan-again').hidden = looking;
+  });
 };
 id('scan-next').onclick = () => scanner.next();
 id('scan-stop').onclick = () => {

@@ -7,7 +7,7 @@ in the order the work was done.
 ## Where it stands
 
 CoreCAD is live at [h0bb3.github.io/corecad](https://h0bb3.github.io/corecad/):
-`main` is what is published. The page is build `a2337e85cb`
+`main` is what is published. The page is build `ca1adc7144`
 (`src/version.js` names the build).
 
 What it does:
@@ -1054,4 +1054,31 @@ Limits:
   the browser's storage, which holds a few megabytes: a project with a big
   import may not be autosaved (the page says so), and is kept by Save.
 - STL is not imported.
+
+## The scanner on the Quest: no camera, first try (2026-11-27)
+
+The owner tried Scan the code in the Quest's browser: "This browser has no
+camera that a page may use" (the browser answered NotFoundError or
+OverconstrainedError to the one request the page made). What others write of
+this browser: a page gets the passthrough cameras by plain `getUserMedia`
+since Browser 40.1, but only with the site's "Headset cameras" permission
+(the lock at the left of the address bar; or Settings, Privacy and safety,
+App permissions, Headset cameras); without it only the camera that shows the
+avatar is listed, and a request for a camera that looks outward is refused.
+None of this has been seen here.
+
+So the scanner (`src/view/scan.js`) now asks in every way: for a camera that
+looks outward, then for any camera, then for each camera the browser lists
+by name; a "no" from the person is not asked again. When the camera it was
+given is the avatar's and another is named like one that sees the room, it
+goes over to that one. And when there is none, it says what the browser
+answered, which cameras it lists, and what to allow in a Quest, with a Try
+again button.
+
+Verification: `tools/e2e_view.py` with a stand-in for such a browser (the
+outward request refused, any camera gives a blank picture, the camera that
+sees the room only by name): the code is read. `test/seat.test.html`: the
+sentences.
+
+Not verified: on the Quest.
 
