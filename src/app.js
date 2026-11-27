@@ -1219,7 +1219,7 @@ function renderBrowser() {
   const results = store.state.build?.features ?? [],
     bodies = store.state.build?.bodies ?? [],
     used = usedParts(),
-    symbols = { sketch: '▱', extrude: '⬡', revolve: '◔', hole: '⊙', fillet: '◜', chamfer: '◩', box: '▣', cylinder: '◎', sphere: '●', combine: '◐' };
+    symbols = { import: '⇩', sketch: '▱', extrude: '⬡', revolve: '◔', hole: '⊙', fillet: '◜', chamfer: '◩', box: '▣', cylinder: '◎', sphere: '●', combine: '◐' };
   const featureRow = (f, depth) => {
     const r = results.find((r) => r.id === f.id);
     return `<button class="tree-row ${selectedFeature === f.id ? 'selected' : ''} ${
@@ -2284,6 +2284,20 @@ async function exportFile(format, only = null) {
     toast(e.message);
   }
 }
+/** A file brought into the open project: a STEP file as a part, another project's parts as they are. */
+async function importFile(file) {
+  if (!file) return;
+  if (editor || draft || mover) return toast('Finish or cancel the current edit before importing.');
+  if (file.size > 20 * 1024 * 1024) return toast('This file is more than 20 MB: too large to import.');
+  const text = await file.text(),
+    step = /\.(step|stp)$/i.test(file.name) || /^\s*ISO-10303-21\s*;/.test(text), // by its name, or by how it begins
+    name = file.name.replace(/\.[^.]+$/, '');
+  toast(`Importing ${file.name}…`);
+  const r = await api.run('import', step ? { format: 'step', content: text } : { format: 'corecad', content: text });
+  if (r.ok && step) await api.run('edit_part', { part: r.result.part, name }); // a part from a file is called what the file is called
+  toast(r.ok ? `Imported ${file.name}. It stands where it stood in its file: Move places it.` : `${file.name} could not be imported: ${r.error}`);
+  if (r.ok) view.fit();
+}
 async function openFile(file) {
   if (!file) return;
   if (editor || draft || mover) {
@@ -2796,6 +2810,7 @@ const actions = {
     toast('Project downloaded.');
   },
   open: () => id('file-input').click(),
+  import: () => id('import-input').click(),
   'export-part': () => actions['export-menu'](true),
   'export-menu': (onlySelected = false) => {
     showModal(
@@ -3138,6 +3153,10 @@ id('more-views').onchange = (e) => {
   e.target.value = '';
 };
 id('file-input').onchange = (e) => openFile(e.target.files[0]);
+id('import-input').onchange = (e) => {
+  importFile(e.target.files[0]);
+  e.target.value = ''; // the same file may be brought in again
+};
 // A part dragged onto another in the list goes under it; dropped on the list's heading or its
 // empty space it stands on its own again. It stays where it is in space either way.
 let dragPart = null;

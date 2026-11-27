@@ -1,6 +1,6 @@
 // Written by tools/stamp.py: do not edit. BUILD names exactly this set of files;
 // FILES is what the page is made of (src/update.js reads both from the published copy).
-export const BUILD = '6afdc30173';
+export const BUILD = 'a2337e85cb';
 export const FILES = [
   "index.html",
   "view.html",
@@ -20,6 +20,7 @@ export const FILES = [
   "src/core/ids.js",
   "src/core/mat.js",
   "src/core/num.js",
+  "src/core/pack.js",
   "src/core/plane.js",
   "src/core/tol.js",
   "src/core/vec.js",

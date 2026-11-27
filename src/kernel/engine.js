@@ -8,6 +8,7 @@ import { weld, package3mf } from './threemf.js';
 import { zip } from '../core/zip.js';
 import { dispose, movedShape } from './shapes.js';
 import { kernel, heapBytes, errorText, isFatal } from './occ.js';
+import { gunzipText } from '../core/pack.js';
 
 /** A colour as the kernel must be given it for a STEP file to hold the colour that was meant: the kernel
  *  takes the numbers as linear light and writes them out encoded, so they are decoded first. */
@@ -66,6 +67,8 @@ export function createEngine(post) {
         owned.delete(b);
       }
   }
+  /** The texts of what was imported, by how they are kept in the project. */
+  const unpacked = new Map();
   async function rebuild(job, exporting = false) {
     const doc = upgrade(job.doc),
       features = doc.features,
@@ -79,6 +82,16 @@ export function createEngine(post) {
     const world = worldOf(doc),
       consumed = consumedIn(doc),
       { order, cyclic } = buildOrder(doc);
+    // What was imported is kept small in the project: it is unpacked here, once for each text, before the
+    // features are built (they are built without waiting for anything).
+    const imported = new Map();
+    for (const f of features) {
+      const packed = f.type === 'import' ? f.data?.gzip : null;
+      if (typeof packed !== 'string') continue;
+      if (!unpacked.has(packed)) unpacked.set(packed, await gunzipText(packed).catch(() => null));
+      imported.set(f.id, unpacked.get(packed));
+    }
+    for (const packed of [...unpacked.keys()]) if (!features.some((f) => f.data?.gzip === packed)) unpacked.delete(packed);
     const results = new Map(),
       keys = [],
       final = new Map(), // part id -> { state, key }
@@ -155,7 +168,7 @@ export function createEngine(post) {
               );
             if (f.suppressed) entry = { state, result: { id: f.id, status: 'suppressed' } };
             else {
-              const out = evaluate(f, state, { key, own, tools, toolError });
+              const out = evaluate(f, state, { key, own, tools, toolError, imported });
               entry = {
                 ...out,
                 result: { id: f.id, status: out.result.code ? 'warning' : 'ok', ...out.result },

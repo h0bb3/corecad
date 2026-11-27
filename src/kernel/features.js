@@ -5,7 +5,7 @@ import { findRegions, resolveProfile } from '../sketch/profiles.js';
 import { indexSketch } from '../sketch/model.js';
 import { canonicalFrame, toWorld } from '../core/plane.js';
 import { sub, mul, dot } from '../core/vec.js';
-import { prism, revolved, screwed, boolean, cylinder, blend, edgesOf, bounds, volume, countSolids, boxSolid, cylinderSolid, sphereSolid, placed } from './shapes.js';
+import { prism, revolved, screwed, stepSolids, isValid, boolean, cylinder, blend, edgesOf, bounds, volume, countSolids, boxSolid, cylinderSolid, sphereSolid, placed } from './shapes.js';
 import { topoOf } from './topo.js';
 import { errorText, isFatal } from './occ.js';
 
@@ -333,6 +333,18 @@ export function evaluate(f, state, ctx) {
             }
           : {}),
       },
+    };
+  }
+  if (f.type === 'import') {
+    // ctx.imported: the texts of what was imported, unpacked before the features are built (engine.js)
+    const text = ctx.imported?.get(f.id);
+    if (typeof text !== 'string') fail('import-unreadable', 'What was imported cannot be unpacked. Import the file again.');
+    const solid = own(stepSolids(f.id, text));
+    return {
+      state: { ...state, bodies: [...state.bodies, body(f.id, solid)] },
+      result: isValid(solid.shape)
+        ? {}
+        : { code: 'import-faults', message: 'The kernel finds faults in these solids. They can be looked at and measured; cutting or joining them may fail.' },
     };
   }
   if (['box', 'cylinder', 'sphere'].includes(f.type)) {

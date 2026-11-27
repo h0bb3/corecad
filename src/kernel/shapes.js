@@ -473,6 +473,59 @@ export function boolean(op, a, b, fid) {
     builder.delete();
   }
 }
+/**
+ * The solids of a STEP file. Only its solids: surfaces and curves that stand alone in it are left out.
+ * Faces: `fid/face/<n>`, in the order the kernel gives them, which is the same every time the same text
+ * is read (KERNEL_NOTES, "Reading STEP").
+ * @param {string} text  the file
+ */
+export function stepSolids(fid, text) {
+  const { OC, r } = kernel(),
+    own = scope(),
+    file = `import-${fid}-${Math.round(performance.now())}.step`;
+  let shape = null;
+  try {
+    OC.FS.writeFile('/' + file, new TextEncoder().encode(text));
+    const reader = own(new OC.STEPControl_Reader());
+    let whole = null;
+    try {
+      reader.ReadFile(file); // its answer is an object whatever happened: what was read is asked for instead
+      reader.TransferRoots();
+      whole = r.cast(own(reader.OneShape()));
+    } catch (e) {
+      if (isFatal(e)) throw e;
+      throw new FeatureError('import-unreadable', 'This is not a STEP file that the kernel can read.', { detail: errorText(e) });
+    }
+    const solids = whole.solids;
+    if (!solids.length) {
+      whole.delete();
+      throw new FeatureError('import-empty', 'There is no solid in this STEP file: only surfaces or curves. CoreCAD works with solids.');
+    }
+    // one solid as it is; several as they are, together
+    if (solids.length === 1 && whole.constructor.name === 'Solid') shape = whole;
+    else {
+      shape = solids.length === 1 ? solids[0].clone() : r.makeCompound(solids.map((s) => s.clone()));
+      whole.delete();
+    }
+    solids.forEach((s) => s.delete());
+    const faces = shape.faces;
+    if (!(Math.abs(volume(shape)) > 0)) {
+      faces.forEach((f) => f.delete());
+      throw new FeatureError('import-empty', 'The solids in this STEP file have no volume.');
+    }
+    return { shape, faces, labels: faces.map((_, i) => [`${fid}/face/${i}`]) };
+  } catch (e) {
+    shape?.delete();
+    throw e;
+  } finally {
+    try {
+      OC.FS.unlink('/' + file);
+    } catch {
+      /* it was never written */
+    }
+    own.end();
+  }
+}
 export function cylinder(fid, center, dir, radius, height) {
   const { r } = kernel(),
     shape = r.makeCylinder(radius, height, center, dir),

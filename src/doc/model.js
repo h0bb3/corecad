@@ -62,6 +62,7 @@ export function makeFeature(doc, type, data = {}) {
     cylinder: { diameter: 20, height: 30, origin: 'base' },
     sphere: { diameter: 30, origin: 'base' },
     combine: { operation: 'join', tools: [], keep: false },
+    import: { format: 'step', data: null, bytes: 0 },
   };
   return {
     feature: { id, type, name: title + n, ...defaults[type], ...data },

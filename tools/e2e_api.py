@@ -19,7 +19,7 @@ from browser import Browser, ROOT  # noqa: E402
 
 COMMANDS = ('get_state get_selection measure get_document load_document new_document get_sketch list_faces list_edges '
             'add_sketch add_to_sketch set_dimension add_dimension add_constraint remove_from_sketch '
-            'extrude revolve fillet chamfer edit_feature '
+            'extrude revolve import fillet chamfer edit_feature '
             'add_part add_group combine move_part copy_part set_color edit_part unlink_part delete_part delete_feature '
             'undo redo reload_app cancel_edit export screenshot set_view set_section set_xray').split()
 GONE = ['add_box', 'add_cylinder', 'add_sphere', 'hole', 'ungroup', 'list_dimensions']
@@ -807,6 +807,90 @@ def run(p, url='index.html?test=1'):
     call('set_view', view='home')
     p.screenshot(ROOT / '.scratch' / 'e2e_api_thread.png')
     step('revolve with a rise: a bolt and its nut, each thread one feature; turns, rise and hand changed; what is refused; the rise on the model')
+
+    # ---- import: a STEP file as a part, the parts of another project
+    call('new_document', name='Bracket')
+    block('Plate', [60, 40, 10])                                                        # o1: x -30..30, y -20..20, z 0..10
+    h = sketch([{'type': 'circle', 'center': [10, 5], 'diameter': 8}], plane='top')
+    call('extrude', sketch=h['id'], operation='cut', through_all=True)
+    rod('Peg', 6, 30, position=[-20, 0, 0])
+    bracket = call('get_document')
+    plate_volume = 24000 - math.pi * 16 * 10
+    step_text = call('export', format='step', part='Plate')['text']
+    # into another project, beside what is there
+    call('new_document', name='Bench')
+    block('Table', [100, 80, 5])
+    table = call('get_state')['parts'][0]['id']
+    before = call('get_document')
+    fails('import', 'needs "format"', content=step_text)
+    fails('import', 'not the text of a STEP file', format='step', content='solid ascii')
+    fails('import', 'STEP file', format='step', content='ISO-10303-21;\nHEADER;\nnot much of a file')
+    fails('import', 'not JSON', format='corecad', content='{ not json')
+    fails('import', 'Not a valid CoreCAD project', format='corecad', content={'format': 'something else'})
+    fails('import', 'nothing to bring in', format='corecad', content=json.dumps({**bracket, 'parts': [], 'features': [], 'bodies': {}}))
+    assert call('get_document') == before, 'what is refused brings nothing in'
+    fails('import', 'no argument "name"', format='step', content=step_text, name='Bought plate')
+    got = call('import', format='step', content=step_text)
+    fid = got['id']
+    assert got['type'] == 'import' and got['status'] == 'ok' and got['name'] == 'Import1', got
+    bought = got['part']
+    row = next(r for r in call('get_state')['parts'] if r['id'] == bought)
+    assert row['name'] == 'Imported 1' and bought != table, row
+    call('edit_part', part=bought, name='Bought plate')                                 # a name is given where names are given
+    near(vol(got, bought), plate_volume, 1e-2, 'the solid of the STEP file')
+    assert next(b for b in got['bodies'] if b['part'] == bought)['box'] == [[-30, -20, 0], [30, 20, 10]], 'where it stood in its file'
+    assert feature(fid)['format'] == 'step' and feature(fid)['bytes'] == len(step_text), feature(fid)
+    assert 'gzip' in next(f for f in call('get_document')['features'] if f['id'] == fid)['data'] and len(json.dumps(call('get_document'))) < len(step_text) / 2 + len(json.dumps(before)), 'kept small in the project'
+    # it is a part like any other: moved, built on, an edge of it rounded; it has no numbers to change
+    call('move_part', part=bought, position=[0, 0, 5])
+    top = sketch([{'type': 'rectangle', 'center': [-20, 0], 'width': 10, 'height': 10}], plane={'part': 'Bought plate', 'side': 'top'})
+    boss = call('extrude', sketch=top['id'], distance=4)
+    near(vol(boss, bought), plate_volume + 400, 1e-2, 'a boss on a face of what was imported')
+    near(vol(call('fillet', edges={'part': 'Bought plate', 'parallel': 'z', 'kind': 'line', 'on': 'right'}, radius=3), bought), plate_volume + 400 - 2 * (9 - math.pi * 2.25) * 10, 0.05, 'two of its corners rounded')
+    fails('edit_feature', 'it has no distance', id=fid, distance=5)
+    assert call('edit_feature', id=fid, name='The bought plate')['name'] == 'The bought plate'
+    stands = call('measure', **{'from': {'part': 'Bought plate', 'side': 'bottom'}, 'to': {'part': 'Table', 'side': 'top'}})
+    assert abs(stands['between']['distance']) < 1e-6, stands
+    # the parts of another project: with their histories, in a group, and still to be changed
+    parts_before = len(call('get_state')['parts'])
+    came = call('import', format='corecad', content=bracket)
+    assert came['group'] and len(came['parts']) == 2 and came['part']['name'] == 'Bracket' and came['part']['id'] == came['group'], came
+    state = call('get_state')
+    assert len(state['parts']) == parts_before + 3, 'two parts and their group'
+    names = {r['id']: r['name'] for r in state['parts']}
+    plate2 = next(i for i in came['parts'] if names[i].startswith('Plate'))
+    assert sorted(names[i] for i in came['parts']) == ['Peg', 'Plate'] and all(next(r for r in state['parts'] if r['id'] == i)['parent'] == came['group'] for i in came['parts']), names
+    near(vol(came, plate2), plate_volume, 1e-2, 'the plate that came in')
+    ext = next(f for f in state['features'] if f['part'] == plate2 and f['type'] == 'extrude' and f.get('distance') == 10)
+    near(vol(call('edit_feature', id=ext['id'], distance=20), plate2), 2 * plate_volume, 1e-2, 'its history came with it: its height is changed')
+    call('move_part', part=came['group'], position=[0, 60, 0])
+    assert next(b for b in call('get_state')['bodies'] if b['part'] == plate2)['box'] == [[-30, 40, 0], [30, 80, 20]], 'the group moves what came in'
+    again = call('import', format='corecad', content=json.dumps(bracket))
+    assert again['part']['name'] == 'Bracket (2)' and {'Plate (2)', 'Peg (2)'} <= {r['name'] for r in call('get_state')['parts']}, again['part']
+    one = call('import', format='corecad', content={**bracket, 'parts': bracket['parts'][:1], 'features': [f for f in bracket['features'] if f['part'] == bracket['parts'][0]['id']]})
+    assert one['group'] is None and one['part']['name'] == 'Plate (3)', 'a project of one part comes without a group'
+    call('undo')
+    assert 'Plate (3)' not in {r['name'] for r in call('get_state')['parts']}, 'an import is one undo step'
+    # the Import button: a STEP file and a project from the disk
+    files = ROOT / '.scratch' / 'import-files'
+    files.mkdir(parents=True, exist_ok=True)
+    (files / 'bought.step').write_text(step_text, encoding='utf-8')
+    (files / 'bracket.corecad').write_text(json.dumps(bracket), encoding='utf-8')
+    (files / 'notes.step').write_text('just some notes', encoding='utf-8')
+    root = p.call('DOM.getDocument')['root']['nodeId']
+    node = p.call('DOM.querySelector', nodeId=root, selector='#import-input')['nodeId']
+    count = len(call('get_state')['parts'])
+    p.call('DOM.setFileInputFiles', nodeId=node, files=[str(files / 'bought.step')])
+    p.wait(f'!corecad.busy && corecad.doc.parts.length === {count + 1} && corecad.doc.parts.at(-1).name === "bought"', timeout=30)
+    assert 'Imported bought.step' in p.js('document.getElementById("toast").textContent')
+    assert p.js('!!document.querySelector(\'[data-feature="\' + corecad.doc.features.at(-1).id + \'"]\')'), 'its row in the history'
+    p.call('DOM.setFileInputFiles', nodeId=node, files=[str(files / 'bracket.corecad')])
+    p.wait(f'!corecad.busy && corecad.doc.parts.length === {count + 4}', timeout=30)
+    p.call('DOM.setFileInputFiles', nodeId=node, files=[str(files / 'notes.step')])
+    p.wait('document.getElementById("toast").textContent.includes("could not be imported")', timeout=30)
+    assert p.js('corecad.doc.parts.length') == count + 4
+    p.screenshot(ROOT / '.scratch' / 'e2e_api_import.png')
+    step('import: a STEP file as a part that is moved, built on and rounded; another project\'s parts with their histories, in a group; the Import button; what is refused')
 
     # ---- looking inside: the model cut open along a plane, and see-through
     call('new_document', name='Inside')

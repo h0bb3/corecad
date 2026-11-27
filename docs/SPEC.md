@@ -232,6 +232,17 @@ extrude, cut on its top face, blend edges, edit history and export. Additional f
 exercise dragging, quick holes, planes, undo and persistence. Screenshots go in
 `.scratch/`; no required source or test may depend on that ignored directory.
 
+Import. `import` is a feature that makes solids without a history:
+`{format: 'step', data: {gzip}, bytes}`. The file is kept in the project as
+it was read, its text gzipped and in base64 (`src/core/pack.js`), and is
+read again by the kernel whenever the feature is built
+(`STEPControl_Reader`); only its solids are taken. Its faces are labelled
+`face/<n>` in the order the kernel gives them, which is the same each time
+the same text is read, so references to them hold. Several solids are one
+body. The parts of another project are put in by `importParts`
+(`src/doc/parts.js`): new ids for every part and feature, with every id and
+face label inside them renamed, as a copy of a part is made.
+
 A second seat. Somebody may look at the model from somewhere else than the
 tab's screen and point at it: a headset on the page itself (`src/view/xr.js`,
 WebXR), or another page that watches the tab through the relay (`view.html`,

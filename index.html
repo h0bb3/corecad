@@ -35,6 +35,7 @@
         >
           New</button
         ><button data-action="open" title="Open a .corecad project · Ctrl+O">Open</button
+        ><button data-action="import" title="Bring a STEP file, or the parts of another CoreCAD project, into this one">Import</button
         ><button data-action="save" title="Download the editable .corecad project · Ctrl+S">
           Save</button
         ><button
@@ -193,6 +194,13 @@
       type="file"
       accept=".corecad,.json"
       title="Open a CoreCAD project"
+      hidden
+    />
+    <input
+      id="import-input"
+      type="file"
+      accept=".step,.stp,.corecad,.json"
+      title="Bring a STEP file or a CoreCAD project into this one"
       hidden
     />
     <div id="modal-root"></div>

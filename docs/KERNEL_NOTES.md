@@ -250,3 +250,28 @@ Times, with CoreCAD's own boolean and half turns: joined to a rod, 7 turns
 that, the mesh 0.1 to 0.3 s); a groove of 4.5 turns cut in a block 1 s. An
 outline with a hole is the outer one made solid and the hole's cut out of it
 (1.8 s for 2.5 turns).
+
+## Reading STEP
+
+```js
+OC.FS.writeFile('/in.step', bytes);                 // the kernel reads files of its own little disk
+const reader = new OC.STEPControl_Reader();
+reader.ReadFile('in.step');                         // what it answers is an object whatever happened
+reader.TransferRoots();
+const shape = r.cast(reader.OneShape());            // throws "This shape has not type, it is null" when nothing was read
+OC.FS.unlink('/in.step');
+```
+
+- This is what replicad's `importSTEP(blob)` does, without waiting for the
+  blob: features are built without waiting for anything.
+- A solid written with `blobSTEP()` and read back has the same volume to the
+  last digit, the same number of faces and edges, and is valid. Two solids
+  written with `exportSTEP([...])` come back as a `Compound` of two.
+- **The faces come in the same order every time** the same text is read,
+  also in a kernel that has just started: they can be named by their number.
+- Text that is not STEP, or half a file: `OneShape()` is null and `cast`
+  throws. There is no better word from the kernel about what was wrong.
+- Fast: a plate with a hole and round corners (35 KB of STEP) in 0.1 s.
+- Not tried: a file from another CAD program, an assembly with parts placed
+  inside each other, a file in inches, a file of megabytes.
+

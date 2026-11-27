@@ -7,7 +7,7 @@ in the order the work was done.
 ## Where it stands
 
 CoreCAD is live at [h0bb3.github.io/corecad](https://h0bb3.github.io/corecad/):
-`main` is what is published. The page is build `6afdc30173`
+`main` is what is published. The page is build `a2337e85cb`
 (`src/version.js` names the build).
 
 What it does:
@@ -26,12 +26,14 @@ What it does:
 - **Looking inside**: Section cuts the model open along a plane, with the
   cuts filled in, and X-ray draws it see-through; what is inside is pointed
   at and measured like the outside.
+- **Import**: a STEP file as a part of fixed geometry, and the parts of
+  another CoreCAD project with their histories.
 - **Colours** for parts and for single faces. **Export** as 3MF (an object
   for each part), STL and STEP, of everything or of one part. Project files,
   and an autosave in the browser.
-- **For an agent**: 39 commands behind `window.corecad.run`
+- **For an agent**: 40 commands behind `window.corecad.run`
   ([COMMANDS.md](COMMANDS.md)), and the same list over MCP through a relay
-  ([bridge/README.md](../bridge/README.md)): 40 tools with the relay's own.
+  ([bridge/README.md](../bridge/README.md)): 41 tools with the relay's own.
   "This", "selected" and "pointed" mean what the person has clicked or rests
   the mouse on, and `get_selection` says how they are looking at the model.
   While an agent is at work the page says so: a frame round the view, a line
@@ -45,7 +47,7 @@ What it does:
 
 Verified on this build, 2026-11-26:
 
-- `python tools/run_tests.py`: 147 tests in 18 pages; the kernel pages run
+- `python tools/run_tests.py`: 152 tests in 19 pages; the kernel pages run
   the real OpenCascade worker.
 - The end-to-end scripts in headless Chrome, all passing: `tools/e2e.py`,
   `e2e_more.py`, `e2e_parts.py` and `e2e_export.py` (real mouse and key
@@ -183,8 +185,9 @@ description of the tablet holder, not from the holder's files:
   A variation of a part is then every affected dimension changed one by one,
   and a socket cannot follow its tail with a clearance
   (`socket = tail + 2 × clearance`).
-- **Import** of STEP and STL. `STEPControl_Reader` and `StlAPI_Reader` are in
-  the kernel build and have not been run here.
+- **Import** of STL (a mesh as a solid of triangles): `StlAPI_Reader` is in
+  the kernel build and has not been run here. STEP and CoreCAD projects are
+  imported since 2026-11-27 (the log, "Import").
 - **A sketch that refers to the body it sits on.** A hole "5 mm from the
   edge" is a number from the origin, and stays where it is when the plate
   grows.
@@ -1004,4 +1007,51 @@ Meta documents a "headset camera" permission for web pages; people report
 that it is not there for everyone. If it is not, the page says that the
 browser did not let it use a camera, and the address has to come another way
 (paste, a bookmark, USB).
+
+## Import: a STEP file, and the parts of another project (2026-11-27)
+
+Asked for: to be able to import into the model, another CoreCAD file or a
+STEP.
+
+- **`import { format: "step", content }`**: the solids of a STEP file become
+  a new part with one feature, the import. No history: nothing in it has a
+  number to change. It is a part like any other for everything else, and
+  that is the point of it: a bought component, or a part from another
+  program, to measure against, build on and cut out of. The file's text is
+  kept in the project, gzipped (a seventh of its size or less), and read by
+  the kernel when the feature is built (`stepSolids` in
+  `src/kernel/shapes.js`; the engine unpacks the text first). Faces are
+  named by their number in the file.
+- **`import { format: "corecad", content }`**: the parts of another project
+  with their histories (`importParts` in `src/doc/parts.js`, which renames
+  as `copyPart` does). Several parts come in a group named after their
+  project; a taken name gets a number.
+- **One way**: the command takes no name (names are given with `edit_part`)
+  and no place (`move_part`). The Import button of the page names a part
+  from a STEP file after the file, with `edit_part`.
+- 40 commands now.
+
+Verification: `test/kernel-import.test.html` (5 tests: the packing; a STEP
+file read back as the same solid with a label on every face, the same in a
+kernel that has just started; a sketch and a boss on an imported face, an
+imported edge rounded, the imported part cut out of another; two solids in
+one file, and what is not STEP or cannot be unpacked; the parts of another
+project with new ids, a sketch on a face, a linked copy and a combine that
+all still point at what came with them, names, the group, twice over).
+`tools/e2e_api.py`: the command with both formats, what is refused, the
+part moved, built on, rounded and measured against another, a history
+changed after it came in, undo, and the Import button with files from the
+disk.
+
+Limits:
+
+- Only STEP files written by CoreCAD's own kernel have been read here. A
+  file from another CAD program, an assembly, a file in inches or one of
+  many megabytes has not been tried.
+- The colours and names inside a STEP file are not read: its solids come as
+  one part in the plain colour.
+- A STEP file of up to 20 MB of text is taken. The project is autosaved in
+  the browser's storage, which holds a few megabytes: a project with a big
+  import may not be autosaved (the page says so), and is kept by Save.
+- STL is not imported.
 

@@ -58,6 +58,11 @@
  *              targets: string[] | null }} ExtrudeFeature
  *  flip false: the direction is the sketch plane's normal; true: against it. targets null: every body the tool reaches. */
 
+/** @typedef {FeatureBase & { type: 'import', format: 'step', data: { gzip: string }, bytes: number }} ImportFeature
+ *  Solids that were made somewhere else: a STEP file, kept in the project as it was read (its text, gzip in
+ *  base64: core/pack.js; bytes: how long the text is). They have no history. The faces are labelled
+ *  `face/<n>` in the order the file gives them, which is the same every time it is read. */
+
 /** @typedef {FeatureBase & { type: 'revolve', sketch: string, profiles: ProfileRef[], axis: string, angle: number,
  *              rise?: number, left_handed?: boolean,
  *              flip: boolean, operation: 'new'|'join'|'cut'|'intersect', targets: string[] | null }} RevolveFeature

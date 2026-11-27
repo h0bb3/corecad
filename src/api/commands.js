@@ -21,7 +21,8 @@ import { findRegions, profileRefFrom, regionAt, pointInRegion, pointInLoop } fro
 import { createDocument, makeFeature, addFeature, updateFeature, removeFeature, featureById, dependents } from '../doc/model.js';
 import { validateFeature } from '../doc/features.js';
 import { validateDocument, upgrade } from '../doc/schema.js';
-import { partById, featuresOf, worldOf, makePart, addPart, updatePart, removePart, partDependents, setParent, copyPart, unlinkPart, sceneOf, contentOf, descendantsOf, ancestorsOf, childrenOf, setPartColor, paintFaces, appearanceOf } from '../doc/parts.js';
+import { gzipText } from '../core/pack.js';
+import { partById, featuresOf, worldOf, makePart, addPart, updatePart, removePart, partDependents, setParent, copyPart, unlinkPart, importParts, sceneOf, contentOf, descendantsOf, ancestorsOf, childrenOf, setPartColor, paintFaces, appearanceOf } from '../doc/parts.js';
 import { PALETTE, colorFrom } from './colors.js';
 import * as Mat from '../core/mat.js';
 import { sizeOf, between, total } from './measure3d.js';
@@ -73,6 +74,8 @@ const tool = (name, description, properties = {}, required = []) => ({
 });
 
 /** The commands that look at the model, or change how it is shown, and never change the model itself. */
+/** The longest STEP file that is taken, in characters. */
+export const MAX_IMPORT = 20e6;
 export const READS = new Set(['get_state', 'get_selection', 'measure', 'get_document', 'get_sketch', 'list_faces', 'list_edges', 'export', 'screenshot', 'set_view', 'set_section', 'set_xray']);
 
 export const TOOLS = [
@@ -152,6 +155,15 @@ export const TOOLS = [
       flip: bool('Turn the other way. With a rise: go the other way along the axis.'),
     },
     ['axis']
+  ),
+  tool(
+    'import',
+    'Brings a file into the open project; nothing that is open is replaced (that is load_document). "step": the solids of a STEP file become a new part of fixed geometry: it has no history, and can be measured, cut, joined, combined and built on like any part (its flat faces take sketches, its edges fillets). "corecad": the parts of another CoreCAD project are added with their histories and stay editable; when it has several parts they come in a group named after it. What comes in stands where it stood in its file: place it with move_part, name it with edit_part.',
+    {
+      format: str('What the content is.', { enum: ['step', 'corecad'] }),
+      content: { description: 'step: the text of the STEP file (it begins with ISO-10303-21;). corecad: the project as get_document gives it, as an object or as its JSON text.' },
+    },
+    ['format', 'content']
   ),
   tool('fillet', 'Rounds edges of a body with a radius.', { edges: EDGES_ARG, radius: numb('Millimetres.') }, ['edges', 'radius']),
   tool('chamfer', 'Bevels edges of a body by a distance.', { edges: EDGES_ARG, distance: numb('Millimetres.') }, ['edges', 'distance']),
@@ -673,6 +685,7 @@ export function createCommands(app) {
         profiles: f.profiles.length,
       };
     if (f.type === 'revolve') return { sketch: f.sketch, axis: f.axis, angle: f.angle, ...(f.rise > 0 ? { rise: f.rise, ...(f.left_handed ? { left_handed: true } : {}) } : {}), operation: f.operation, ...(f.flip ? { flip: true } : {}), profiles: f.profiles.length };
+    if (f.type === 'import') return { format: f.format, bytes: f.bytes };
     if (f.type === 'hole') return { diameter: f.diameter, ...(f.depth === 'all' ? { through_all: true } : { depth: f.depth }), at: round(f.at), on_body: f.face?.body };
     if (f.type === 'fillet') return { radius: f.radius, edges: f.edges.length };
     if (f.type === 'chamfer') return { distance: f.distance, edges: f.edges.length };
@@ -1044,6 +1057,52 @@ export function createCommands(app) {
       });
       return apply(addFeature(made.doc, made.feature), made.feature, 'Apply ' + made.feature.name);
     },
+    async import(a) {
+      free();
+      await settled();
+      if (a.format === 'step') {
+        const text = typeof a.content === 'string' ? a.content : '';
+        if (!/^\s*ISO-10303-21\s*;/.test(text)) throw Error('"content" is not the text of a STEP file: one begins with ISO-10303-21;');
+        if (text.length > MAX_IMPORT) throw Error(`This STEP file is ${(text.length / 1e6).toFixed(1)} MB. The most that is taken is ${MAX_IMPORT / 1e6} MB.`);
+        const part = makePart(doc(), { base: 'Imported' }),
+          placed = addPart(part.doc, part.part),
+          made = makeFeature(placed, 'import', { part: part.part.id, format: 'step', data: { gzip: await gzipText(text) }, bytes: text.length });
+        // as any feature: built first, and kept only when it could be built
+        const next = addFeature(made.doc, made.feature),
+          errors = validateFeature(made.feature);
+        if (errors.length) throw Error(errors.join(' '));
+        store.preview(next);
+        const st = await settled(),
+          r = st.build?.features.find((x) => x.id === made.feature.id);
+        if (st.error || !r || r.status === 'error') {
+          const why = st.error || (r ? [r.message, r.detail].filter(Boolean).join(' ') : 'What was imported could not be built.');
+          store.cancelPreview();
+          await settled();
+          throw Error(why);
+        }
+        await commit(next, 'Import ' + placed.parts.at(-1).name, made.feature.id, part.part.id);
+        return outcome(made.feature.id);
+      }
+      if (a.format === 'corecad') {
+        let other = a.content;
+        if (typeof other === 'string') {
+          try {
+            other = JSON.parse(other);
+          } catch {
+            throw Error('"content" is not a CoreCAD project: it is not JSON.');
+          }
+        }
+        const errors = validateDocument(other);
+        if (errors.length) throw Error('Not a valid CoreCAD project: ' + errors.join(' '));
+        other = upgrade(structuredClone(other));
+        if (!other.parts.length) throw Error('That project has no parts: there is nothing to bring in.');
+        const merged = importParts(doc(), other, other.meta?.name || 'Imported'),
+          at = merged.group ?? merged.parts[0];
+        await commit(merged.doc, 'Import ' + (other.meta?.name || 'a project'), null, at);
+        return partOutcome(at, { parts: merged.parts, group: merged.group });
+      }
+      throw Error('"format" is "step" or "corecad".');
+    },
     fillet: (a) => blend('fillet', a),
     chamfer: (a) => blend('chamfer', a),
     async edit_feature(a) {
@@ -1062,6 +1121,7 @@ export function createCommands(app) {
           cylinder: ['diameter', 'height', 'origin'],
           sphere: ['diameter', 'origin'],
           combine: ['operation', 'with', 'keep'],
+          import: [],
         }[f.type] ?? [];
       const given = Object.keys(a).filter((k) => !['id', 'name', 'suppressed'].includes(k));
       const wrong = given.filter((k) => !allowed.includes(k));

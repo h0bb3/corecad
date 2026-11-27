@@ -1,0 +1,97 @@
+<!doctype html><meta charset="utf-8"><title>Kernel and document: import</title><script type="module">
+import {test,eq,ok,near,throws,run} from './harness.js';
+import {createKernel} from '../src/kernel/client.js';
+import {createDocument,makeFeature,addFeature,updateFeature} from '../src/doc/model.js';
+import {makePart,addPart,updatePart,importParts,partById,copyPart} from '../src/doc/parts.js';
+import {validateDocument} from '../src/doc/schema.js';
+import {validateFeature} from '../src/doc/features.js';
+import {faceRefFrom,edgeRefFrom} from '../src/doc/refs.js';
+import {findRegions,profileRefFrom} from '../src/sketch/profiles.js';
+import {gzipText,gunzipText} from '../src/core/pack.js';
+import {sk,rect,circle} from './fixtures/sketches.js';
+const k=createKernel(),PI=Math.PI;
+const good=r=>{eq(r.status,'done');ok(!r.features.some(f=>f.status==='error'),()=>JSON.stringify(r.features));return r;};
+const part=(d,data={})=>{const m=makePart(d,data);return [addPart(m.doc,m.part),m.part.id];};
+const feat=(d,type,p,data={})=>{const m=makeFeature(d,type,{part:p,...data});return [addFeature(m.doc,m.feature),m.feature.id];};
+const of=(r,p)=>r.bodies.filter(b=>b.part===p);
+const status=(r,id)=>r.features.find(f=>f.id===id);
+const topOf=(b,z)=>b.mesh.faces.findIndex(f=>f.plane&&Math.abs(f.plane.n[2]-1)<1e-9&&Math.abs(f.plane.d-z)<1e-9);
+const stepOf=async(d,o={})=>{const out=await k.export(d,{format:'step',...o});return typeof out==='string'?out:await out.text();};
+/** A plate 60 x 40 x 10 with a hole of 8 through it, made as a person makes it: a box, a sketch on its top, a cut. */
+async function plateDoc(name='Plate project'){
+ let d=createDocument(name),p,b,s,c;[d,p]=part(d,{name:'Plate'});[d,b]=feat(d,'box',p,{size:[60,40,10]});
+ const body=good(await k.rebuild(d)).bodies[0],hole=sk();circle(hole,10,5,4);
+ [d,s]=feat(d,'sketch',p,{...hole,plane:{kind:'face',ref:faceRefFrom(body,topOf(body,10))}});
+ [d,c]=feat(d,'extrude',p,{sketch:s,profiles:findRegions(d.features.find(f=>f.id===s)).map(profileRefFrom),operation:'cut',extent:{type:'oneSide',distance:'all'},flip:true});
+ return {d,p,b,s,c,volume:24000-PI*16*10};
+}
+const imported=async(text,name='Bought')=>{let d=createDocument('Work'),p,f;[d,p]=part(d,{name});[d,f]=feat(d,'import',p,{format:'step',data:{gzip:await gzipText(text)},bytes:text.length});return {d,p,f};};
+
+test('Text is made small and comes back whole',async()=>{
+ const text='ISO-10303-21;\n'+'#1=CARTESIAN_POINT(\'\',(0.,0.,0.));\n'.repeat(4000)+'END-ISO-10303-21;\nåäö → ✓';
+ const small=await gzipText(text);ok(typeof small==='string'&&/^[A-Za-z0-9+/=]+$/.test(small));ok(small.length<text.length/20,`${text.length} characters in ${small.length}`);
+ eq(await gunzipText(small),text);eq(await gunzipText(await gzipText('')),'');
+ await throws(()=>gunzipText(btoa('this is not gzip')),null,'what is not gzip is not unpacked');
+});
+test('A STEP file comes in as a part of fixed geometry: the same solid, with a label on every face',async()=>{
+ await k.ready;const src=await plateDoc(),was=good(await k.rebuild(src.d)),text=await stepOf(src.d);
+ ok(/^ISO-10303-21;/.test(text));near(was.bodies[0].volume,src.volume,1e-6);
+ const {d,p,f}=await imported(text);eq(validateDocument(d),[]);eq(validateFeature(d.features[0]),[]);
+ const r=good(await k.rebuild(d,{purpose:'commit'}));eq(r.bodies.length,1);eq(r.bodies[0].id,f);eq(r.bodies[0].part,p);
+ near(r.bodies[0].volume,src.volume,1e-6,'the same volume');near(r.bodies[0].bbox,[[-30,-20,0],[30,20,10]],1e-6,'where it stood in its file');
+ const faces=r.bodies[0].mesh.faces;eq(faces.length,was.bodies[0].mesh.faces.length);eq(faces.map(x=>x.labels),faces.map((_,i)=>[`${f}/face/${i}`]),'every face is named by its number in the file');
+ eq(status(r,f).status,'ok');
+ // read again from nothing (another kernel): the same faces in the same order
+ const k2=createKernel();await k2.ready;const again=good(await k2.rebuild(d));eq(again.bodies[0].mesh.faces.map(x=>[x.kind,x.labels]),faces.map(x=>[x.kind,x.labels]));near(again.bodies[0].mesh.faces.map(x=>x.center),faces.map(x=>x.center),1e-9);
+});
+test('What was imported is built on like any part: a sketch on its face, an edge rounded, cut out of another part',async()=>{
+ const src=await plateDoc(),text=await stepOf(src.d);let {d,p,f}=await imported(text);
+ let r=good(await k.rebuild(d));const body=r.bodies[0],boss=sk();rect(boss,-25,-15,-15,-5);let s,e,fl;
+ [d,s]=feat(d,'sketch',p,{...boss,plane:{kind:'face',ref:faceRefFrom(body,topOf(body,10))}});
+ [d,e]=feat(d,'extrude',p,{sketch:s,profiles:findRegions(d.features.find(x=>x.id===s)).map(profileRefFrom),operation:'join',extent:{type:'oneSide',distance:5}});
+ r=good(await k.rebuild(d));eq(r.bodies.length,1);near(r.bodies[0].volume,src.volume+500,1e-6,'a boss on its top');
+ ok(r.bodies[0].mesh.faces.some(x=>x.labels.some(l=>l.startsWith(f+'/face/')))&&r.bodies[0].mesh.faces.some(x=>x.labels.some(l=>l.startsWith(e+'/'))));
+ // an upright corner edge of what was imported, rounded
+ const b2=r.bodies[0],corner=b2.mesh.edges.findIndex(x=>x.kind==='line'&&Math.abs(x.a[0]-30)<1e-6&&Math.abs(x.a[1]-20)<1e-6&&Math.abs(x.b[0]-30)<1e-6&&Math.abs(x.b[1]-20)<1e-6);ok(corner>=0,'the corner edge');
+ [d,fl]=feat(d,'fillet',p,{edges:[edgeRefFrom(b2,corner)],radius:4});r=good(await k.rebuild(d));near(r.bodies[0].volume,src.volume+500-(16-PI*4)*10,1e-5,'a corner of it rounded');
+ // and as a tool: cut out of a block that it stands in
+ let block,bx,cut;[d,block]=part(d,{name:'Block'});[d,bx]=feat(d,'box',block,{size:[80,60,6]});[d,cut]=feat(d,'combine',block,{operation:'cut',tools:[p],keep:true});
+ r=good(await k.rebuild(d));near(of(r,block)[0].volume,80*60*6-(2400-PI*16)*6+(16-PI*4)*6,1e-4,'what of the block is not in it');
+});
+test('Several solids in one file are one part; what is not a STEP file, or cannot be unpacked, says so',async()=>{
+ const src=await plateDoc();let d=src.d,q,c;[d,q]=part(d,{name:'Peg',pos:[0,0,30]});[d,c]=feat(d,'cylinder',q,{diameter:10,height:20});
+ const text=await stepOf(d),two=await imported(text),r=good(await k.rebuild(two.d));eq(r.bodies.length,1);near(r.bodies[0].volume,src.volume+PI*25*20,1e-6);near(r.bodies[0].bbox,[[-30,-20,0],[30,20,50]],1e-6);
+ for(const [bad,why] of [['ISO-10303-21;\nHEADER;\nthis is not much of a file',/not a STEP file that the kernel can read|no solid/],['hello',/not a STEP file that the kernel can read|no solid/]]){
+  const x=await imported(bad),rb=await k.rebuild(x.d),st=status(rb,x.f);eq(st.status,'error',bad.slice(0,20));ok(why.test(st.message),st.message);eq(rb.bodies.length,0);}
+ const broken=updateFeature(two.d,two.f,{data:{gzip:btoa('not gzip at all')}}),rb=await k.rebuild(broken);eq(status(rb,two.f).status,'error');ok(/cannot be unpacked/.test(status(rb,two.f).message));
+ const f=two.d.features[0];for(const bad of [{data:null},{data:{}},{data:{gzip:''}},{format:'stl'},{bytes:'many'}]) ok(validateFeature({...f,...bad}).length,JSON.stringify(bad));
+});
+test('The parts of another project come in with new ids, and everything in them that names one of them goes with it',async()=>{
+ // the other project: the plate (a sketch on a face of its own box), a peg, a linked copy of the peg, and the pegs cut out of the plate
+ const src=await plateDoc('Bracket');let o=src.d,peg,pc,twin,cut;[o,peg]=part(o,{name:'Peg',pos:[-20,0,0]});[o,pc]=feat(o,'cylinder',peg,{diameter:6,height:30});
+ const copy=copyPart(o,peg,{linked:true});o=updatePart(copy.doc,copy.id,{pos:[-20,10,0]});twin=copy.id;[o,cut]=feat(o,'combine',src.p,{operation:'cut',tools:[peg,twin],keep:true});
+ const alone=good(await k.rebuild(o)),plateVolume=of(alone,src.p)[0].volume;near(plateVolume,src.volume-2*PI*9*10,1e-5);
+ // this project: a part with the same ids and names as in the other
+ let d=createDocument('Mine'),mine,mb;[d,mine]=part(d,{name:'Plate'});[d,mb]=feat(d,'box',mine,{size:[10,10,10]});
+ const m=importParts(d,o),doc=m.doc;eq(validateDocument(doc),[]);
+ eq(doc.parts.length,1+3+1,'its three parts and a group for them');ok(m.group&&partById(doc,m.group).group&&partById(doc,m.group).name==='Bracket');eq(m.parts.length,3);
+ eq(new Set(doc.parts.map(p=>p.id)).size,doc.parts.length);eq(new Set(doc.features.map(f=>f.id)).size,doc.features.length,'no id twice');
+ ok(m.parts.every(p=>partById(doc,p).parent===m.group));eq(doc.parts.map(p=>p.name),['Plate','Bracket','Plate (2)','Peg','Peg copy'],'a name that is taken gets a number');
+ const newPlate=doc.parts.find(p=>p.name==='Plate (2)').id,newPeg=doc.parts.find(p=>p.name==='Peg').id,newTwin=doc.parts.find(p=>p.name==='Peg copy').id;
+ eq(partById(doc,newTwin).link,newPeg,'the linked copy is linked to the peg that came with it');
+ const theirs=doc.features.filter(f=>f.part===newPlate),sketch=theirs.find(f=>f.type==='sketch'),box=theirs.find(f=>f.type==='box'),ext=theirs.find(f=>f.type==='extrude'),comb=theirs.find(f=>f.type==='combine');
+ eq(sketch.plane.ref.body,box.id,'the sketch lies on the box that came with it');ok(sketch.plane.ref.labels.every(l=>l.startsWith(box.id+'/')));eq(ext.sketch,sketch.id);eq(comb.tools,[newPeg,newTwin]);
+ ok(![box.id,sketch.id,ext.id].includes(mb)&&doc.features.find(f=>f.id===mb).part===mine,'what was here is as it was');eq(o.parts.length,3,'and the other project is untouched');
+ // built together: the same solids as built alone, and what was here beside them
+ const r=good(await k.rebuild(doc));near(of(r,newPlate)[0].volume,plateVolume,1e-6);near(of(r,mine)[0].volume,1000,1e-9);eq(r.bodies.filter(b=>b.part===newPeg).length,1,'the peg is built once: its linked copy shows the same solid');
+ // brought in once more: again new ids, and names with the next number
+ const twice=importParts(doc,o);eq(validateDocument(twice.doc),[]);ok(twice.doc.parts.some(p=>p.name==='Plate (3)')&&twice.doc.parts.some(p=>p.name==='Bracket (2)'));
+ good(await k.rebuild(twice.doc));
+ // a project of one part comes without a group; an empty one brings nothing
+ const one=importParts(d,src.d,'Unused');eq(one.group,null);eq(one.parts.length,1);eq(one.doc.parts.length,2);eq(one.doc.parts[1].name,'Plate (2)');
+ const none=importParts(d,createDocument('Empty'));eq(none.parts,[]);eq(none.doc.parts.length,1);
+ // what was imported from a STEP file goes with it too
+ const st=await imported(await stepOf(src.d)),both=importParts(d,st.d),rs=good(await k.rebuild(both.doc));eq(rs.bodies.length,2);near(rs.bodies.find(b=>b.part===both.parts[0]).volume,src.volume,1e-6);
+});
+run();
+</script>

@@ -111,6 +111,11 @@ export function validateFeature(f) {
       check(f.targets === null || (Array.isArray(f.targets) && f.targets.every((id) => typeof id === 'string')), 'Invalid target body list.');
       check(typeof f.flip === 'boolean', 'The direction of the turn is invalid.');
       break;
+    case 'import':
+      check(f.format === 'step', 'What is imported is a STEP file.');
+      check(typeof f.data?.gzip === 'string' && f.data.gzip.length > 0, 'What was imported is missing: import the file again.');
+      check(Number.isFinite(f.bytes) && f.bytes >= 0, 'The size of what was imported is a number.');
+      break;
     case 'hole':
       check(validFaceRef(f.face), 'Choose a flat face for the hole.');
       check(vec(f.at, 2), 'Enter finite hole coordinates.');

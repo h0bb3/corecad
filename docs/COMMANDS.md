@@ -52,6 +52,8 @@ The command set is a toolbox of primitives. It has no shortcuts:
 | a cylinder | the same with a circle |
 | a ball | `add_sketch` on XZ, `add_to_sketch` with a half disc (an arc and the line that closes it), `revolve` about that line |
 | a hole | `add_sketch` on the face, `add_to_sketch` with a circle, `extrude` with `operation: "cut"` (a cut on a face goes into the body) |
+| a part that was made elsewhere | `import` with the text of its STEP file |
+| the parts of another project | `import` with that project (`get_document` gives one) |
 | a thread, a spring | `add_sketch` on a plane the axis lies in, `add_to_sketch` with one tooth (or the wire's outline) and the axis line, `revolve` with a `rise`: one feature for all the turns ([Threads](#threads-revolve-with-a-rise)) |
 | a part in a group | `move_part` with `parent` |
 | taking a group away | `move_part` with `parent` for each part in it, then `delete_part` |
@@ -223,6 +225,33 @@ run('revolve', { sketch, axis, rise: 3.5, angle: 360 * 7 });   // axis: the id o
 - It takes a second or two for a few turns and longer for many: 17 turns
   joined to a rod about 4 s, 30 turns about 9 s.
 
+## Bringing things in
+
+`import` adds to the open project; it replaces nothing (`load_document`
+does that).
+
+- `import { format: "step", content }`: `content` is the text of a STEP
+  file. Its solids become one new part, called "Imported 1" until
+  `edit_part` names it. The part has one feature, the import, and no
+  history behind it: there are no numbers to change. Everything else works
+  on it as on any part: `move_part`, `measure`, a sketch on a flat face of
+  it and an extrusion from there, `fillet` and `chamfer` on its edges,
+  `combine` with other parts, colours, export. Surfaces and curves that
+  stand alone in the file are left out; a file with no solid is refused.
+- `import { format: "corecad", content }`: `content` is a project, as
+  `get_document` gives it (an object, or its JSON text). Its parts are added
+  with their histories and can be changed like those that were here. Every
+  part and feature of it gets a new id; a name that is taken gets a number
+  after it ("Plate (2)"). When it has more than one part standing on its
+  own, they come in a new group named after that project, so that what came
+  in can be moved, hidden or deleted as one; a single part comes as it is.
+  The answer names the group and the parts.
+- What comes in stands where it stood in its file. An import is one undo
+  step.
+
+The person has the same as the **Import** button, which takes a `.step`,
+`.stp` or `.corecad` file.
+
 ## Looking inside
 
 A model can be complicated inside. Two ways of looking in, for the person in
@@ -300,6 +329,7 @@ Arguments in brackets are optional.
 | `remove_from_sketch` | [sketch], ids | Removes entities, dimensions or constraints. |
 | `extrude` | [sketch], [profiles], [distance], [through_all], [operation], [distance2], [flip] | Extrudes regions of a sketch: new body, join, cut or intersect. |
 | `revolve` | [sketch], [profiles], axis, [angle], [rise], [left_handed], [operation], [flip] | Turns regions of a sketch about a line of that sketch: new body, join, cut or intersect. With a `rise` they also move along the line as they turn: a thread. |
+| `import` | format, content | Brings a STEP file in as a part of fixed geometry, or the parts of another CoreCAD project with their histories. |
 | `fillet` | edges, radius | Rounds edges. |
 | `chamfer` | edges, distance | Bevels edges. |
 | `edit_feature` | id, and what to change | Changes a feature's parameters, name or suppression. |

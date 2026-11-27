@@ -396,6 +396,41 @@ export function copyPart(doc, id, { linked = false } = {}) {
   };
 }
 
+/**
+ * The parts of another project, put into this one: every part and every feature of it with a new id, and
+ * everything in them that names one of them renamed with it. They stand where they stood there. A name
+ * that this project has already gets a number after it. When more than one part of it stands on its own
+ * (under no other), they come in a new group named `label`, so that what came in can be moved, hidden
+ * or taken away as one.
+ * @returns {{ doc: object, parts: string[], group: string | null }} parts: those that stood on their own
+ */
+export function importParts(doc, other, label = other.meta?.name ?? 'Imported') {
+  const parts = new Map(),
+    features = new Map(),
+    taken = new Set(doc.parts.map((p) => p.name));
+  let pseq = doc.pseq ?? 0,
+    seq = doc.seq;
+  for (const p of other.parts) parts.set(p.id, 'o' + ++pseq);
+  for (const f of other.features) features.set(f.id, 'f' + ++seq);
+  const named = (name) => {
+    let free = name;
+    for (let n = 2; taken.has(free); n++) free = `${name} (${n})`;
+    taken.add(free);
+    return free;
+  };
+  let newParts = other.parts.map((p) => ({ ...renamed(p, features, parts), name: named(p.name) }));
+  const newFeatures = other.features.map((f) => renamed(f, features, parts)),
+    bodies = { ...doc.bodies };
+  for (const [from, to] of features) if (other.bodies?.[from]) bodies[to] = structuredClone(other.bodies[from]);
+  const top = newParts.filter((p) => (p.parent ?? null) === null).map((p) => p.id);
+  let group = null;
+  if (top.length > 1) {
+    group = 'o' + ++pseq;
+    newParts = [{ id: group, name: named(label), parent: null, pos: [0, 0, 0], rot: [0, 0, 0], group: true }, ...newParts.map((p) => (top.includes(p.id) ? { ...p, parent: group } : p))];
+  }
+  return { doc: { ...doc, seq, pseq, parts: [...doc.parts, ...newParts], features: [...doc.features, ...newFeatures], bodies }, parts: top, group };
+}
+
 /** Turns a linked copy into a copy of its own, in the same place and under the same name. */
 export function unlinkPart(doc, id) {
   const link = partById(doc, id);

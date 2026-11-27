@@ -63,6 +63,9 @@ and its own place.
   live, and points at it (a headset that cannot scan opens `view.html` and
   reads the code there through its own camera); the model, the kernel and the agent stay in the
   tab ([bridge/README.md](bridge/README.md)).
+- **Import** brings a STEP file in as a part (its solids as they are, with
+  no history: it is measured, cut, joined and built on like any part), or
+  the parts of another CoreCAD project with their histories.
 - **Group** makes a container for parts: a name and a place, and no shape
   of its own. Drag parts onto it in the list, or make them while it is
   selected. Moving, turning, hiding, copying or exporting a group does that
