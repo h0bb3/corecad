@@ -22,7 +22,7 @@ COMMANDS = ('get_state get_selection measure get_document load_document new_docu
             'extrude revolve import fillet chamfer edit_feature '
             'add_part add_group combine move_part copy_part set_color edit_part unlink_part delete_part delete_feature '
             'undo redo reload_app cancel_edit export screenshot set_view set_section set_xray '
-            'add_drawing edit_drawing delete_drawing add_view move_view add_drawing_dimension remove_from_drawing get_drawing').split()
+            'add_drawing edit_drawing edit_drawing_dimension delete_drawing add_view move_view add_drawing_dimension remove_from_drawing get_drawing').split()
 GONE = ['add_box', 'add_cylinder', 'add_sphere', 'hole', 'ungroup', 'list_dimensions']
 
 
@@ -1029,7 +1029,8 @@ def run(p, url='index.html?test=1'):
     call('extrude', operation='cut', through_all=True)
     d = call('add_drawing', part='Bracket')
     assert d['id'] == 'd1' and d['paper'] == [297, 210] and d['scale'] == '1:1' and d['part_name'] == 'Bracket' and d['views'] == [], d
-    assert d['frame'] == [20, 10, 287, 200] and d['title_block'] == [107, 10, 287, 34], d
+    assert d['frame'] == [20, 10, 287, 200] and d['title_block'] == [107, 10, 287, 53], d
+    assert d['fields']['date'] == time.strftime('%Y-%m-%d') and d['fields']['number'] == '', d['fields']
     fails('add_drawing_dimension', 'There is no view', view='v9', **{'from': 'left'})
     assert call('edit_drawing', scale=2)['scale'] == '2:1'
     front = call('add_view', look='front', at=[110, 150])['view']
@@ -1084,6 +1085,13 @@ def run(p, url='index.html?test=1'):
     assert len(call('get_drawing')['views']) == 3
     assert call('edit_drawing', sheet='A3', name='Bracket, workshop')['paper'] == [420, 297]
     fails('edit_drawing', 'Say what to change', drawing='d1')
+    f = call('edit_drawing', number='B-102', revision='A', material='PETG', tolerances='ISO 2768-m', notes='Break sharp edges')['fields']
+    assert f['number'] == 'B-102' and f['material'] == 'PETG' and f['revision'] == 'A', f
+    assert call('edit_drawing', revision='')['fields']['revision'] == ''
+    tol = call('edit_drawing_dimension', dimension='m5', tolerance='+-0.1')['dimension']
+    assert tol['shows'] == '60 ±0.1' and tol['tolerance'] == '±0.1', tol
+    assert call('edit_drawing_dimension', dimension='m5', tolerance=None)['dimension']['shows'] == '60'
+    fails('edit_drawing_dimension', 'There is no dimension', dimension='m99', tolerance='H7')
     fails('get_drawing', 'There is no drawing "d7"', drawing='d7')
     # a drawing goes with its part
     second = call('add_drawing')['id']
@@ -1093,6 +1101,78 @@ def run(p, url='index.html?test=1'):
     fails('get_drawing', 'There is no drawing yet')
     call('load_document', document=was)
     step('drawings: views of a part at a scale, dimensions measured from the model that follow it, refused where they would be seen shortened; a picture and a PDF')
+
+    # ---- drawings by hand: what an agent does with commands, a person does on the sheet
+    def paper(x, y):
+        """Where a point of the sheet (mm from its lower left corner) is on the screen."""
+        return p.js(f'(() => {{ const svg = document.querySelector("#sheet .sheet-paper svg"), m = svg.getScreenCTM(), h = svg.viewBox.baseVal.height; const q = new DOMPoint({x}, h - {y}).matrixTransform(m); return [q.x, q.y]; }})()')
+
+    def settle(expr, timeout=30):
+        p.wait(f'!corecad.busy && ({expr})', timeout=timeout)
+        p.wait('!corecad.busy && (document.getElementById("sheet").hidden || !!document.querySelector("#sheet .sheet-paper svg"))', timeout=timeout)
+
+    was = call('get_document')
+    call('new_document', name='By hand')
+    block('Plate', [60, 40, 10])                                                        # x -30..30, y -20..20, z 0..10
+    sketch([{'type': 'circle', 'center': [10, 5], 'diameter': 8}], plane='top')
+    call('extrude', operation='cut', through_all=True)
+    p.click('[data-part="o1"]')
+    p.click('[data-action="new-drawing"]')
+    settle('corecad.doc.drawings?.length === 1 && !document.getElementById("sheet").hidden')
+    choose = '{ const s = document.getElementById("sheet-view"); s.value = "%s"; s.dispatchEvent(new Event("change", { bubbles: true })); }'
+    p.js(choose % 'front')
+    assert 'front view' in p.js('document.getElementById("sheet-help").textContent')
+    p.click(*paper(110, 150))
+    settle('corecad.doc.drawings[0].views.length === 1')
+    p.js(choose % 'top')
+    p.click(*paper(110, 80))
+    settle('corecad.doc.drawings[0].views.length === 2')
+    assert [v['at'] for v in call('get_drawing')['views']] == [[110, 150], [110, 80]]
+    # a size: the two sides of the plate in the front view (x 80 and 140 on the paper at 1:1)
+    p.click('[data-action="sheet-size"]')
+    p.click(*paper(80.2, 150))
+    p.wait('!!document.querySelector("#sheet-marks .mark")')
+    p.click(*paper(139.8, 150))
+    settle('corecad.doc.drawings[0].dims.length === 1')
+    # the hole in the top view, alone: its rim, then Enter
+    p.click(*paper(124, 85))
+    p.key('Enter')
+    settle('corecad.doc.drawings[0].dims.length === 2')
+    assert [x['shows'] for x in call('get_drawing')['dimensions']] == ['60', 'Ø8'], call('get_drawing')['dimensions']
+    p.key('Escape')
+    # the 60, clicked, takes a tolerance
+    p.click(*paper(110, 166.3))
+    p.wait('!!document.getElementById("sheet-tolerance")')
+    p.click('#sheet-tolerance')
+    p.type('±0.05')
+    p.key('Enter')
+    settle('corecad.doc.drawings[0].dims[0].tolerance === "±0.05"')
+    # the top view dragged down, then taken off with Delete
+    x0, y0 = paper(100, 80)
+    x1, y1 = paper(100, 70)
+    p.drag(x0, y0, x1, y1)
+    settle('Math.abs(corecad.doc.drawings[0].views[1].at[1] - 70) <= 3')
+    moved = p.js('corecad.doc.drawings[0].views[1].at')
+    p.click(*paper(moved[0] - 10, moved[1]))
+    p.key('Delete')
+    settle('corecad.doc.drawings[0].views.length === 1 && corecad.doc.drawings[0].dims.length === 1')
+    # the Sheet dialog: paper, scale, title block
+    p.click('[data-action="sheet-setup"]')
+    p.wait('!!document.getElementById("sheet-number")')
+    p.js('document.getElementById("sheet-number").value = "H-7"; document.getElementById("sheet-material").value = "Oak"; document.getElementById("sheet-scale").value = "2"; document.getElementById("sheet-notes").value = "Oil the faces\\nNo sharp edges"')
+    p.click('[data-modal="apply"]')
+    settle('corecad.doc.drawings[0].scale === 2 && corecad.doc.drawings[0].fields.number === "H-7"')
+    g = call('get_drawing')
+    assert g['fields']['material'] == 'Oak' and g['fields']['notes'] == 'Oil the faces\nNo sharp edges' and g['scale'] == '2:1', g['fields']
+    texts = p.js('[...document.querySelectorAll("#sheet svg text")].map(t => t.textContent)')
+    assert 'H-7' in texts and 'Oak' in texts and '1. Oil the faces' in texts and '60 ±0.05' in texts, texts
+    p.screenshot(ROOT / '.scratch' / 'e2e_api_drawing_hand.png')
+    p.click('[data-action="sheet-delete"]')
+    settle('corecad.doc.drawings.length === 0 && document.getElementById("sheet").hidden')
+    call('undo')
+    assert call('get_state')['drawings'][0]['dimensions'] == 1
+    call('load_document', document=was)
+    step('drawings by hand: a drawing of the selected part, views placed with a click and dragged, sizes from one or two clicks on lines of a view, a tolerance, Delete, the Sheet dialog')
 
     # ---- one way to do each thing: these commands and no others; making takes neither a name, a place nor contents
     names = p.js('corecad.tools.map(t => t.name)')

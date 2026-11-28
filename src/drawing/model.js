@@ -4,8 +4,10 @@
 // stands and what each dimension measures.
 //
 //   doc.drawings = [{ id: 'd1', name: 'Drawing 1', part: 'o1', sheet: 'A4', scale: 1,
+//                     fields: { number: 'B-102', date: '2026-11-28', material: 'PETG', ... },   (FIELDS)
 //                     views: [{ id: 'v2', look: 'front', at: [x, y] }],
-//                     dims:  [{ id: 'm3', view: 'v2', from: pick, to: pick | null, along: null | 'horizontal' | 'vertical' }] }]
+//                     dims:  [{ id: 'm3', view: 'v2', from: pick, to: pick | null, along: null | 'horizontal' | 'vertical',
+//                               tolerance?: '±0.1' }] }]
 //   doc.dseq: the counter of their ids (d, v and m share it)
 //
 // A pick is a face or an edge of a body, kept the way a fillet keeps its edges: by the labels of the
@@ -37,6 +39,25 @@ export const LOOKS = Object.freeze({
   iso: { dir: [1 / Math.sqrt(3), -1 / Math.sqrt(3), 1 / Math.sqrt(3)], x: [1 / Math.SQRT2, 1 / Math.SQRT2, 0] },
 });
 export const LOOK_NAMES = Object.keys(LOOKS);
+
+/**
+ * What the title block and the notes of a drawing say besides the part, the scale and the paper: the
+ * fields of a title block by ISO 7200, and what a workshop drawing states for the whole part. Each is
+ * text; one left empty is printed empty, for a pen.
+ */
+export const FIELDS = Object.freeze({
+  number: 'Drawing number',
+  revision: 'Revision',
+  date: 'Date of issue',
+  owner: 'Owner (company)',
+  drawn_by: 'Drawn by',
+  approved_by: 'Approved by',
+  material: 'Material',
+  tolerances: 'General tolerances (such as ISO 2768-m)',
+  finish: 'Surface finish (such as Ra 3.2)',
+  notes: 'Notes, one to a line (such as: Break sharp edges 0.5 × 45°)',
+});
+export const FIELD_NAMES = Object.keys(FIELDS);
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 /** The three directions of a view: x across, y up, n towards the eye. */
 export function axesOf(look) {
@@ -69,17 +90,38 @@ function nextId(doc, letter) {
 }
 const withDrawing = (doc, id, fn) => ({ ...doc, drawings: drawingsOf(doc).map((d) => (d.id === id ? fn(d) : d)) });
 
-/** A new drawing of a part, on A4 at 1:1 with nothing on it. */
-export function addDrawing(doc, part) {
+/** A new drawing of a part, on A4 at 1:1 with nothing on it, issued on `date` (YYYY-MM-DD). */
+export function addDrawing(doc, part, date = null) {
   const { id, doc: next } = nextId(doc, 'd'),
     taken = new Set(drawingsOf(doc).map((d) => d.name));
   let n = 1;
   while (taken.has(`Drawing ${n}`)) n++;
-  const drawing = { id, name: `Drawing ${n}`, part, sheet: 'A4', scale: 1, views: [], dims: [] };
+  const drawing = { id, name: `Drawing ${n}`, part, sheet: 'A4', scale: 1, fields: date ? { date } : {}, views: [], dims: [] };
   return { doc: { ...next, drawings: [...drawingsOf(next), drawing] }, drawing };
 }
-/** Changes name, part, sheet or scale (what is given). */
-export const editDrawing = (doc, id, patch) => withDrawing(doc, id, (d) => ({ ...d, ...patch, id: d.id, views: d.views, dims: d.dims }));
+/** Changes name, part, sheet or scale (what is given); `fields` are merged, and an empty one is taken out. */
+export const editDrawing = (doc, id, patch) =>
+  withDrawing(doc, id, (d) => {
+    const { fields, ...rest } = patch,
+      merged = { ...(d.fields ?? {}) };
+    for (const [k, v] of Object.entries(fields ?? {})) {
+      if (v === null || v === '') delete merged[k];
+      else merged[k] = v;
+    }
+    return { ...d, ...rest, fields: merged, id: d.id, views: d.views, dims: d.dims };
+  });
+/** Gives a dimension a tolerance (text such as "±0.1", "+0.2/-0", "H7"), or with null takes it away. */
+export const editDim = (doc, dimId, tolerance) => ({
+  ...doc,
+  drawings: drawingsOf(doc).map((d) => ({
+    ...d,
+    dims: d.dims.map((m) => {
+      if (m.id !== dimId) return m;
+      const { tolerance: _, ...rest } = m;
+      return tolerance ? { ...rest, tolerance } : rest;
+    }),
+  })),
+});
 export const deleteDrawing = (doc, id) => ({ ...doc, drawings: drawingsOf(doc).filter((d) => d.id !== id) });
 
 export function addView(doc, drawingId, look, at) {
@@ -173,6 +215,8 @@ export function validateDrawings(doc) {
     if (!doc.parts.some((p) => p.id === d.part)) errors.push(`${name}: the part it shows does not exist.`);
     if (!SHEETS[d.sheet]) errors.push(`${name}: the sheet is one of ${Object.keys(SHEETS).join(', ')}.`);
     if (!(Number.isFinite(d.scale) && d.scale > 0)) errors.push(`${name}: the scale is a positive number.`);
+    if (d.fields !== undefined && (!d.fields || typeof d.fields !== 'object' || Object.entries(d.fields).some(([k, v]) => !FIELDS[k] || typeof v !== 'string')))
+      errors.push(`${name}: the fields of its title block are texts named ${FIELD_NAMES.join(', ')}.`);
     if (!Array.isArray(d.views) || !Array.isArray(d.dims)) {
       errors.push(`${name}: views and dimensions are lists.`);
       continue;
@@ -186,6 +230,7 @@ export function validateDrawings(doc) {
       else if (!d.views.some((v) => v.id === m.view)) errors.push(`${name}, ${m.id}: its view is not on the drawing.`);
       else if (!pickOk(m.from) || !(m.to === null || pickOk(m.to))) errors.push(`${name}, ${m.id}: it measures a face or an edge, or between two.`);
       else if (![null, 'horizontal', 'vertical'].includes(m.along)) errors.push(`${name}, ${m.id}: "along" is horizontal, vertical or null.`);
+      else if (m.tolerance !== undefined && (typeof m.tolerance !== 'string' || !m.tolerance)) errors.push(`${name}, ${m.id}: a tolerance is a text.`);
     }
   }
   return errors;

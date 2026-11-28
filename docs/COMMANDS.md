@@ -307,12 +307,17 @@ await corecad.run('export', { format: 'pdf', download: true });       // to prin
 ```
 
 - **The paper.** `add_drawing` makes an empty A4 sheet (landscape) at 1:1
-  with a frame and a title block: part, project, drawing, scale, sheet,
-  units, date and the symbol of first angle projection. `edit_drawing`
-  changes its name, the part, the paper (A4 to A0, or A4 upright) and the
-  one scale of all its views. Places on the paper are millimetres from its
-  lower left corner; `get_drawing` says where the frame and the title block
-  are.
+  with a frame and a title block with the fields of ISO 7200: title (the
+  part), drawing number, revision, date of issue (the day it was made until
+  it is given), owner, drawn by, approved by, material, general tolerances
+  (such as ISO 2768-m), surface finish (such as Ra 3.2), project, scale,
+  size, units, sheet 1/1 and the symbol of first angle projection. Notes,
+  one to a line, stand numbered above the title block. `edit_drawing`
+  changes its name (for the list and the PDF's file name), the part, the
+  paper (A4 to A0, or A4 upright), the one scale of all its views, and each
+  of those fields (`""` empties one; a field left empty is printed empty, for
+  a pen). Places on the paper are millimetres from its lower left corner;
+  `get_drawing` says where the frame and the title block are.
 - **Views.** `add_view` puts the part as seen from one side where its middle
   is to stand: `front` (from -y, z up), `back`, `left`, `right`, `top` (from
   +z), `bottom`, or `iso` (a picture from the front, the right and above).
@@ -338,6 +343,10 @@ await corecad.run('export', { format: 'pdf', download: true });       // to prin
   only that part of a distance that runs at a slant. What it measures is kept
   as a fillet keeps its edges, so it is found again after a rebuild; when it
   is gone, `get_drawing` says so and the sheet leaves it out.
+- **Tolerances.** A size with no tolerance of its own falls under the
+  general tolerances of the title block. `edit_drawing_dimension` gives one
+  its own, written after the number: `"±0.1"` (`"+-0.1"` is written so too),
+  `"+0.2/-0"`, or a fit such as `"H7"` (Ø8H7).
 - `remove_from_drawing` takes views and dimensions off by id (a view takes its
   dimensions); `delete_drawing` deletes one; deleting the part deletes its
   drawings.
@@ -347,6 +356,15 @@ await corecad.run('export', { format: 'pdf', download: true });       // to prin
   says. In the page the list has **Drawings** under the parts; a click shows
   the sheet over the model with **PDF** and **Close** (Esc), and a command
   that changes a drawing shows it.
+- **By hand.** A person makes a drawing in the page through the same
+  commands: **Drawing** under a selected part makes one; on the sheet,
+  **Add view** and a click on the paper places a view, and a view is dragged
+  to move it; **Size**, then a click on a line of a view (an edge, a face
+  seen from its side, a hole) and on a second one, draws the distance between
+  them, or Enter (or the same line again) the size of the one; a click on a
+  size's number selects it and gives a field for its tolerance; Delete takes
+  off the selected view or size; **Sheet…** sets the paper, the scale and the
+  title block; **Delete** deletes the drawing.
 - Not drawn (yet): section views, angles, notes, tolerances, threads in the
   standard way (a thread is drawn as the edges it has), more than one sheet
   to a drawing.
@@ -418,7 +436,8 @@ Arguments in brackets are optional.
 | `set_section` | plane, [at], [flip] | Cuts the model open along a plane to look inside, or (plane null) shows it whole again. |
 | `set_xray` | on | Draws the solids see-through, or solid again. |
 | `add_drawing` | [part] | An empty sheet (A4, 1:1, frame and title block) for views of a part. |
-| `edit_drawing` | [drawing], [name], [part], [sheet], [scale] | Its name, part, paper or scale. |
+| `edit_drawing` | [drawing], [name], [part], [sheet], [scale], and the fields of the title block | Its name, part, paper, scale; drawing number, revision, date, owner, drawn and approved by, material, general tolerances, surface finish, notes. |
+| `edit_drawing_dimension` | dimension, tolerance | A tolerance written after a size's number (±0.1, H7), or none. |
 | `delete_drawing` | drawing | Deletes a drawing. |
 | `add_view` | [drawing], look, at | A view of the part from one side (or iso) with its middle at a place on the paper. |
 | `move_view` | view, at | Moves a view with its dimensions. |
@@ -449,7 +468,8 @@ page stays half to each side until it is given a `distance2`.
 - `src/drawing/`: drawings. `model.js` what a drawing is in the project and
   its changes, `layout.js` the sheet (views at the scale, dimensions, centre
   lines, frame, title block), `pdf.js` and `svg.js` the sheet written out,
-  `font.js` the widths of Helvetica, all pure; `make.js` the lines of the
+  `font.js` the widths of Helvetica, `pick.js` what a click on a view
+  means, all pure; `make.js` the lines of the
   views from the kernel (`views` in `src/kernel/engine.js`: HLRBRep_Algo).
 - `test/api-shapes.test.html`: tests of the pure modules;
   `test/drawing.test.html` of drawings, with the kernel.

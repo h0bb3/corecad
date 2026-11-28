@@ -1443,3 +1443,56 @@ main {
 .drawing-row .part-note {
   margin-left: auto;
 }
+
+.sheet-bar select {
+  font-size: 11px;
+  padding: 4px 6px;
+}
+.sheet-bar button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.sheet-bar .bar-gap {
+  width: 1px;
+  height: 16px;
+  background: #d0ded9;
+}
+.sheet-help {
+  padding: 7px 16px;
+  font-size: 11px;
+  color: #22413d;
+  background: #eef6f3;
+  border-bottom: 1px solid #d0ded9;
+}
+.sheet-help[hidden] {
+  display: none;
+}
+.sheet-help input {
+  width: 90px;
+  font-size: 11px;
+  margin-left: 4px;
+}
+.sheet-paper svg .mark {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 0.8;
+}
+.sheet-paper svg .mark-box {
+  fill: #147d7010;
+  stroke: var(--accent);
+  stroke-width: 0.4;
+  stroke-dasharray: 2 1;
+}
+.sheet-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 14px;
+}
+.sheet-form .wide {
+  grid-column: 1 / -1;
+}
+.sheet-form textarea {
+  width: 100%;
+  font: 12px system-ui;
+  resize: vertical;
+}

@@ -26,7 +26,7 @@ const TEXT = 3.5, // the numbers of dimensions
   STEP = 7, // between dimension lines
   ARROW = 3,
   ARROW_W = 1;
-export const TITLE_BLOCK = Object.freeze({ width: 180, height: 24 });
+export const TITLE_BLOCK = Object.freeze({ width: 180, height: 43 });
 
 const fmt = (v) => formatNumber(v, 2);
 const E = 1e-6;
@@ -138,7 +138,7 @@ export function composeSheet({ drawing, names, lines, bodies, picks }) {
       ax = axesOf(v.look),
       S = (p) => [v.at[0] + s * (dot(p, ax.x) - c[0]), v.at[1] + s * (dot(p, ax.y) - c[1])],
       box = b ? [v.at[0] + s * (b[0] - c[0]), v.at[1] + s * (b[1] - c[1]), v.at[0] + s * (b[2] - c[0]), v.at[1] + s * (b[3] - c[1])] : null;
-    views.push({ id: v.id, look: v.look, box });
+    views.push({ id: v.id, look: v.look, box, centre: c, scale: s });
     if (!b) continue;
     const place = (pl) => {
       const out = new Array(pl.length);
@@ -168,14 +168,16 @@ export function composeSheet({ drawing, names, lines, bodies, picks }) {
         dims.push({ id: m.id, view: v.id, problem: String(e.message) });
         continue;
       }
-      const label = g.prefix + fmt(g.value);
-      dims.push({ id: m.id, view: v.id, value: +g.value.toFixed(4), text: label });
-      if (g.kind === 'leader') leader(S(g.c), g.r * s, mid, label, path, text);
-      else linearDim(S(g.a), S(g.b), g.dir, box, mid, levels, label, path, text);
+      const label = withTolerance(g.prefix + fmt(g.value), m.tolerance),
+        at = g.kind === 'leader' ? leader(S(g.c), g.r * s, mid, label, path, text) : linearDim(S(g.a), S(g.b), g.dir, box, mid, levels, label, path, text);
+      dims.push({ id: m.id, view: v.id, value: +g.value.toFixed(4), text: label, at: at.map((x) => +x.toFixed(3)), angle: at.angle, width: +textWidth(label, TEXT).toFixed(3) });
     }
   }
   return { size, items, views, dims };
 }
+
+/** A number with its tolerance: a fit (H7) right after it, a deviation (±0.1, +0.2/-0) after a space. */
+export const withTolerance = (label, tolerance) => (!tolerance ? label : /^[A-Za-z]/.test(tolerance) ? label + tolerance : `${label} ${tolerance}`);
 
 /** A filled arrow head with its tip at p, pointing along d. */
 function arrow(p, d, path) {
@@ -253,6 +255,7 @@ function linearDim(A, B, dir, box, mid, levels, label, path, text) {
     at = [far[0] + r[0] * (ARROW + 4 + w / 2) + up[0], far[1] + r[1] * (ARROW + 4 + w / 2) + up[1]];
   }
   text(at[0], at[1], label, TEXT, 'middle', angle);
+  return Object.assign(at, { angle });
 }
 /** A diameter or radius seen round: a leader from the circle out to the number. */
 function leader(C, r, mid, label, path, text) {
@@ -267,6 +270,7 @@ function leader(C, r, mid, label, path, text) {
   path([tip[0], tip[1], knee[0], knee[1], end[0], end[1]], WIDTH.thin);
   arrow(tip, [-u[0], -u[1]], path);
   text(knee[0] + sx * (1 + w / 2), knee[1] + 1, label, TEXT, 'middle', 0);
+  return Object.assign([knee[0] + sx * (1 + w / 2), knee[1] + 1], { angle: 0 });
 }
 
 /** Chain lines through the middle of what is round: a cross on a circle seen round, the axis of a hole or a pin seen from its side. */
@@ -306,35 +310,76 @@ function centreLines(bodies, ax, S, s, path) {
   }
 }
 
-/** The frame round the paper and the title block in its lower right corner. */
+/** The frame round the paper, the title block in its lower right corner (the fields of ISO 7200), and the
+ *  notes above it. */
 function frame([w, h], drawing, names, path, text) {
   const x0 = MARGIN.left,
     y0 = MARGIN.bottom,
     x1 = w - MARGIN.right,
-    y1 = h - MARGIN.top;
+    y1 = h - MARGIN.top,
+    f = drawing.fields ?? {};
   path([x0, y0, x1, y0, x1, y1, x0, y1], 0.7, { closed: true });
   const W = Math.min(TITLE_BLOCK.width, x1 - x0),
     bx = x1 - W,
-    rows = [y0, y0 + 7, y0 + 14, y0 + TITLE_BLOCK.height];
-  path([bx, y0, bx, rows[3], x1, rows[3]], 0.5);
-  path([bx, rows[1], x1, rows[1]], WIDTH.thin);
-  path([bx, rows[2], x1, rows[2]], WIDTH.thin);
-  const cell = (xa, xb, row, label, value, size = TEXT) => {
-    if (xa > bx + 0.01) path([xa, rows[row], xa, rows[row + 1]], WIDTH.thin);
-    text(xa + 1.2, rows[row + 1] - 2.2, label, 1.8, 'start');
-    if (value) text(xa + 1.2, rows[row] + 1.4, fitted(value, xb - xa - 2.4, size), size, 'start');
-  };
-  const at = (f) => bx + f * W;
-  cell(bx, x1, 2, 'PART', names.part, 5);
-  cell(bx, at(0.6), 1, 'PROJECT', names.project);
-  cell(at(0.6), x1, 1, 'DRAWING', drawing.name);
-  cell(bx, at(0.2), 0, 'SCALE', scaleText(drawing.scale));
-  cell(at(0.2), at(0.4), 0, 'SHEET', drawing.sheet.replace(' portrait', ''));
-  cell(at(0.4), at(0.52), 0, 'UNITS', 'mm');
-  cell(at(0.52), at(0.72), 0, 'DATE', names.date);
-  cell(at(0.72), at(0.84), 0, 'ISO E', '');
-  firstAngle(at(0.78), rows[0] + 3, path);
-  cell(at(0.84), x1, 0, 'MADE WITH', 'CoreCAD');
+    heights = [8, 8, 11, 8, 8],
+    rows = heights.reduce((r, hh) => [...r, r.at(-1) + hh], [y0]);
+  path([bx, y0, bx, rows.at(-1), x1, rows.at(-1)], 0.5);
+  for (const y of rows.slice(1, -1)) path([bx, y, x1, y], WIDTH.thin);
+  const at = (k) => bx + k * W,
+    cell = (a, b, row, label, value, size = 3) => {
+      const xa = at(a),
+        xb = at(b);
+      if (a > 0) path([xa, rows[row], xa, rows[row + 1]], WIDTH.thin);
+      text(xa + 1, rows[row + 1] - 2, label, 1.8, 'start');
+      if (value) text(xa + 1, rows[row] + 1.3, fitted(value, xb - xa - 2, size), size, 'start');
+    };
+  // from the bottom up
+  cell(0, 0.15, 0, 'SCALE', scaleText(drawing.scale));
+  cell(0.15, 0.3, 0, 'SIZE', drawing.sheet.replace(' portrait', ''));
+  cell(0.3, 0.4, 0, 'UNITS', 'mm');
+  cell(0.4, 0.55, 0, 'PROJECTION', '');
+  firstAngle(at(0.475), rows[0] + 3, path);
+  cell(0.55, 0.68, 0, 'SHEET', '1/1');
+  cell(0.68, 1, 0, 'MADE WITH', 'CoreCAD');
+  cell(0, 0.4, 1, 'DRAWING NO.', f.number);
+  cell(0.4, 0.5, 1, 'REV', f.revision);
+  cell(0.5, 0.68, 1, 'DATE OF ISSUE', f.date ?? names.date);
+  cell(0.68, 1, 1, 'PROJECT', names.project);
+  cell(0, 1, 2, 'TITLE', names.part, 5);
+  cell(0, 0.4, 3, 'OWNER', f.owner);
+  cell(0.4, 0.7, 3, 'DRAWN BY', f.drawn_by);
+  cell(0.7, 1, 3, 'APPROVED BY', f.approved_by);
+  cell(0, 0.4, 4, 'MATERIAL', f.material);
+  cell(0.4, 0.7, 4, 'GENERAL TOLERANCES', f.tolerances);
+  cell(0.7, 1, 4, 'SURFACE', f.finish);
+  // the notes, above the title block, numbered
+  const notes = (f.notes ?? '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .flatMap((l, i) => wrapped(`${i + 1}. ${l}`, W - 2, 3));
+  if (notes.length) {
+    let y = rows.at(-1) + 3;
+    for (const line of [...notes].reverse()) {
+      text(bx + 1, y, line, 3, 'start');
+      y += 4.5;
+    }
+    text(bx + 1, y, 'NOTES', 2.5, 'start');
+  }
+}
+/** A text in lines no wider than a width, broken between words. */
+function wrapped(t, width, size) {
+  const out = [];
+  let line = '';
+  for (const word of t.split(/\s+/)) {
+    const next = line ? line + ' ' + word : word;
+    if (line && textWidth(next, size) > width) {
+      out.push(line);
+      line = '   ' + word;
+    } else line = next;
+  }
+  if (line) out.push(line);
+  return out;
 }
 /** A text cut short, with an ellipsis, so that it fits a width. */
 function fitted(t, width, size) {

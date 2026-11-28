@@ -32,7 +32,7 @@ import { STANDARD } from '../view/camera-math.js';
 import { sectionText } from '../view/section.js';
 import * as Drawing from '../drawing/model.js';
 import { measureOf, MARGIN, TITLE_BLOCK } from '../drawing/layout.js';
-import { createDrawings } from '../drawing/make.js';
+import { createDrawings, today } from '../drawing/make.js';
 import { sheetToPDF } from '../drawing/pdf.js';
 import { sheetToSVG } from '../drawing/svg.js';
 
@@ -280,14 +280,21 @@ export const TOOLS = [
   ),
   tool(
     'edit_drawing',
-    'Changes a drawing: its name, the part it shows, the paper, the scale. Views keep their places on the paper; check them with get_drawing after a change of paper or scale.',
+    'Changes a drawing: its name, the part it shows, the paper, the scale, and what its title block and notes say (drawing number, revision, date of issue, owner, who drew and who approved it, material, general tolerances, surface finish, notes). Views keep their places on the paper; check them with get_drawing after a change of paper or scale.',
     {
       drawing: str('The drawing: its id such as "d1", or its name. Left out: the newest drawing.'),
       name: str('Its name, in the title block.'),
       part: PART_ARG,
       sheet: str('The paper: A4 (297 × 210 mm), A3, A2, A1, A0, landscape; or "A4 portrait".', { enum: Object.keys(Drawing.SHEETS) }),
       scale: numb('How big the part is drawn: 1 is its true size, 0.5 is 1:2, 2 is 2:1. One scale for every view; it is written in the title block.'),
+      ...Object.fromEntries(Object.entries(Drawing.FIELDS).map(([k, label]) => [k, str(`${label}: text in the title block${k === 'notes' ? ' (the notes stand above it, numbered)' : ''}. "" takes it away.${k === 'date' ? ' It is the day the drawing was made until it is given.' : ''}`)])),
     }
+  ),
+  tool(
+    'edit_drawing_dimension',
+    'Gives a dimension of a drawing a tolerance, written after its number: "±0.1", "+0.2/-0", or a fit such as "H7" (Ø8H7). What has none falls under the general tolerances of the title block (edit_drawing).',
+    { dimension: str('The dimension\'s id, such as "m5" (get_drawing).'), tolerance: { type: ['string', 'null'], description: 'The tolerance as it is to be written; null or "" takes it away.' } },
+    ['dimension', 'tolerance']
   ),
   tool('delete_drawing', 'Deletes a drawing with its views and dimensions. The model is not touched.', { drawing: str('The drawing: id or name.') }, ['drawing']),
   tool(
@@ -952,6 +959,7 @@ export function createCommands(app) {
       paper: [w, h],
       scale: Drawing.scaleText(d.scale),
       scale_factor: d.scale,
+      fields: Object.fromEntries(Drawing.FIELD_NAMES.map((k) => [k, d.fields?.[k] ?? ''])),
       frame: [MARGIN.left, MARGIN.bottom, w - MARGIN.right, h - MARGIN.top],
       title_block: [round(Math.max(MARGIN.left, w - MARGIN.right - TITLE_BLOCK.width), 2), MARGIN.bottom, w - MARGIN.right, MARGIN.bottom + TITLE_BLOCK.height],
       views: d.views.map((v) => {
@@ -960,7 +968,7 @@ export function createCommands(app) {
       }),
       dimensions: d.dims.map((m) => {
         const x = sheet.dims.find((y) => y.id === m.id);
-        return { id: m.id, view: m.view, ...(m.along ? { along: m.along } : {}), ...(x?.problem ? { problem: x.problem } : { shows: x?.text, value: x?.value }) };
+        return { id: m.id, view: m.view, ...(m.along ? { along: m.along } : {}), ...(m.tolerance ? { tolerance: m.tolerance } : {}), ...(x?.problem ? { problem: x.problem } : { shows: x?.text, value: x?.value }) };
       }),
       how: 'Paper coordinates are mm from the lower left corner. A dimension stands outside its view: leave about 25 mm round a view for them. screenshot with "drawing" shows the sheet; export with format "pdf" gives it to print.',
     };
@@ -1030,7 +1038,7 @@ export function createCommands(app) {
       await settled();
       const p = partOf(a.part);
       if (p.link) throw Error(`${p.name} is a linked copy: draw ${partById(doc(), p.link)?.name ?? 'the original'} instead.`);
-      const { doc: next, drawing } = Drawing.addDrawing(doc(), p.id);
+      const { doc: next, drawing } = Drawing.addDrawing(doc(), p.id, today());
       return drawingChange(next, 'Add ' + drawing.name, drawing);
     },
     async edit_drawing(a) {
@@ -1055,7 +1063,12 @@ export function createCommands(app) {
         if (!(Number.isFinite(a.scale) && a.scale >= 0.001 && a.scale <= 1000)) throw Error('"scale" is a positive number: 1 for true size, 0.5 for 1:2, 2 for 2:1.');
         patch.scale = a.scale;
       }
-      if (!Object.keys(patch).length) throw Error('Say what to change: name, part, sheet or scale.');
+      for (const k of Drawing.FIELD_NAMES) {
+        if (a[k] === undefined) continue;
+        if (a[k] !== null && typeof a[k] !== 'string') throw Error(`"${k}" is a text.`);
+        (patch.fields ??= {})[k] = (a[k] ?? '').trim();
+      }
+      if (!Object.keys(patch).length) throw Error(`Say what to change: name, part, sheet, scale, or ${Drawing.FIELD_NAMES.join(', ')}.`);
       let next = Drawing.editDrawing(doc(), d.id, patch);
       // a dimension of another part means nothing on this one
       if (patch.part && patch.part !== d.part) next = Drawing.removeItems(next, d.id, d.dims.map((m) => m.id));
@@ -1100,6 +1113,17 @@ export function createCommands(app) {
         { doc: next, dim } = Drawing.addDim(doc(), d.id, { view: v.id, from: refs[0], to: refs[1] ?? null, along: a.along ?? null }),
         info = await drawingChange(next, `Add a dimension to ${d.name}`, d);
       return { dimension: info.dimensions.find((x) => x.id === dim.id) ?? { id: dim.id, value: round(g.value) }, drawing: info };
+    },
+    async edit_drawing_dimension(a) {
+      free();
+      await settled();
+      const hit = Drawing.itemById(doc(), String(a.dimension));
+      if (!hit?.dim) throw Error(`There is no dimension "${a.dimension}" on any drawing (get_drawing lists them).`);
+      if (a.tolerance !== null && typeof a.tolerance !== 'string') throw Error('"tolerance" is a text, such as "±0.1" or "H7", or null.');
+      const t = (a.tolerance ?? '').trim().replace(/^\+-/, '±');
+      if (t.length > 24) throw Error('That tolerance is long for a dimension: put it in the notes (edit_drawing).');
+      const info = await drawingChange(Drawing.editDim(doc(), hit.dim.id, t || null), `Tolerance of ${hit.dim.id}`, hit.drawing);
+      return { dimension: info.dimensions.find((x) => x.id === hit.dim.id), drawing: info };
     },
     async remove_from_drawing(a) {
       free();

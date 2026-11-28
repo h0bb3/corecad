@@ -66,8 +66,10 @@ and its own place.
 - **Import** brings a STEP file in as a part (its solids as they are, with
   no history: it is measured, cut, joined and built on like any part), or
   the parts of another CoreCAD project with their histories.
-- **Drawings** for the workshop: an agent puts views of a part on a sheet
-  with its sizes ([docs/COMMANDS.md](docs/COMMANDS.md), "Drawings for the
+- **Drawings** for the workshop: views of a part on a sheet with its sizes
+  and tolerances, a title block and notes, made by an agent or by hand
+  (**Drawing** under a selected part; on the sheet **Add view**, **Size**,
+  **Sheet…**; see [docs/COMMANDS.md](docs/COMMANDS.md), "Drawings for the
   workshop"). They are listed under the parts; a click shows the sheet over
   the model, **PDF** gives it to print at 100 %, and it follows the model.
 - **Group** makes a container for parts: a name and a place, and no shape

@@ -8,7 +8,8 @@ import {faceRefFrom} from '../src/doc/refs.js';
 import {findRegions,profileRefFrom} from '../src/sketch/profiles.js';
 import {sk,circle} from './fixtures/sketches.js';
 import * as D from '../src/drawing/model.js';
-import {composeSheet,measureOf,boundsOf} from '../src/drawing/layout.js';
+import {composeSheet,measureOf,boundsOf,withTolerance} from '../src/drawing/layout.js';
+import {clickables,thingAt} from '../src/drawing/pick.js';
 import {createDrawings} from '../src/drawing/make.js';
 import {sheetToPDF} from '../src/drawing/pdf.js';
 import {sheetToSVG} from '../src/drawing/svg.js';
@@ -38,7 +39,7 @@ test('the directions of the views: x across, y up, n to the eye',()=>{
  eq([1,0.5,0.2,2,5,1/3].map(D.scaleText),['1:1','1:2','1:5','2:1','5:1','1:3']);
 });
 test('a drawing in the project: made, changed, checked, taken off with its part',async()=>{
- const {d:d0,p}=await plate();let {doc,drawing}=D.addDrawing(d0,p);eq(drawing,{id:'d1',name:'Drawing 1',part:p,sheet:'A4',scale:1,views:[],dims:[]});eq(validateDocument(doc),[]);
+ const {d:d0,p}=await plate();let {doc,drawing}=D.addDrawing(d0,p);eq(drawing,{id:'d1',name:'Drawing 1',part:p,sheet:'A4',scale:1,fields:{},views:[],dims:[]});eq(validateDocument(doc),[]);
  let v;({doc,view:v}=D.addView(doc,'d1','front',[100,120]));eq(v.id,'v2');
  doc=D.editDrawing(doc,'d1',{scale:0.5,sheet:'A3',name:'Plate drawing'});eq(D.drawingById(doc,'d1').scale,0.5);eq(validateDocument(doc),[]);
  doc=D.moveView(doc,'v2',[150,150]);eq(D.drawingById(doc,'d1').views[0].at,[150,150]);
@@ -88,7 +89,7 @@ test('the sheet: views at the scale, dimensions with their numbers, frame and ti
  eq(sheet.size,[297,210]);near(sheet.views[0].box,[60,140,180,160],1e-3,'the front view, twice its size, round where it stands');near(sheet.views[1].box,[60,40,180,120],1e-3);
  eq(sheet.dims.map(x=>x.text??x.problem),['60','Ø8','Those two lie in one place: there is no distance between them to draw.']);
  const texts=sheet.items.filter(i=>i.t==='text').map(i=>i.text);
- for(const w of ['60','Ø8','Plate','Shelf','Drawing 1','2:1','A4','mm','CoreCAD'])ok(texts.includes(w),`"${w}" is on the sheet`);
+ for(const w of ['60','Ø8','Plate','Shelf','2:1','A4','mm','1/1','CoreCAD'])ok(texts.includes(w),`"${w}" is on the sheet`);
  // the 60 is above the front view, between arrows at its two ends
  const sixty=sheet.items.find(i=>i.t==='text'&&i.text==='60');near([sheet.items.find(i=>i.t==='text'&&i.text==='60').x],[120],1e-6);ok(sixty.y>160+9&&sixty.y<160+13,'above the view');
  ok(sheet.items.filter(i=>i.fill).length>=3,'arrow heads');
@@ -97,6 +98,31 @@ test('the sheet: views at the scale, dimensions with their numbers, frame and ti
  const lost=await drawings.sheet({...doc,drawings:doc.drawings.map(x=>({...x,dims:x.dims.map(m=>({...m,from:{...m.from,labels:['f99/x'],faces:[['f99/x'],['f99/y']]}}))}))},build,'d1');
  eq(lost.dims[0].problem,'What it measured is no longer in the model.');
  window.__sheet=sheet;
+});
+test('what a professional drawing says: the title block, the notes, tolerances',async()=>{
+ const {d:d0,p,build,body}=await plate();let {doc}=D.addDrawing(d0,p,'2026-11-28');eq(D.drawingById(doc,'d1').fields,{date:'2026-11-28'});
+ doc=D.editDrawing(doc,'d1',{fields:{number:'B-102',revision:'A',owner:'Workshop AB',drawn_by:'TO',approved_by:'',material:'PETG',tolerances:'ISO 2768-m',finish:'Ra 3.2',notes:'Break sharp edges 0.5 × 45°\nPrint with 4 walls, the long side flat on the bed so that the holes stay round and true, and the rest of the part keeps its shape when it cools down slowly'}});
+ eq(D.drawingById(doc,'d1').fields.approved_by,undefined,'an empty field is taken out');eq(validateDocument(doc),[]);
+ eq(validateDocument(D.editDrawing(doc,'d1',{fields:{colour:'red'}})).length,1,'only the fields there are');
+ let v;({doc,view:v}=D.addView(doc,'d1','front',[110,140]));const L=faceBy(body,[-1,0,0]),R=faceBy(body,[1,0,0]);
+ let m;({doc,dim:m}=D.addDim(doc,'d1',{view:v.id,from:D.pickRefFrom(body,'face',L),to:D.pickRefFrom(body,'face',R)}));
+ doc=D.editDim(doc,m.id,'±0.1');eq(validateDocument(doc),[]);
+ const sheet=await drawings.sheet(doc,build,'d1'),texts=sheet.items.filter(i=>i.t==='text').map(i=>i.text);
+ for(const w of ['B-102','A','2026-11-28','Workshop AB','TO','PETG','ISO 2768-m','Ra 3.2','NOTES','1. Break sharp edges 0.5 × 45°','60 ±0.1','DRAWING NO.','APPROVED BY','GENERAL TOLERANCES','SHEET'])ok(texts.includes(w),`"${w}" is on the sheet`);
+ ok(texts.some(t=>t.startsWith('2. Print with 4 walls'))&&texts.some(t=>t.startsWith('   ')),'a long note is broken into lines');
+ eq([withTolerance('Ø8','H7'),withTolerance('60','+0.2/-0'),withTolerance('60',undefined)],['Ø8H7','60 +0.2/-0','60']);
+ const dim=sheet.dims[0];eq(dim.text,'60 ±0.1');ok(dim.at&&dim.width>5,'where its number is, for a click');
+ eq(D.editDim(doc,m.id,null).drawings[0].dims[0].tolerance,undefined);
+});
+test('a click in a view: the face seen from its side, a hole, what is nearer the eye',async()=>{
+ const {body}=await plate(),ax=D.axesOf('front'),toPaper=p=>[100+2*(p[0]*ax.x[0]+p[1]*ax.x[1]+p[2]*ax.x[2]),100+2*(p[0]*ax.y[0]+p[1]*ax.y[1]+p[2]*ax.y[2])];
+ const things=clickables([body],'front',toPaper);
+ let t=thingAt(things,[100-60+0.3,110],1);eq([t.kind,t.index],['face',faceBy(body,[-1,0,0])],'the left side, not its edges');
+ t=thingAt(things,[110,120-0.2],1);eq([t.kind,t.index],['face',faceBy(body,[0,0,1])],'the top');
+ t=thingAt(things,[100+2*14,110],1);eq([t.kind,t.index],['face',holeFace(body)],'the outline of the hole from its side');
+ eq(thingAt(things,[30,30],1),null);
+ const top=D.axesOf('top'),tp=p=>[p[0]*top.x[0]+p[1]*top.x[1]+p[2]*top.x[2],p[0]*top.y[0]+p[1]*top.y[1]+p[2]*top.y[2]];
+ t=thingAt(clickables([body],'top',tp),[14,5],0.5);ok(t&&(t.kind==='face'?t.index===holeFace(body):body.mesh.edges[t.index].circle),'the hole seen round');
 });
 test('the sheet as a PDF at its true size, and as SVG',async()=>{
  const sheet=window.__sheet,pdf=sheetToPDF(sheet,{title:'Plate – Ø8',date:new Date(Date.UTC(2026,10,28,12,0,0))}),text=new TextDecoder('latin1').decode(pdf);

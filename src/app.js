@@ -59,7 +59,8 @@ import { createBridge, activity } from './api/bridge.js';
 import { createMirror, checkInput } from './api/mirror.js';
 import { BUILD, published, freshReload } from './update.js';
 import { createDrawings } from './drawing/make.js';
-import { drawingsOf, drawingById, scaleText } from './drawing/model.js';
+import { drawingsOf, drawingById, scaleText, SHEETS, FIELDS, FIELD_NAMES } from './drawing/model.js';
+import { clickables, thingAt } from './drawing/pick.js';
 import { sheetToSVG } from './drawing/svg.js';
 import { sheetToPDF } from './drawing/pdf.js';
 
@@ -1115,7 +1116,9 @@ function renderFeatureActions() {
       p.link
         ? '<button data-action="unlink-part" title="Make this linked copy a part of its own, with its own history">Unlink</button>'
         : ''
-    }<button data-action="rename-part" title="Rename this part">Rename</button><button data-action="export-part" title="Export this part alone, with what stands under it: 3MF, STL or STEP">Export</button>${
+    }<button data-action="rename-part" title="Rename this part">Rename</button>${
+      p.link ? '' : '<button data-action="new-drawing" title="A drawing of this part for the workshop: views, sizes and a title block, to print as PDF">Drawing</button>'
+    }<button data-action="export-part" title="Export this part alone, with what stands under it: 3MF, STL or STEP">Export</button>${
       p.group ? '<button data-action="ungroup" title="Take the group away and leave what is in it where it is">Ungroup</button>' : ''
     }<button data-action="delete-part" title="Delete this part, its history and the parts under it">Delete</button>`);
     return;
@@ -3254,16 +3257,15 @@ document.addEventListener('keydown', (e) => {
     if (key === 'escape') {
       e.preventDefault();
       modal.handler('cancel');
-    } else if (key === 'enter' && e.target.tagName !== 'BUTTON') {
+    } else if (key === 'enter' && !['BUTTON', 'TEXTAREA'].includes(e.target.tagName)) {
       e.preventDefault();
       const b = $('#modal-root .primary');
       if (b) modal.handler(b.dataset.modal);
     }
     return;
   }
-  if (openSheet && key === 'escape' && !input) {
+  if (openSheet && !input && sheetKey(key)) {
     e.preventDefault();
-    showSheet(null);
     return;
   }
   if (ctrl && ['s', 'o', 'z', 'y'].includes(key)) {
@@ -3360,12 +3362,40 @@ document.addEventListener('keydown', (e) => {
 // ------------------------------------------------------------------ drawings
 // A drawing (src/drawing) is shown over the model, as it will print: the list of drawings opens one, a
 // command that changes one shows it, Close or Esc goes back to the model. It follows the model as it is built.
+// The person makes it here as an agent does, through the same commands: a view is placed with a click on
+// the paper and dragged elsewhere; a size is one or two clicks on lines of a view; the Sheet dialog sets the
+// paper, the scale and the title block; a view or a size is clicked to change or delete it.
 const drawingsMaker = createDrawings(store.kernel);
+const SCALES = [50, 20, 10, 5, 2, 1, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01];
+/** What the person is doing on the sheet: { kind: 'place', look } or { kind: 'size', first }; what is selected; the sheet drawn. */
+let sheetMode = null,
+  sheetPick = null,
+  sheetNow = null,
+  sheetDrag = null;
 function showSheet(drawingId) {
-  openSheet = drawingId && drawingById(store.state.doc, drawingId) ? drawingId : null;
+  const next = drawingId && drawingById(store.state.doc, drawingId) ? drawingId : null;
+  if (next !== openSheet) {
+    sheetMode = null;
+    sheetPick = null;
+  }
+  openSheet = next;
   sheetSeen = null;
   renderSheet();
   renderBrowser();
+}
+/** Runs a command for the person; says why when it is refused. */
+async function sheetCommand(name, args) {
+  const r = await api.run(name, args);
+  if (!r.ok) toast(r.error);
+  return r.ok ? r.result : null;
+}
+function sheetHint() {
+  if (sheetMode?.kind === 'place') return `Click where the middle of the ${sheetMode.look} view is to stand. Esc stops.`;
+  if (sheetMode?.kind === 'size')
+    return sheetMode.first
+      ? 'Click a second line of the same view for the distance between them, or Enter (or the same line again) for the size of this one. Esc stops.'
+      : 'Click a line of a view: an edge, a face seen from its side, a hole. Two of them give the distance between them. Esc stops.';
+  return '';
 }
 async function renderSheet() {
   const box = id('sheet'),
@@ -3374,6 +3404,7 @@ async function renderSheet() {
   box.hidden = !openSheet;
   if (!openSheet) {
     box.innerHTML = '';
+    sheetNow = null;
     return;
   }
   if (st.busy || !st.build) return; // shown when the model is built
@@ -3389,17 +3420,256 @@ async function renderSheet() {
     problem = String(e?.message ?? e);
   }
   if (turn !== sheetTurn || !openSheet) return;
+  sheetNow = sheet ? { sheet, drawing: d, things: null } : null;
+  if (sheetPick && !(sheetPick.kind === 'view' ? d.views : d.dims).some((x) => x.id === sheetPick.id)) sheetPick = null;
   const missing = sheet ? sheet.dims.filter((x) => x.problem) : [];
   box.innerHTML = `<div class="sheet-bar"><strong>${esc(d.name)}</strong><span>${esc(partById(st.doc, d.part)?.name ?? '')} · ${esc(d.sheet)} · ${scaleText(d.scale)}</span>${
     missing.length
       ? `<span class="sheet-note" title="${esc(missing.map((x) => `${x.id}: ${x.problem}`).join('\n'))}">${missing.length} ${missing.length === 1 ? 'dimension' : 'dimensions'} not drawn</span>`
       : ''
-  }<span class="grow"></span><button data-action="sheet-pdf" title="The drawing as a PDF, to print at 100 %: it is then at its scale">PDF</button><button data-action="sheet-close" title="Back to the model · Esc">Close</button></div><div class="sheet-paper">${
-    sheet ? sheetToSVG(sheet).replace(/ width="[\d.]+mm" height="[\d.]+mm"/, '') : `<p class="sheet-problem">${esc(problem)}</p>`
-  }</div>`;
+  }<span class="grow"></span><select id="sheet-view" title="Put a view of the part on the sheet: choose where it is seen from, then click where it is to stand"><option value="">Add view</option>${[
+    ['front', 'Front'],
+    ['top', 'Top'],
+    ['left', 'Left'],
+    ['right', 'Right'],
+    ['back', 'Back'],
+    ['bottom', 'Bottom'],
+    ['iso', 'Isometric'],
+  ]
+    .map(([v, t]) => `<option value="${v}">${t}</option>`)
+    .join('')}</select><button data-action="sheet-size" class="${sheetMode?.kind === 'size' ? 'active' : ''}" title="Draw a size: click one or two lines of a view">Size</button><button data-action="sheet-setup" title="Paper, scale, and what the title block and the notes say">Sheet…</button><button data-action="sheet-delete" title="Delete this drawing (Undo brings it back)">Delete</button><span class="bar-gap"></span><button data-action="sheet-pdf" title="The drawing as a PDF, to print at 100 %: it is then at its scale">PDF</button><button data-action="sheet-close" title="Back to the model · Esc">Close</button></div><div class="sheet-help" id="sheet-help"${
+    sheetHint() || sheetPick ? '' : ' hidden'
+  }></div><div class="sheet-paper">${sheet ? sheetToSVG(sheet).replace(/ width="[\d.]+mm" height="[\d.]+mm"/, '') : `<p class="sheet-problem">${esc(problem)}</p>`}</div>`;
+  renderSheetMarks();
+}
+/** The help line, and the marks over the sheet: what is selected, the first line of a size. */
+function renderSheetMarks() {
+  const help = id('sheet-help'),
+    svg = $('#sheet .sheet-paper svg');
+  if (!help || !svg || !sheetNow) return;
+  const [, h] = sheetNow.sheet.size,
+    d = sheetNow.drawing;
+  let marks = svg.querySelector('#sheet-marks');
+  if (!marks) {
+    marks = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    marks.id = 'sheet-marks';
+    svg.append(marks);
+  }
+  const P = (p) => `${p[0].toFixed(2)} ${(h - p[1]).toFixed(2)}`,
+    out = [];
+  const first = sheetMode?.kind === 'size' ? sheetMode.first : null;
+  if (first) {
+    const t = first.thing;
+    out.push(
+      t.circle
+        ? `<circle cx="${t.circle.c[0]}" cy="${h - t.circle.c[1]}" r="${t.circle.r}" class="mark"/>`
+        : `<path d="M${P(t.pts[0])}L${P(t.pts[1])}" class="mark"/>`
+    );
+  }
+  let text = sheetHint();
+  if (sheetPick?.kind === 'view') {
+    const v = sheetNow.sheet.views.find((x) => x.id === sheetPick.id);
+    if (v?.box) {
+      const [x0, y0, x1, y1] = v.box,
+        dx = sheetDrag?.dx ?? 0,
+        dy = sheetDrag?.dy ?? 0;
+      out.push(`<rect x="${x0 - 3 + dx}" y="${h - y1 - 3 - dy}" width="${x1 - x0 + 6}" height="${y1 - y0 + 6}" class="mark-box"/>`);
+    }
+    text ||= `The ${v?.look ?? ''} view (${sheetPick.id}): drag it to move it, Delete takes it off with its sizes.`;
+  }
+  let tolerance = null;
+  if (sheetPick?.kind === 'dim') {
+    const m = sheetNow.sheet.dims.find((x) => x.id === sheetPick.id),
+      own = d.dims.find((x) => x.id === sheetPick.id);
+    if (m?.at) out.push(`<rect x="${m.at[0] - m.width / 2 - 1}" y="${h - m.at[1] - 4}" width="${m.width + 2}" height="5" class="mark-box" transform="rotate(${-m.angle} ${m.at[0]} ${h - m.at[1]})"/>`);
+    text ||= `${m?.text ?? sheetPick.id}${m?.problem ? ': ' + m.problem : ''}. Delete takes it off.`;
+    tolerance = own?.tolerance ?? '';
+  }
+  marks.innerHTML = out.join('');
+  help.hidden = !text;
+  help.innerHTML = esc(text) + (tolerance !== null ? ` <label>Tolerance <input id="sheet-tolerance" value="${esc(tolerance)}" placeholder="±0.1, H7" title="Written after the number: ±0.1, +0.2/-0, or a fit such as H7. Enter applies it; empty takes it away." autocomplete="off" spellcheck="false"></label>` : '');
+}
+/** A point of the pointer on the paper, in mm from its lower left corner, and how many mm a few pixels are. */
+function paperPoint(e) {
+  const svg = $('#sheet .sheet-paper svg');
+  if (!svg || !sheetNow) return null;
+  const m = svg.getScreenCTM();
+  if (!m) return null;
+  const q = new DOMPoint(e.clientX, e.clientY).matrixTransform(m.inverse());
+  return { at: [q.x, sheetNow.sheet.size[1] - q.y], mm: 6 / m.a };
+}
+/** The clickable lines of every view, made once for each sheet drawn. */
+function sheetThings() {
+  if (sheetNow.things) return sheetNow.things;
+  const { sheet, drawing } = sheetNow,
+    bodies = drawingsMaker.bodiesOf(store.state.doc, store.state.build, drawing.part);
+  sheetNow.things = drawing.views.flatMap((v) => {
+    const sv = sheet.views.find((x) => x.id === v.id);
+    if (!sv?.box) return [];
+    const ax = drawingsMaker.axesOf(v.look),
+      toPaper = (p) => [v.at[0] + sv.scale * (p[0] * ax.x[0] + p[1] * ax.x[1] + p[2] * ax.x[2] - sv.centre[0]), v.at[1] + sv.scale * (p[0] * ax.y[0] + p[1] * ax.y[1] + p[2] * ax.y[2] - sv.centre[1])];
+    return clickables(bodies, v.look, toPaper).map((t) => ({ ...t, view: v.id }));
+  });
+  return sheetNow.things;
+}
+const refOf = (t) => ({ [t.kind]: t.index, body: t.body });
+async function sizeFrom(first, second = null) {
+  sheetMode = { kind: 'size', first: null };
+  await sheetCommand('add_drawing_dimension', { view: first.view, from: refOf(first.thing), ...(second ? { to: refOf(second.thing) } : {}) });
+  renderSheetMarks();
+}
+id('sheet').addEventListener('pointerdown', async (e) => {
+  if (!e.target.closest('.sheet-paper') || e.button !== 0 || !sheetNow) return;
+  const q = paperPoint(e);
+  if (!q) return;
+  const d = sheetNow.drawing;
+  if (sheetMode?.kind === 'place') {
+    const look = sheetMode.look;
+    sheetMode = null;
+    const r = await sheetCommand('add_view', { drawing: d.id, look, at: q.at.map((x) => Math.round(x)) });
+    if (r) sheetPick = { kind: 'view', id: r.view.id };
+    renderSheetMarks();
+    return;
+  }
+  if (sheetMode?.kind === 'size') {
+    const thing = thingAt(sheetThings(), q.at, q.mm);
+    if (!thing) return toast('There is no line of a view there: click on an edge, a face seen from its side, or a hole.');
+    const first = sheetMode.first;
+    if (!first) {
+      sheetMode = { kind: 'size', first: { view: thing.view, thing } };
+      renderSheetMarks();
+    } else if (first.thing.body === thing.body && first.thing.kind === thing.kind && first.thing.index === thing.index) await sizeFrom(first);
+    else if (thing.view !== first.view) toast('Both lines of a size are in the same view.');
+    else await sizeFrom(first, { view: thing.view, thing });
+    return;
+  }
+  // nothing being made: a size's number, or a view, is selected (and a view dragged)
+  const dim = sheetNow.sheet.dims.find((m) => {
+    if (!m.at) return false;
+    const a = (-m.angle * Math.PI) / 180,
+      dx = q.at[0] - m.at[0],
+      dy = q.at[1] - m.at[1] - 1.2,
+      u = dx * Math.cos(a) - dy * Math.sin(a),
+      v = dx * Math.sin(a) + dy * Math.cos(a);
+    return Math.abs(u) <= m.width / 2 + 1 && Math.abs(v) <= 2.5;
+  });
+  if (dim) {
+    sheetPick = { kind: 'dim', id: dim.id };
+    renderSheetMarks();
+    return;
+  }
+  const view = sheetNow.sheet.views.find((v) => v.box && q.at[0] >= v.box[0] - 3 && q.at[0] <= v.box[2] + 3 && q.at[1] >= v.box[1] - 3 && q.at[1] <= v.box[3] + 3);
+  sheetPick = view ? { kind: 'view', id: view.id } : null;
+  if (view) {
+    sheetDrag = { id: view.id, from: q.at, dx: 0, dy: 0 };
+    e.target.setPointerCapture?.(e.pointerId);
+  }
+  renderSheetMarks();
+});
+id('sheet').addEventListener('pointermove', (e) => {
+  if (!sheetDrag) return;
+  const q = paperPoint(e);
+  if (!q) return;
+  sheetDrag.dx = q.at[0] - sheetDrag.from[0];
+  sheetDrag.dy = q.at[1] - sheetDrag.from[1];
+  renderSheetMarks();
+});
+id('sheet').addEventListener('pointerup', async () => {
+  const drag = sheetDrag;
+  sheetDrag = null;
+  if (!drag) return;
+  if (Math.hypot(drag.dx, drag.dy) < 1) return renderSheetMarks();
+  const v = sheetNow?.drawing.views.find((x) => x.id === drag.id);
+  if (v) await sheetCommand('move_view', { view: v.id, at: [Math.round(v.at[0] + drag.dx), Math.round(v.at[1] + drag.dy)] });
+});
+id('sheet').addEventListener('change', (e) => {
+  if (e.target.id !== 'sheet-view' || !e.target.value) return;
+  sheetMode = { kind: 'place', look: e.target.value };
+  sheetPick = null;
+  e.target.value = '';
+  renderSheetMarks();
+});
+id('sheet').addEventListener('keydown', async (e) => {
+  if (e.target.id !== 'sheet-tolerance' || e.key !== 'Enter') return;
+  e.preventDefault();
+  e.stopPropagation();
+  await sheetCommand('edit_drawing_dimension', { dimension: sheetPick.id, tolerance: e.target.value });
+});
+/** Keys on the sheet: Esc stops what is being made (or closes), Enter makes a size of one thing, Delete takes off what is selected. */
+function sheetKey(key) {
+  if (key === 'escape') {
+    if (sheetMode || sheetPick) {
+      sheetMode = null;
+      sheetPick = null;
+      sheetSeen = null;
+      renderSheet();
+    } else showSheet(null);
+    return true;
+  }
+  if (key === 'enter' && sheetMode?.kind === 'size' && sheetMode.first) {
+    sizeFrom(sheetMode.first);
+    return true;
+  }
+  if ((key === 'delete' || key === 'backspace') && sheetPick) {
+    const ids = [sheetPick.id];
+    sheetPick = null;
+    sheetCommand('remove_from_drawing', { ids });
+    return true;
+  }
+  return false;
 }
 store.subscribe(() => openSheet && renderSheet());
 actions['sheet-close'] = () => showSheet(null);
+actions['sheet-size'] = () => {
+  sheetMode = sheetMode?.kind === 'size' ? null : { kind: 'size', first: null };
+  sheetPick = null;
+  sheetSeen = null;
+  renderSheet();
+};
+actions['sheet-delete'] = async () => {
+  const d = drawingById(store.state.doc, openSheet);
+  if (d && (await sheetCommand('delete_drawing', { drawing: d.id }))) toast(`${d.name} is deleted. Undo brings it back.`);
+};
+actions['new-drawing'] = () => sheetCommand('add_drawing', { part: selectedPart ?? homePart() });
+actions['sheet-setup'] = () => {
+  const d = drawingById(store.state.doc, openSheet);
+  if (!d) return;
+  const f = d.fields ?? {},
+    scales = [...new Set([...SCALES, d.scale])].sort((a, b) => b - a),
+    text = (k, label, value, tip) =>
+      `<label class="field"><span>${esc(label)}</span><input id="sheet-${k}" value="${esc(value)}" autocomplete="off" spellcheck="false" title="${esc(tip)}"></label>`;
+  showModal(
+    'Sheet',
+    `<div class="sheet-form">${text('name', 'Name', d.name, 'What the drawing is called in the list and in the name of its PDF')}${selectField(
+      'sheet-paper',
+      'Paper',
+      Object.keys(SHEETS).map((k) => [k, k === 'A4 portrait' ? 'A4 upright' : `${k} (${SHEETS[k].join(' × ')} mm)`]),
+      d.sheet,
+      'The size of the paper'
+    )}${selectField('sheet-scale', 'Scale', scales.map((s) => [String(s), scaleText(s)]), String(d.scale), 'One scale for every view: 1:2 draws the part at half its size')}${Object.entries(FIELDS)
+      .filter(([k]) => k !== 'notes')
+      .map(([k, label]) => text(k, label, f[k] ?? '', label))
+      .join('')}<label class="field wide"><span>${esc(FIELDS.notes)}</span><textarea id="sheet-notes" rows="4" spellcheck="false">${esc(f.notes ?? '')}</textarea></label></div>`,
+    cancelButton + '<button class="primary" data-modal="apply">Apply</button>',
+    async (a) => {
+      if (a !== 'apply') return closeModal();
+      const args = { drawing: d.id },
+        name = id('sheet-name').value.trim(),
+        paper = id('sheet-paper').value,
+        scale = Number(id('sheet-scale').value);
+      if (name && name !== d.name) args.name = name;
+      if (paper !== d.sheet) args.sheet = paper;
+      if (scale !== d.scale) args.scale = scale;
+      for (const k of FIELD_NAMES) {
+        const v = id('sheet-' + k).value.trim();
+        if (v !== (f[k] ?? '')) args[k] = v;
+      }
+      closeModal();
+      if (Object.keys(args).length > 1) await sheetCommand('edit_drawing', args);
+    },
+    true
+  );
+};
 actions['sheet-pdf'] = async () => {
   const d = drawingById(store.state.doc, openSheet);
   if (!d) return;

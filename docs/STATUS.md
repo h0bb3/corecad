@@ -33,10 +33,11 @@ What it does:
   and an autosave in the browser.
 - **Drawings** for the workshop: views of a part on a sheet at a scale,
   hidden edges and centre lines, sizes measured from the model that follow
-  it, a title block; as PDF to print at true size.
-- **For an agent**: 48 commands behind `window.corecad.run`
+  it with their tolerances, a title block by ISO 7200 and notes; as PDF to
+  print at true size. Made by an agent or by hand on the sheet.
+- **For an agent**: 49 commands behind `window.corecad.run`
   ([COMMANDS.md](COMMANDS.md)), and the same list over MCP through a relay
-  ([bridge/README.md](../bridge/README.md)): 49 tools with the relay's own.
+  ([bridge/README.md](../bridge/README.md)): 50 tools with the relay's own.
   "This", "selected" and "pointed" mean what the person has clicked or rests
   the mouse on, and `get_selection` says how they are looking at the model.
   While an agent is at work the page says so: a frame round the view, a line
@@ -50,7 +51,7 @@ What it does:
 
 Verified on this build, 2026-11-26:
 
-- `python tools/run_tests.py`: 159 tests in 20 pages (2026-11-28); the kernel pages run
+- `python tools/run_tests.py`: 161 tests in 20 pages (2026-11-28); the kernel pages run
   the real OpenCascade worker.
 - The end-to-end scripts in headless Chrome, all passing: `tools/e2e.py`,
   `e2e_more.py`, `e2e_parts.py` and `e2e_export.py` (real mouse and key
@@ -155,13 +156,10 @@ Not verified:
 7. **A client is not told when the list of tools changes**: it reconnects to
    read it again. Telling it needs a new version of the relay on its host.
    Worth doing?
-8. **Drawings in the page.** A person sees a drawing and prints it; making
-   one, adding views and sizes, is done by the agent. Should the page have
-   its own way to add a drawing, a view, a size (by clicking two faces)?
-9. **The sheet**: first angle projection (ISO E), A4 to A0, one scale, a
-   title block with part, project, drawing, scale, sheet, units and date.
-   Anything missing that a workshop here needs (material, a number for the
-   drawing, who drew it, general tolerances)?
+8. **Section views** (a part cut open on the drawing, hatched) are the
+   next thing a professional drawing has that these do not. Then: detail
+   views at a larger scale, angles, a revision table, surface symbols on
+   single faces, threads drawn the standard way. In that order?
 
 ## Next
 
@@ -1121,6 +1119,44 @@ its part.
 Not verified: a printed PDF measured with a ruler; a large or complicated
 part (an imported one, a thread: a thread's helix is drawn as the many edges
 it has, and may be slow to project).
+
+## Drawings by hand, and what a professional drawing says (2026-11-28)
+
+Asked for, after the first drawings: "would be good for a human to decide
+what to include in a drawing", and that a drawing "should contain what
+professional drawings contain".
+
+- **By hand**, through the same commands as an agent (so it is one undo step
+  each, and refused with the same reasons): **Drawing** under a selected
+  part; on the sheet **Add view** then a click where it is to stand, a view
+  dragged to move it, **Size** then one or two clicks on lines of a view
+  (`src/drawing/pick.js`: the faces and edges of the part as lines and
+  circles on the paper; a face seen from its side before the edges along it,
+  and of two in one place the one nearer the eye), a click on a number for
+  its tolerance, Delete, **Sheet…** for paper, scale and title block, and
+  **Delete** for the drawing.
+- **The title block** has the fields of ISO 7200 now: title, drawing number,
+  revision, date of issue, owner, drawn by, approved by, plus material,
+  general tolerances, surface finish, project, scale, size, units, sheet
+  1/1 and the projection symbol. The date is the day the drawing was made,
+  kept, until it is given. **Notes** stand numbered above it. Empty fields
+  are printed empty, for a pen: nothing is filled in by guessing (the
+  general tolerance in particular is the owner's to state).
+- **Tolerances** on single sizes: `edit_drawing_dimension` (±0.1,
+  +0.2/-0, a fit such as H7 written Ø8H7). One way: a dimension is made by
+  what it measures, its tolerance is given after.
+- 49 commands now (`edit_drawing_dimension`; `edit_drawing` takes the
+  fields).
+
+Verification: `test/drawing.test.html` (9 tests: also the fields, empty
+ones taken out, the notes numbered and broken into lines, tolerances
+written after their numbers, and what a click in a view means: the side of
+the plate rather than its edges, the top, the outline of a hole from its
+side, the hole seen round). `tools/e2e_api.py`: the fields and tolerances
+by command, and a drawing made entirely by hand with the mouse and the keys.
+
+Not done: section views, detail views, angles, a revision table, surface
+symbols on single faces, threads drawn the standard way (question 8).
 
 ## The scanner on the Quest: no camera, first try (2026-11-27)
 
