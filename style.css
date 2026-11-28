@@ -1190,6 +1190,7 @@ main {
 }
 .bridge-second {
   display: flex;
+  flex-wrap: wrap;
   gap: 14px;
   align-items: center;
   margin: 12px 0 4px;
@@ -1199,8 +1200,8 @@ main {
   background: #f7fafa;
 }
 .bridge-second canvas {
-  width: 132px;
-  height: 132px;
+  width: 260px;
+  height: 260px;
   flex: none;
   image-rendering: pixelated;
   background: #fff;

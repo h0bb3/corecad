@@ -3480,6 +3480,7 @@ function secondSeat(b) {
   return `<div class="bridge-second"><canvas id="bridge-qr" width="1" height="1" title="Scan this with the headset or a phone. Click to make it big: a headset's camera needs that."></canvas><div>
     <p><b>See it on another device</b>: a headset or a phone opens this address and shows this model as it is here, at its real size in a headset. It can point, measure and cut the model open; it cannot change it.</p>
     <input id="bridge-second" readonly value="${esc(address)}" title="The address of the page that watches this tab. Treat it like a password: it holds the same code." />
+    <p>Click the code to show it over the whole screen: a headset's camera reads it best that way.</p>
     <p id="bridge-viewers">${b.viewers ? `${b.viewers} ${b.viewers === 1 ? 'device is' : 'devices are'} watching.` : 'Nobody is watching.'}</p></div></div>`;
 }
 function connectBody(b) {
