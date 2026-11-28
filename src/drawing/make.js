@@ -1,6 +1,6 @@
 // Drawings made from the model as it is built: the lines of each view from the kernel (kept until the
 // model or the part changes), the dimensions found again on the built bodies, all laid out on the sheet.
-import { drawingById, viewAxes, planeOf, resolvePick } from './model.js';
+import { drawingById, viewAxes, planeOf, sourceOf, resolvePick } from './model.js';
 import { composeSheet } from './layout.js';
 import { partById, descendantsOf, sceneOf } from '../doc/parts.js';
 
@@ -23,6 +23,7 @@ export function createDrawings(kernel) {
 
   /** What the kernel is asked for a view: where it looks from, and for a section the plane that cuts the part. */
   function specOf(d, v) {
+    if (v.look === 'detail') return specOf(d, sourceOf(d, v)); // the lines of the view it enlarges
     const ax = viewAxes(d, v);
     if (v.look !== 'section') return { dir: ax.n, x: ax.x, hidden: v.look !== 'iso' };
     const { n, c } = planeOf(d, v);
@@ -65,6 +66,10 @@ export function createDrawings(kernel) {
             return [m.id, ps.every(Boolean) ? ps : null];
           })
         );
+      for (const sym of d.symbols ?? []) {
+        const hit = resolvePick(sym.face, bodies);
+        picks.set(sym.id, hit ? [hit] : null);
+      }
       return composeSheet({ drawing: d, names: { part: part?.name ?? '?', project: doc.meta.name, date: today() }, lines, bodies, picks });
     },
     viewAxes,

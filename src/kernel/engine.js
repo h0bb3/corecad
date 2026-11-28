@@ -149,6 +149,8 @@ export function createEngine(post) {
           }
         }
         const before = state;
+        // a thread is built otherwise for a drawing (features.js, threadForDrawing): kept apart in the cache
+        if (job.drawing && f.type === 'revolve' && f.rise > 0) extra += '\n#drawing';
         key = hash64(key + '\n' + geometryKey(f) + extra);
         keys.push(key);
         await yieldNow();
@@ -168,7 +170,7 @@ export function createEngine(post) {
               );
             if (f.suppressed) entry = { state, result: { id: f.id, status: 'suppressed' } };
             else {
-              const out = evaluate(f, state, { key, own, tools, toolError, imported });
+              const out = evaluate(f, state, { key, own, tools, toolError, imported, drawing: !!job.drawing });
               entry = {
                 ...out,
                 result: { id: f.id, status: out.result.code ? 'warning' : 'ok', ...out.result },
@@ -395,9 +397,18 @@ export function createEngine(post) {
      * job.hidden: the looks whose hidden lines are wanted.
      */
     async views(job) {
-      const { doc, features, bodies, used } = await rebuild({ ...job, count: undefined, roll: null }, true),
+      const { doc, features, bodies, used } = await rebuild({ ...job, count: undefined, roll: null, drawing: true }, true),
         { OC, r } = kernel();
       if (features.some((f) => f.status === 'error')) throw Error('Resolve failed features before drawing the part.');
+      // the threads of the parts drawn, where they stand: the sheet draws them as ISO 6410 has it
+      const placedAt = worldOf(doc),
+        inParts = new Set(job.parts.flatMap((id) => [id, ...descendantsOf(doc, id)])),
+        threads = features.flatMap((x) => {
+          const part = x.thread && doc.features.find((g) => g.id === x.id)?.part;
+          if (!part || !inParts.has(part)) return [];
+          const m = placedAt.get(part);
+          return [{ ...x.thread, p0: Mat.point(m, x.thread.p0), p1: Mat.point(m, x.thread.p1) }];
+        });
       const only = new Set(job.parts.flatMap((id) => [id, ...descendantsOf(doc, id)])),
         items = sceneOf(doc, bodies.map(({ body, part }) => ({ id: body.id, part, body })), used).filter((it) => only.has(it.part)),
         out = {},
@@ -481,6 +492,7 @@ export function createEngine(post) {
             smooth: lines(hlr.Rg1LineVCompound()),
             hidden: want ? [...lines(hlr.HCompound()), ...lines(hlr.OutLineHCompound())] : [],
             ...(cam.cut ? { cut } : {}),
+            threads,
           };
         }
       } finally {

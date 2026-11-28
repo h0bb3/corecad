@@ -195,6 +195,7 @@ export function evaluate(f, state, ctx) {
     if (!targets.length && ['cut', 'intersect'].includes(f.operation)) fail('no-target', 'There is no body to cut or intersect.');
     const axis = { p: a, d: [(b[0] - a[0]) / length, (b[1] - a[1]) / length] },
       rise = f.rise ?? 0;
+    if (ctx.drawing && rise > 0) return threadForDrawing(f, state, ctx, sk, regions, axis, targets, body);
     const made = (backwards) => {
       let tool = null;
       for (const region of regions) {
@@ -374,4 +375,36 @@ export function evaluate(f, state, ctx) {
     return { state: { ...state, bodies }, result, tool };
   }
   fail('unknown-type', `Feature type "${f.type}" needs a newer CoreCAD.`);
+}
+
+/**
+ * A thread as a drawing shows it (ISO 6410), not as it is: on a bolt the solid fills out to the crests of
+ * the thread over its length (a plain cylinder at the major diameter), in a nut the hole stays at the
+ * crests of its thread (the minor diameter, as it was bored); the other diameter is drawn as thin lines
+ * by the sheet. The result says where the thread is, in the part's frame: `thread`.
+ */
+function threadForDrawing(f, state, ctx, sk, regions, axis, targets, body) {
+  const off = ([x, y]) => axis.d[0] * (y - axis.p[1]) - axis.d[1] * (x - axis.p[0]),
+    up = ([x, y]) => axis.d[0] * (x - axis.p[0]) + axis.d[1] * (y - axis.p[1]),
+    pts = regions.flatMap((r) => r.outer.flatMap((piece) => (piece.kind === 'circle' ? [[piece.c[0] + piece.r, piece.c[1]], [piece.c[0] - piece.r, piece.c[1]], [piece.c[0], piece.c[1] + piece.r], [piece.c[0], piece.c[1] - piece.r]] : [piece.a, piece.b]))),
+    offs = pts.map(off),
+    ups = pts.map(up),
+    lo = Math.min(...offs),
+    hi = Math.max(...offs),
+    climb = ((f.flip ? -1 : 1) * f.rise * f.angle) / 360,
+    u0 = Math.min(...ups) + Math.min(0, climb),
+    u1 = Math.max(...ups) + Math.max(0, climb),
+    at = (u, o = 0) => [axis.p[0] + axis.d[0] * u - axis.d[1] * o, axis.p[1] + axis.d[1] * u + axis.d[0] * o],
+    minor = Math.min(Math.abs(lo), Math.abs(hi)),
+    major = Math.max(Math.abs(lo), Math.abs(hi)),
+    internal = f.operation === 'cut',
+    thread = { p0: toWorld(sk.frame, at(u0)), p1: toWorld(sk.frame, at(u1)), minor, major, internal };
+  if (internal || f.operation === 'intersect') return { state, result: { thread } };
+  // the band the thread fills, turned once about the axis
+  const line = (p, q) => ({ kind: 'line', a: p, b: q, entity: 'band' }),
+    c = [at(u0, lo), at(u1, lo), at(u1, hi), at(u0, hi)],
+    region = { outer: [line(c[0], c[1]), line(c[1], c[2]), line(c[2], c[3]), line(c[3], c[0])], holes: [] },
+    tool = ctx.own(revolved(f.id, sk.frame, region, axis, 360, false)),
+    applied = applyTool(f.id, f.operation, state.bodies, targets, tool, ctx.own, body, WORDS.revolve);
+  return { state: { ...state, bodies: applied.bodies }, result: { ...applied.result, thread }, tool };
 }

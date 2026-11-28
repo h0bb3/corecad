@@ -3264,7 +3264,7 @@ document.addEventListener('keydown', (e) => {
     }
     return;
   }
-  if (openSheet && !input && sheetKey(key)) {
+  if (openSheet && (!input || key === 'escape') && sheetKey(key)) {
     e.preventDefault();
     return;
   }
@@ -3395,6 +3395,14 @@ function sheetHint() {
     return sheetMode.line
       ? 'Click where the section is to stand (a horizontal cut is seen from above: below the view; a vertical one from the right: to its left). Esc stops.'
       : `Click on a view where the ${sheetMode.cut === 'horizontal' ? 'horizontal' : 'vertical'} cut is to go: it is drawn through the centre of a hole when the click is near one. Esc stops.`;
+  if (sheetMode?.kind === 'detail')
+    return !sheetMode.centre
+      ? 'Click on a view at the middle of what the detail is to show larger. Esc stops.'
+      : !sheetMode.radius
+      ? 'Click how far round it the detail reaches. Esc stops.'
+      : 'Click where the detail is to stand (it is drawn twice the size of its view). Esc stops.';
+  if (sheetMode?.kind === 'surface')
+    return sheetMode.face ? '' : 'Click a flat face seen from its side, as a line, for its surface symbol. Esc stops.';
   if (sheetMode?.kind === 'size')
     return sheetMode.first
       ? 'Click a second line of the same view for the distance between them, or Enter (or the same line again) for the size of this one. Esc stops.'
@@ -3425,7 +3433,7 @@ async function renderSheet() {
   }
   if (turn !== sheetTurn || !openSheet) return;
   sheetNow = sheet ? { sheet, drawing: d, things: null } : null;
-  if (sheetPick && !(sheetPick.kind === 'view' ? d.views : d.dims).some((x) => x.id === sheetPick.id)) sheetPick = null;
+  if (sheetPick && !({ view: d.views, dim: d.dims, symbol: d.symbols ?? [] }[sheetPick.kind] ?? []).some((x) => x.id === sheetPick.id)) sheetPick = null;
   const missing = sheet ? sheet.dims.filter((x) => x.problem) : [];
   box.innerHTML = `<div class="sheet-bar"><strong>${esc(d.name)}</strong><span>${esc(partById(st.doc, d.part)?.name ?? '')} · ${esc(d.sheet)} · ${scaleText(d.scale)}</span>${
     missing.length
@@ -3441,9 +3449,10 @@ async function renderSheet() {
     ['iso', 'Isometric'],
     ['section:horizontal', 'Section, horizontal cut'],
     ['section:vertical', 'Section, vertical cut'],
+    ['detail', 'Detail, larger'],
   ]
     .map(([v, t]) => `<option value="${v}">${t}</option>`)
-    .join('')}</select><button data-action="sheet-size" class="${sheetMode?.kind === 'size' ? 'active' : ''}" title="Draw a size: click one or two lines of a view">Size</button><button data-action="sheet-setup" title="Paper, scale, and what the title block and the notes say">Sheet…</button><button data-action="sheet-delete" title="Delete this drawing (Undo brings it back)">Delete</button><span class="bar-gap"></span><button data-action="sheet-pdf" title="The drawing as a PDF, to print at 100 %: it is then at its scale">PDF</button><button data-action="sheet-close" title="Back to the model · Esc">Close</button></div><div class="sheet-help" id="sheet-help"${
+    .join('')}</select><button data-action="sheet-size" class="${sheetMode?.kind === 'size' ? 'active' : ''}" title="Draw a size: click one or two lines of a view">Size</button><button data-action="sheet-surface" class="${sheetMode?.kind === 'surface' ? 'active' : ''}" title="A surface symbol (Ra) on a face: click a face seen as a line">Surface</button><button data-action="sheet-setup" title="Paper, scale, and what the title block and the notes say">Sheet…</button><button data-action="sheet-delete" title="Delete this drawing (Undo brings it back)">Delete</button><span class="bar-gap"></span><button data-action="sheet-pdf" title="The drawing as a PDF, to print at 100 %: it is then at its scale">PDF</button><button data-action="sheet-close" title="Back to the model · Esc">Close</button></div><div class="sheet-help" id="sheet-help"${
     sheetHint() || sheetPick ? '' : ' hidden'
   }></div><div class="sheet-paper">${sheet ? sheetToSVG(sheet).replace(/ width="[\d.]+mm" height="[\d.]+mm"/, '') : `<p class="sheet-problem">${esc(problem)}</p>`}</div>`;
   renderSheetMarks();
@@ -3492,8 +3501,29 @@ function renderSheetMarks() {
     text ||= `${m?.text ?? sheetPick.id}${m?.problem ? ': ' + m.problem : ''}. Delete takes it off.`;
     tolerance = own?.tolerance ?? '';
   }
+  if (sheetPick?.kind === 'symbol') {
+    const sym = sheetNow.sheet.symbols.find((x) => x.id === sheetPick.id);
+    if (sym?.at) out.push(`<rect x="${sym.at[0] - 9}" y="${h - sym.at[1] - 10}" width="18" height="12" class="mark-box"/>`);
+    text ||= `Surface symbol ${sym?.text ?? ''}${sym?.problem ? ': ' + sym.problem : ''}. Delete takes it off.`;
+  }
+  if (sheetMode?.kind === 'detail' && sheetMode.centre) {
+    const C = sheetMode.centre.paper,
+      r = sheetMode.radius ?? 2;
+    out.push(`<circle cx="${C[0]}" cy="${h - C[1]}" r="${r}" class="mark"/>`);
+  }
+  let surface = '';
+  if (sheetMode?.kind === 'surface' && sheetMode.face) {
+    const t = sheetMode.face.thing;
+    out.push(`<path d="M${P(t.pts[0])}L${P(t.pts[1])}" class="mark"/>`);
+    surface = `The surface of this face must be <input id="sheet-surface-value" value="${esc(sheetMode.value ?? '')}" placeholder="Ra 1.6" autocomplete="off" spellcheck="false" title="Such as Ra 1.6; empty: the symbol alone"> made <select id="sheet-surface-process"><option value="any">in any way</option><option value="removal">by taking material off</option><option value="no_removal">without taking material off</option></select> <button data-action="sheet-surface-put">Put it there</button> (Enter). Esc stops.`;
+  }
   marks.innerHTML = out.join('');
-  help.hidden = !text;
+  help.hidden = !text && !surface;
+  if (surface) {
+    help.innerHTML = surface;
+    id('sheet-surface-value').focus();
+    return;
+  }
   help.innerHTML = esc(text) + (tolerance !== null ? ` <label>Tolerance <input id="sheet-tolerance" value="${esc(tolerance)}" placeholder="±0.1, H7" title="Written after the number: ±0.1, +0.2/-0, or a fit such as H7. Enter applies it; empty takes it away." autocomplete="off" spellcheck="false"></label>` : '');
 }
 /** A point of the pointer on the paper, in mm from its lower left corner, and how many mm a few pixels are. */
@@ -3536,6 +3566,36 @@ id('sheet').addEventListener('pointerdown', async (e) => {
     sheetMode = null;
     const r = await sheetCommand('add_view', { drawing: d.id, look, at: q.at.map((x) => Math.round(x)) });
     if (r) sheetPick = { kind: 'view', id: r.view.id };
+    renderSheetMarks();
+    return;
+  }
+  if (sheetMode?.kind === 'detail') {
+    if (!sheetMode.centre) {
+      const sv = sheetNow.sheet.views.find((v) => v.box && v.look !== 'detail' && q.at[0] >= v.box[0] && q.at[0] <= v.box[2] && q.at[1] >= v.box[1] && q.at[1] <= v.box[3]);
+      if (!sv) return toast('Click on a view (not on a detail): the middle of what is to be shown larger.');
+      sheetMode = { kind: 'detail', centre: { view: sv.id, paper: q.at } };
+    } else if (!sheetMode.radius) {
+      const C = sheetMode.centre.paper,
+        r = Math.hypot(q.at[0] - C[0], q.at[1] - C[1]);
+      if (r < 1) return;
+      sheetMode = { ...sheetMode, radius: +r.toFixed(2) };
+    } else {
+      const { centre, radius } = sheetMode;
+      sheetMode = null;
+      const r = await sheetCommand('add_detail_view', { view: centre.view, around: centre.paper.map((x) => +x.toFixed(2)), radius, at: q.at.map((x) => Math.round(x)) });
+      if (r) sheetPick = { kind: 'view', id: r.view.id };
+    }
+    renderSheetMarks();
+    return;
+  }
+  if (sheetMode?.kind === 'surface') {
+    const thing = thingAt(
+      sheetThings().filter((t) => t.kind === 'face' && t.pts),
+      q.at,
+      q.mm
+    );
+    if (!thing) return toast('There is no flat face seen from its side there: click on a line of a view that is a face.');
+    sheetMode = { kind: 'surface', face: { view: thing.view, thing } };
     renderSheetMarks();
     return;
   }
@@ -3596,6 +3656,12 @@ id('sheet').addEventListener('pointerdown', async (e) => {
     renderSheetMarks();
     return;
   }
+  const sym = (sheetNow.sheet.symbols ?? []).find((x) => x.at && Math.abs(q.at[0] - x.at[0]) <= 9 && q.at[1] - x.at[1] >= -2 && q.at[1] - x.at[1] <= 10);
+  if (sym) {
+    sheetPick = { kind: 'symbol', id: sym.id };
+    renderSheetMarks();
+    return;
+  }
   const view = sheetNow.sheet.views.find((v) => v.box && q.at[0] >= v.box[0] - 3 && q.at[0] <= v.box[2] + 3 && q.at[1] >= v.box[1] - 3 && q.at[1] <= v.box[3] + 3);
   sheetPick = view ? { kind: 'view', id: view.id } : null;
   if (view) {
@@ -3623,12 +3689,17 @@ id('sheet').addEventListener('pointerup', async () => {
 id('sheet').addEventListener('change', (e) => {
   if (e.target.id !== 'sheet-view' || !e.target.value) return;
   const [look, cut] = e.target.value.split(':');
-  sheetMode = look === 'section' ? { kind: 'section', cut } : { kind: 'place', look };
+  sheetMode = look === 'section' ? { kind: 'section', cut } : look === 'detail' ? { kind: 'detail' } : { kind: 'place', look };
   sheetPick = null;
   e.target.value = '';
   renderSheetMarks();
 });
 id('sheet').addEventListener('keydown', async (e) => {
+  if (e.target.id === 'sheet-surface-value' && e.key === 'Enter') {
+    e.preventDefault();
+    e.stopPropagation();
+    return actions['sheet-surface-put']();
+  }
   if (e.target.id !== 'sheet-tolerance' || e.key !== 'Enter') return;
   e.preventDefault();
   e.stopPropagation();
@@ -3665,6 +3736,21 @@ actions['sheet-size'] = () => {
   sheetSeen = null;
   renderSheet();
 };
+actions['sheet-surface'] = () => {
+  sheetMode = sheetMode?.kind === 'surface' ? null : { kind: 'surface' };
+  sheetPick = null;
+  sheetSeen = null;
+  renderSheet();
+};
+actions['sheet-surface-put'] = async () => {
+  const face = sheetMode?.kind === 'surface' ? sheetMode.face : null;
+  if (!face) return;
+  const value = id('sheet-surface-value')?.value ?? '',
+    process = id('sheet-surface-process')?.value ?? 'any';
+  sheetMode = { kind: 'surface' };
+  await sheetCommand('add_surface_symbol', { view: face.view, face: refOf(face.thing), value, process });
+  renderSheetMarks();
+};
 actions['sheet-delete'] = async () => {
   const d = drawingById(store.state.doc, openSheet);
   if (d && (await sheetCommand('delete_drawing', { drawing: d.id }))) toast(`${d.name} is deleted. Undo brings it back.`);
@@ -3688,7 +3774,9 @@ actions['sheet-setup'] = () => {
     )}${selectField('sheet-scale', 'Scale', scales.map((s) => [String(s), scaleText(s)]), String(d.scale), 'One scale for every view: 1:2 draws the part at half its size')}${Object.entries(FIELDS)
       .filter(([k]) => k !== 'notes')
       .map(([k, label]) => text(k, label, f[k] ?? '', label))
-      .join('')}<label class="field wide"><span>${esc(FIELDS.notes)}</span><textarea id="sheet-notes" rows="4" spellcheck="false">${esc(f.notes ?? '')}</textarea></label></div>`,
+      .join('')}<label class="field wide"><span>${esc(FIELDS.notes)}</span><textarea id="sheet-notes" rows="4" spellcheck="false">${esc(f.notes ?? '')}</textarea></label>${(d.revisions ?? [])
+      .map((r) => `<label class="check wide"><input type="checkbox" class="sheet-rev-off" value="${r.id}"> Take off revision ${esc(r.rev)}: ${esc(r.description)} (${esc(r.date)})</label>`)
+      .join('')}${text('rev-what', 'New revision: what changed', '', 'A row of the revision table, with the next letter and today\'s date')}${text('rev-by', 'New revision: by', '', 'Who changed it (initials)')}</div>`,
     cancelButton + '<button class="primary" data-modal="apply">Apply</button>',
     async (a) => {
       if (a !== 'apply') return closeModal();
@@ -3703,8 +3791,13 @@ actions['sheet-setup'] = () => {
         const v = id('sheet-' + k).value.trim();
         if (v !== (f[k] ?? '')) args[k] = v;
       }
+      const off = [...document.querySelectorAll('.sheet-rev-off:checked')].map((x) => x.value),
+        what = id('sheet-rev-what').value.trim(),
+        by = id('sheet-rev-by').value.trim();
       closeModal();
       if (Object.keys(args).length > 1) await sheetCommand('edit_drawing', args);
+      if (off.length) await sheetCommand('remove_from_drawing', { ids: off });
+      if (what) await sheetCommand('add_revision', { drawing: d.id, description: what, ...(by ? { by } : {}) });
     },
     true
   );

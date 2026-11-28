@@ -343,12 +343,26 @@ await corecad.run('export', { format: 'pdf', download: true });       // to prin
   leaving out I, O and Q. Sizes are added to a section as to any view: the
   depth of a blind hole, the thickness of a wall. A view taken off takes its
   sections with it.
+- **Details.** `add_detail_view` draws a round piece of a view larger:
+  `around` its middle and `radius` on the paper as the view is drawn, a
+  `scale` of its own (twice the view's when it is left out), `at` where it
+  stands. The view gets a thin circle with a letter round that piece; the
+  detail is the piece clipped to a circle, named DETAIL B (5:1). Sections and
+  details share the letters.
+- **Threads** made by `revolve` with a `rise` are drawn as ISO 6410 draws
+  them, not as the helix they are: a bolt's outline at the crests (the major
+  diameter) with thin lines at the root, a nut's hole at the crests of its
+  thread (the minor diameter) with thin lines at the major; seen along the
+  axis, three quarters of a thin circle at the root. Only the drawing does
+  this; the model keeps its real thread.
 - **Dimensions.** `add_drawing_dimension` draws a size in a view with
   extension lines, arrows and its number, measured from the model the way
   `measure` measures: between two parallel faces, two holes (centre to
   centre), a hole and a face (to its centre), two edges; or of one thing: a
   hole or a round edge (its diameter), an arc (its radius), a straight edge
-  (its length). The page places it outside the view, each new one on that
+  (its length); between two lines of the view that are not parallel (flat
+  faces seen from their side, straight edges lying flat in it), the angle
+  between them, with an arc. The page places it outside the view, each new one on that
   side further out than the last: give the small ones first. It must lie
   flat in its view, as a length that is not seen shortened: the width of a
   plate in the front or the top view, the diameter of a hole in the view that
@@ -361,6 +375,14 @@ await corecad.run('export', { format: 'pdf', download: true });       // to prin
   general tolerances of the title block. `edit_drawing_dimension` gives one
   its own, written after the number: `"±0.1"` (`"+-0.1"` is written so too),
   `"+0.2/-0"`, or a fit such as `"H7"` (Ø8H7).
+- **Revisions.** `add_revision` adds a row to the revision table above the
+  title block: the next letter, today, what changed (`description`) and
+  `by` whom; the title block's REV is the newest letter.
+- **Surface symbols.** `add_surface_symbol` puts the ISO 1302 symbol on a flat
+  face seen as a line in a view: its `value` (Ra 1.6), and `process`: `any`,
+  `removal` (it must be machined: a bar across) or `no_removal` (a circle in
+  it). Where the face looks up it stands on it, else at the end of a leader.
+  What has no symbol of its own is as the title block's surface finish says.
 - `remove_from_drawing` takes views and dimensions off by id (a view takes its
   dimensions); `delete_drawing` deletes one; deleting the part deletes its
   drawings.
@@ -378,13 +400,16 @@ await corecad.run('export', { format: 'pdf', download: true });       // to prin
   section is to stand makes a section; **Size**, then a click on a line of a view (an edge, a face
   seen from its side, a hole) and on a second one, draws the distance between
   them, or Enter (or the same line again) the size of the one; a click on a
-  size's number selects it and gives a field for its tolerance; Delete takes
-  off the selected view or size; **Sheet…** sets the paper, the scale and the
-  title block; **Delete** deletes the drawing.
-- Not drawn (yet): detail views, angles, a revision table, surface symbols
-  on single faces, threads in the standard way (a thread is drawn as the
-  edges it has), more than one sheet to a drawing, sections along a bent
-  line or of an iso view.
+  size's number selects it and gives a field for its tolerance; *Detail*
+  in **Add view** is a click at the middle of a piece of a view, one for how
+  far it reaches and one where it stands; **Surface** and a click on a face
+  seen as a line asks for its Ra; Delete takes off the selected view, size or
+  symbol; **Sheet…** sets the paper, the scale, the title block, and adds or
+  takes off revisions; **Delete** deletes the drawing.
+- Not drawn (yet): a thread's designation (M30×3.5) as text, more than one
+  sheet to a drawing, sections along a bent line or of an iso view, broken
+  views, geometric tolerances (flatness, position and the like), welding
+  symbols.
 
 ## Colours and export
 
@@ -458,6 +483,9 @@ Arguments in brackets are optional.
 | `delete_drawing` | drawing | Deletes a drawing. |
 | `add_view` | [drawing], look, at | A view of the part from one side (or iso) with its middle at a place on the paper. |
 | `add_section_view` | view, cut, [through], [flip], at | The part cut along a line across a view, hatched, named SECTION A-A; the cutting line on that view. |
+| `add_detail_view` | view, around, radius, [scale], at | A round piece of a view drawn larger, with its circle and letter on that view. |
+| `add_revision` | [drawing], description, [by] | A row of the revision table: the next letter, today. |
+| `add_surface_symbol` | view, face, [value], [process] | The ISO 1302 surface symbol on a face seen as a line. |
 | `move_view` | view, at | Moves a view with its dimensions. |
 | `add_drawing_dimension` | view, from, [to], [along] | A size in a view, measured from the model; refused where it would be seen shortened. |
 | `remove_from_drawing` | ids | Takes views and dimensions off. |

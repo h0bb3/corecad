@@ -8,7 +8,7 @@ import {faceRefFrom} from '../src/doc/refs.js';
 import {findRegions,profileRefFrom} from '../src/sketch/profiles.js';
 import {sk,circle} from './fixtures/sketches.js';
 import * as D from '../src/drawing/model.js';
-import {composeSheet,measureOf,boundsOf,withTolerance,hatched} from '../src/drawing/layout.js';
+import {composeSheet,measureOf,boundsOf,withTolerance,hatched,clipped} from '../src/drawing/layout.js';
 import {clickables,thingAt} from '../src/drawing/pick.js';
 import {createDrawings} from '../src/drawing/make.js';
 import {sheetToPDF} from '../src/drawing/pdf.js';
@@ -67,7 +67,8 @@ test('what a dimension measures in a view, and what it refuses',async()=>{
  g=measureOf({along:null},[pk(body,'face',holeFace(body))],D.axesOf('front'),'front');eq([g.kind,g.prefix,g.dir,+g.value.toFixed(6)],['linear','Ø','horizontal',8],'a hole seen from its side: its diameter across');
  g=measureOf({along:null},[pk(body,'face',L),pk(body,'face',holeFace(body))],D.axesOf('top'),'top');eq([g.dir,+g.value.toFixed(6)],['horizontal',40],'from the left side to the centre of the hole');
  await throws(()=>measureOf({along:null},[pk(body,'face',L),pk(body,'face',R)],D.axesOf('right'),'right'),/does not lie flat in the right view/);
- await throws(()=>measureOf({along:null},[pk(body,'face',L),pk(body,'face',T)],D.axesOf('front'),'front'),/at 90° to each other/);
+ g=measureOf({along:null},[pk(body,'face',L),pk(body,'face',T)],D.axesOf('front'),'front');eq([g.kind,+g.value.toFixed(6)],['angle',90],'the angle at a corner');
+ await throws(()=>measureOf({along:null},[pk(body,'face',L),pk(body,'face',T)],D.axesOf('top'),'top'),/seen as lines in the top view/);
  await throws(()=>measureOf({along:null},[pk(body,'face',T)],D.axesOf('top'),'top'),/a size each way/);
  await throws(()=>measureOf({along:null},[pk(body,'edge',rim(body,10))],D.axesOf('iso'),'iso'),/at a slant/);
  // two corners of the top face, diagonal: along gives the parts of it
@@ -149,6 +150,40 @@ test('a section: the plate cut through its hole, seen square onto the cut, hatch
  eq((await drawings.sheet(doc,build,'d1')).dims[0].text,'Ø8');
  // the front view goes, and its sections with it
  eq(D.removeItems(doc,'d1',[f.id]).drawings[0].views,[]);
+});
+test('a detail: a round piece of a view at a scale of its own, clipped to its circle',async()=>{
+ eq(clipped([-10,0,10,0],[0,0],5).map(p=>p.map(x=>+x.toFixed(9))),[[-5,0,5,0]]);eq(clipped([-10,8,10,8],[0,0],5),[]);
+ eq(clipped([0,0,10,0,10,10],[0,0],5).length,1);
+ const {d:d0,p,build,body}=await plate();let {doc}=D.addDrawing(d0,p);let f,t,dt;
+ ({doc,view:f}=D.addView(doc,'d1','front',[110,150]));({doc,view:t}=D.addView(doc,'d1','top',[110,80]));
+ ({doc,view:dt}=D.addDetailView(doc,'d1',{of:t.id,centre:[10,5],radius:6,scale:5,at:[230,80]}));
+ eq(dt.detail.letter,'A');eq(validateDocument(doc),[]);
+ eq(validateDocument({...doc,drawings:doc.drawings.map(x=>({...x,views:x.views.map(v=>v.id===dt.id?{...v,detail:{...v.detail,of:dt.id}}:v)}))}).length,1,'not a detail of a detail');
+ doc=D.addDim(doc,'d1',{view:dt.id,from:D.pickRefFrom(body,'edge',rim(body,10))}).doc;
+ const sheet=await drawings.sheet(doc,build,'d1'),texts=sheet.items.filter(i=>i.t==='text').map(i=>i.text);
+ ok(texts.includes('DETAIL A (5:1)'));eq(texts.filter(x=>x==='A').length,1,'the letter by its circle on the top view');
+ near(sheet.views[2].box,[200,50,260,110],1e-6,'a circle of 6 at 5:1');eq(sheet.views[2].scale,5);eq(sheet.dims[0].text,'Ø8');
+ // nothing of it is drawn outside its circle
+ const inside=sheet.items.filter(i=>i.t==='path'&&i.w===0.5&&i.pts.every((x,k)=>k%2?true:Math.abs(x-230)<=31)).flatMap(i=>i.pts.reduce((o,x,k)=>k%2?o:[...o,[x,i.pts[k+1]]],[]));
+ ok(inside.length>10);for(const q of inside)if(q[0]>195)ok(Math.hypot(q[0]-230,q[1]-80)<=30+1e-6,'inside the circle');
+ eq(D.removeItems(doc,'d1',[t.id]).drawings[0].views.map(v=>v.id),[f.id],'the detail goes with its view');
+});
+test('the revision table and surface symbols',async()=>{
+ const {d:d0,p,build,body}=await plate();let {doc}=D.addDrawing(d0,p,'2026-11-28');let f;
+ ({doc,view:f}=D.addView(doc,'d1','front',[110,150]));
+ doc=D.addRevision(doc,'d1',{description:'First issue',date:'2026-11-28',by:'TO'}).doc;
+ doc=D.addRevision(doc,'d1',{description:'Hole moved',date:'2026-11-29'}).doc;
+ eq(D.drawingById(doc,'d1').revisions.map(r=>r.rev),['A','B']);
+ doc=D.addSymbol(doc,'d1',{view:f.id,face:D.pickRefFrom(body,'face',faceBy(body,[0,0,1])),value:'Ra 1.6',process:'removal'}).doc;
+ doc=D.addSymbol(doc,'d1',{view:f.id,face:D.pickRefFrom(body,'face',faceBy(body,[-1,0,0])),value:'Ra 3.2',process:'any'}).doc;
+ doc=D.addSymbol(doc,'d1',{view:f.id,face:D.pickRefFrom(body,'face',faceBy(body,[0,-1,0])),value:'Ra 6.3',process:'any'}).doc;
+ eq(validateDocument(doc),[]);
+ const sheet=await drawings.sheet(doc,build,'d1'),texts=sheet.items.filter(i=>i.t==='text').map(i=>i.text);
+ for(const w of ['REV','DESCRIPTION','First issue','Hole moved','TO','2026-11-29','Ra 1.6','Ra 3.2'])ok(texts.includes(w),`"${w}" is on the sheet`);
+ eq(texts.filter(x=>x==='B').length,2,'the newest revision in its row and in the title block');
+ eq(sheet.symbols.map(x=>x.problem??x.text),['Ra 1.6','Ra 3.2','That face is not seen from its side in the front view, as a line: choose a flat face that is.']);
+ const top=sheet.symbols[0].at;ok(top[1]>160,'the symbol of the top stands above the view');
+ eq(D.removeItems(doc,'d1',['r'+D.drawingById(doc,'d1').revisions[0].id.slice(1)]).drawings[0].revisions.length,1);
 });
 test('the sheet as a PDF at its true size, and as SVG',async()=>{
  const sheet=window.__sheet,pdf=sheetToPDF(sheet,{title:'Plate – Ø8',date:new Date(Date.UTC(2026,10,28,12,0,0))}),text=new TextDecoder('latin1').decode(pdf);

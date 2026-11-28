@@ -33,12 +33,13 @@ What it does:
   and an autosave in the browser.
 - **Drawings** for the workshop: views of a part on a sheet at a scale,
   hidden edges and centre lines, sizes measured from the model that follow
-  it with their tolerances, section views (hatched, with their cutting
-  lines), a title block by ISO 7200 and notes; as PDF to print at true size.
+  it with their tolerances, angles, sections, details, threads as ISO 6410
+  draws them, surface symbols, a revision table, a title block by ISO 7200
+  and notes; as PDF to print at true size.
   Made by an agent or by hand on the sheet.
-- **For an agent**: 50 commands behind `window.corecad.run`
+- **For an agent**: 53 commands behind `window.corecad.run`
   ([COMMANDS.md](COMMANDS.md)), and the same list over MCP through a relay
-  ([bridge/README.md](../bridge/README.md)): 51 tools with the relay's own.
+  ([bridge/README.md](../bridge/README.md)): 54 tools with the relay's own.
   "This", "selected" and "pointed" mean what the person has clicked or rests
   the mouse on, and `get_selection` says how they are looking at the model.
   While an agent is at work the page says so: a frame round the view, a line
@@ -52,7 +53,7 @@ What it does:
 
 Verified on this build, 2026-11-26:
 
-- `python tools/run_tests.py`: 163 tests in 20 pages (2026-11-28); the kernel pages run
+- `python tools/run_tests.py`: 165 tests in 20 pages (2026-11-28); the kernel pages run
   the real OpenCascade worker.
 - The end-to-end scripts in headless Chrome, all passing: `tools/e2e.py`,
   `e2e_more.py`, `e2e_parts.py` and `e2e_export.py` (real mouse and key
@@ -157,9 +158,10 @@ Not verified:
 7. **A client is not told when the list of tools changes**: it reconnects to
    read it again. Telling it needs a new version of the relay on its host.
    Worth doing?
-8. **What next on drawings**: detail views at a larger scale, angles, a
-   revision table, surface symbols on single faces, threads drawn the
-   standard way. In that order?
+8. **What next on drawings**, of what professional drawings still have:
+   a thread's designation (M30×3.5) written by itself, geometric tolerances
+   (flatness, position: a frame with a datum), more than one sheet. Wanted,
+   and in what order?
 
 ## Next
 
@@ -1119,6 +1121,52 @@ its part.
 Not verified: a printed PDF measured with a ruler; a large or complicated
 part (an imported one, a thread: a thread's helix is drawn as the many edges
 it has, and may be slow to project).
+
+## Details, angles, revisions, surface symbols, threads (2026-11-28)
+
+The owner said to go on, in the order given: detail views, angles, a
+revision table, surface symbols on single faces, threads drawn the standard
+way.
+
+- **Details** (`add_detail_view`): a view `look: "detail"` that shows the
+  lines of the view it enlarges, clipped to a circle, at a scale of its own
+  (`clipped` in `layout.js`); DETAIL B (5:1) under it; a thin circle and the
+  letter on that view. A section can be enlarged too (its hatching is
+  clipped with it). Letters are shared with sections.
+- **Angles**: `add_drawing_dimension` between two lines of a view that are
+  not parallel draws the angle with an arc round their corner, arrows and
+  degrees (from the corner towards the middle of each line: a bevel of 45°
+  on a block reads 135° to its top, the angle inside the part). Before, two
+  faces at an angle were refused.
+- **Revisions** (`add_revision`): a table on the title block, heads at the
+  bottom and the newest row at the top; REV in the title block is the
+  newest letter.
+- **Surface symbols** (`add_surface_symbol`, ISO 1302): on a face seen as a
+  line; on the face when it looks up, else at the end of a leader; a bar for
+  material to be removed, a circle for none.
+- **Threads** (ISO 6410): for a drawing the kernel builds a revolve with a
+  rise otherwise (`threadForDrawing` in `features.js`, cached apart): joined,
+  the band the thread fills, turned once (a plain cylinder at the crests);
+  cut, nothing (the hole stays at the minor diameter). It reports where the
+  thread is; the sheet draws thin lines at the root along it and three
+  quarters of a thin circle seen from its end. A bolt of seven turns in two
+  views takes 0.2 s instead of the helix's hundreds of edges.
+- In the page: *Detail* in Add view (three clicks), **Surface** (a click on
+  a face, its Ra, Enter), revisions in the Sheet dialog. 53 commands now.
+
+Verification: `test/drawing.test.html` (13 tests: also clipping to a circle,
+a detail at 5:1 with nothing drawn outside it and a size in it, a detail of a
+detail refused, the angle at a corner, the revision table and REV, three
+surface symbols of which one is on a face not seen as a line).
+`tools/e2e_api.py`: a block with a bevel and a small hole: 135° twice, an
+angle refused in the top view, a detail at 5:1 with Ø4 in it, two
+revisions, a surface symbol, a symbol refused; by hand a symbol, a revision
+added and one taken off in the Sheet dialog, a detail in three clicks; a
+bolt drawn with its thread's outline at 30 mm and thin lines at ±12.3.
+
+Not verified: a nut's thread on a drawing (built the same way: nothing is
+added for a cut, and lines at the major diameter are drawn), and how the
+thin lines look in a section through a thread.
 
 ## Section views (2026-11-28)
 

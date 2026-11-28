@@ -319,6 +319,35 @@ export const TOOLS = [
     },
     ['view', 'cut', 'at']
   ),
+  tool(
+    'add_detail_view',
+    'Puts a detail on the drawing: a round piece of a view drawn larger, to show and size what is small. The view it comes from gets a thin circle round that piece with a letter; the detail is the same piece inside a circle, named DETAIL B (5:1) under it, with its own scale. Sizes are added to it as to any view.',
+    {
+      view: str('The view it enlarges, such as "v2" (any view but a detail).'),
+      around: VEC('The middle of the piece, on the paper: [x, y] in mm, inside that view (get_drawing gives its box).'),
+      radius: numb('How far the piece reaches round that middle, in mm on the paper as the view is drawn now.'),
+      scale: numb('The scale of the detail: 5 is 5:1. Left out: twice the scale of the view it comes from.'),
+      at: VEC('Where the middle of the detail stands on the paper: [x, y] in mm.'),
+    },
+    ['view', 'around', 'radius', 'at']
+  ),
+  tool(
+    'add_revision',
+    'Adds a row to the revision table of a drawing (on its title block, the newest at the top): the next letter (A, then B, …), today\'s date, what changed and who changed it. The title block\'s REV is the newest letter.',
+    { drawing: str('The drawing: id or name. Left out: the newest drawing.'), description: str('What changed, in a few words.'), by: str('Who changed it (initials).') },
+    ['description']
+  ),
+  tool(
+    'add_surface_symbol',
+    'Puts a surface texture symbol (ISO 1302) on a flat face in a view where the face is seen from its side, as a line: standing on it when it faces up, else at the end of a leader from it. Its text says what the surface must be (Ra 1.6). A surface with no symbol of its own is as the title block\'s surface finish says.',
+    {
+      view: str('The view\'s id, such as "v2".'),
+      face: { description: 'The face: "this", a side name such as "top", or { "face": index } from list_faces.' },
+      value: str('What the surface must be, such as "Ra 1.6". Left out: the symbol alone.'),
+      process: str('"any" (default): made in any way; "removal": material must be taken off (machined); "no_removal": it must not be.', { enum: ['any', 'removal', 'no_removal'] }),
+    },
+    ['view', 'face']
+  ),
   tool('move_view', 'Moves a view on its sheet, with its dimensions.', { view: str('The view\'s id, such as "v2" (get_drawing).'), at: VEC('Where its middle stands on the paper: [x, y] in mm from the lower left corner.') }, ['view', 'at']),
   tool(
     'add_drawing_dimension',
@@ -331,7 +360,7 @@ export const TOOLS = [
     },
     ['view', 'from']
   ),
-  tool('remove_from_drawing', 'Takes views or dimensions off their drawing, by id. A view takes its dimensions with it, and the sections cut from it.', { ids: { type: 'array', items: { type: 'string' }, description: 'Ids of views ("v2") and dimensions ("m5").' } }, ['ids']),
+  tool('remove_from_drawing', 'Takes views, dimensions, surface symbols or rows of the revision table off their drawing, by id. A view takes with it its dimensions and symbols, and the sections and details made from it.', { ids: { type: 'array', items: { type: 'string' }, description: 'Ids of views ("v2"), dimensions ("m5"), symbols ("s7") and revisions ("r6").' } }, ['ids']),
   tool(
     'get_drawing',
     'A drawing as it stands: its paper and scale, where the frame and the title block are, each view with where it stands and the box it fills on the paper (mm from the lower left corner), and each dimension with the number it shows, or why it cannot be drawn now. screenshot with "drawing" shows it.',
@@ -976,11 +1005,16 @@ export function createCommands(app) {
       title_block: [round(Math.max(MARGIN.left, w - MARGIN.right - TITLE_BLOCK.width), 2), MARGIN.bottom, w - MARGIN.right, MARGIN.bottom + TITLE_BLOCK.height],
       views: d.views.map((v) => {
         const box = sheet.views.find((x) => x.id === v.id)?.box;
-        return { id: v.id, look: v.look, ...(v.section ? { section: { letter: v.section.letter, of: v.section.of, cut: v.section.cut, through: v.section.through, ...(v.section.flip ? { flip: true } : {}) } } : {}), at: v.at, ...(box ? { box: round(box, 2), size: round([box[2] - box[0], box[3] - box[1]], 2) } : { empty: 'the part shows nothing from here' }) };
+        return { id: v.id, look: v.look, ...(v.detail ? { detail: { letter: v.detail.letter, of: v.detail.of, scale: Drawing.scaleText(v.detail.scale) } } : {}), ...(v.section ? { section: { letter: v.section.letter, of: v.section.of, cut: v.section.cut, through: v.section.through, ...(v.section.flip ? { flip: true } : {}) } } : {}), at: v.at, ...(box ? { box: round(box, 2), size: round([box[2] - box[0], box[3] - box[1]], 2) } : { empty: 'the part shows nothing from here' }) };
       }),
       dimensions: d.dims.map((m) => {
         const x = sheet.dims.find((y) => y.id === m.id);
         return { id: m.id, view: m.view, ...(m.along ? { along: m.along } : {}), ...(m.tolerance ? { tolerance: m.tolerance } : {}), ...(x?.problem ? { problem: x.problem } : { shows: x?.text, value: x?.value }) };
+      }),
+      revisions: (d.revisions ?? []).map((r) => ({ id: r.id, rev: r.rev, description: r.description, date: r.date, ...(r.by ? { by: r.by } : {}) })),
+      symbols: (d.symbols ?? []).map((x) => {
+        const row = sheet.symbols?.find((y) => y.id === x.id);
+        return { id: x.id, view: x.view, value: x.value, process: x.process, ...(row?.problem ? { problem: row.problem } : {}) };
       }),
       how: 'Paper coordinates are mm from the lower left corner. A dimension stands outside its view: leave about 25 mm round a view for them. screenshot with "drawing" shows the sheet; export with format "pdf" gives it to print.',
     };
@@ -1124,6 +1158,54 @@ export function createCommands(app) {
       const { doc: next, view: v } = Drawing.addSectionView(doc(), d.id, { of: of.id, cut: a.cut, through, flip: !!a.flip, at: a.at }),
         info = await drawingChange(next, `Add section ${v.section.letter}-${v.section.letter} to ${d.name}`, d);
       return { view: info.views.find((x) => x.id === v.id), plane: `${name} = ${round(through, 3)}`, drawing: info };
+    },
+    async add_detail_view(a) {
+      free();
+      await settled();
+      const { drawing: d, view: of } = viewOf(a.view);
+      if (of.look === 'detail') throw Error('A detail is made from a view that is not itself a detail.');
+      const pair = (v) => Array.isArray(v) && v.length === 2 && v.every(Number.isFinite);
+      if (!pair(a.around) || !pair(a.at)) throw Error('"around" and "at" are [x, y] on the paper, in mm from its lower left corner.');
+      if (!(a.radius > 0)) throw Error('"radius" is a positive number of mm on the paper.');
+      if (a.scale !== undefined && !(Number.isFinite(a.scale) && a.scale > 0 && a.scale <= 1000)) throw Error('"scale" is a positive number: 5 for 5:1.');
+      const sheet = await sheetOf(d),
+        sv = sheet.views.find((x) => x.id === of.id);
+      if (!sv?.box) throw Error(`The ${Drawing.viewName(of)} view shows nothing to enlarge.`);
+      const [x0, y0, x1, y1] = sv.box;
+      if (a.around[0] < x0 - 1 || a.around[0] > x1 + 1 || a.around[1] < y0 - 1 || a.around[1] > y1 + 1)
+        throw Error(`[${a.around}] is not on the ${Drawing.viewName(of)} view: it fills [${round([x0, y0, x1, y1], 1)}] on the paper.`);
+      const ownAt = of.at,
+        centre = [sv.centre[0] + (a.around[0] - ownAt[0]) / sv.scale, sv.centre[1] + (a.around[1] - ownAt[1]) / sv.scale],
+        scale = a.scale ?? 2 * sv.scale,
+        { doc: next, view: v } = Drawing.addDetailView(doc(), d.id, { of: of.id, centre: round(centre, 4), radius: round(a.radius / sv.scale, 4), scale, at: a.at }),
+        info = await drawingChange(next, `Add detail ${v.detail.letter} to ${d.name}`, d);
+      return { view: info.views.find((x) => x.id === v.id), drawing: info };
+    },
+    async add_revision(a) {
+      free();
+      await settled();
+      const d = drawingOf(a.drawing);
+      if (typeof a.description !== 'string' || !a.description.trim()) throw Error('Say in "description" what changed.');
+      if (a.by !== undefined && typeof a.by !== 'string') throw Error('"by" is a text.');
+      if ((d.revisions ?? []).at(-1)?.rev === 'Z') throw Error('The revision table has reached Z.');
+      const { doc: next, revision } = Drawing.addRevision(doc(), d.id, { description: a.description.trim(), date: today(), by: (a.by ?? '').trim() }),
+        info = await drawingChange(next, `Revision ${revision.rev} of ${d.name}`, d);
+      return { revision: info.revisions.find((r) => r.id === revision.id), drawing: info };
+    },
+    async add_surface_symbol(a) {
+      free();
+      await settled();
+      const { drawing: d, view: v } = viewOf(a.view);
+      if (a.process !== undefined && !['any', 'removal', 'no_removal'].includes(a.process)) throw Error('"process" is "any", "removal" or "no_removal".');
+      if (a.value !== undefined && typeof a.value !== 'string') throw Error('"value" is a text, such as "Ra 1.6".');
+      const picks = drawingPicks(d, a.face);
+      if (picks.length !== 1) throw Error('A surface symbol is on one face.');
+      const ref = Drawing.pickRefFrom(picks[0].body, picks[0].kind, picks[0].index),
+        { doc: next, symbol } = Drawing.addSymbol(doc(), d.id, { view: v.id, face: ref, value: (a.value ?? '').trim(), process: a.process ?? 'any' }),
+        trial = (await drawings.sheet(next, store.state.build, d.id)).symbols.find((x) => x.id === symbol.id);
+      if (trial?.problem) throw Error(trial.problem);
+      const info = await drawingChange(next, `Surface symbol on ${d.name}`, d);
+      return { symbol: info.symbols.find((x) => x.id === symbol.id), drawing: info };
     },
     async move_view(a) {
       free();

@@ -22,7 +22,7 @@ COMMANDS = ('get_state get_selection measure get_document load_document new_docu
             'extrude revolve import fillet chamfer edit_feature '
             'add_part add_group combine move_part copy_part set_color edit_part unlink_part delete_part delete_feature '
             'undo redo reload_app cancel_edit export screenshot set_view set_section set_xray '
-            'add_drawing edit_drawing edit_drawing_dimension delete_drawing add_view add_section_view move_view add_drawing_dimension remove_from_drawing get_drawing').split()
+            'add_drawing edit_drawing edit_drawing_dimension delete_drawing add_view add_section_view add_detail_view add_revision add_surface_symbol move_view add_drawing_dimension remove_from_drawing get_drawing').split()
 GONE = ['add_box', 'add_cylinder', 'add_sphere', 'hole', 'ungroup', 'list_dimensions']
 
 
@@ -1209,6 +1209,91 @@ def run(p, url='index.html?test=1'):
     assert left['views'] == [] and left['dimensions'] == [], 'the sections go with the view they are cut from'
     call('load_document', document=was)
     step('sections: cut through a view by command and by hand, hatched and named, with their sizes; refused where the plane misses or the view is a section')
+
+    # ---- details, angles, revisions, surface symbols: by command, then by hand
+    was = call('get_document')
+    call('new_document', name='Wedge')
+    block('Wedge', [60, 40, 20])                                                        # x -30..30, y -20..20, z 0..20
+    call('chamfer', edges={'parallel': 'y', 'on': 'top'}, distance=6)                   # the two top edges along y, bevelled 45°
+    sketch([{'type': 'circle', 'center': [0, 0], 'diameter': 4}], plane='top')
+    call('extrude', operation='cut', distance=5)                                        # a small blind hole
+    call('add_drawing')
+    front = call('add_view', look='front', at=[90, 150])['view']
+    top = call('add_view', look='top', at=[90, 80])['view']
+    bevel = next(f['face'] for f in call('list_faces')[0]['faces'] if f['kind'] == 'plane' and f['normal'][0] > 0.5 and f['normal'][2] > 0.5)
+    ang = call('add_drawing_dimension', view=front['id'], **{'from': 'top', 'to': {'face': bevel}})['dimension']
+    assert ang['shows'] == '135°', ang
+    assert call('add_drawing_dimension', view=front['id'], **{'from': 'right', 'to': {'face': bevel}})['dimension']['shows'] == '135°'
+    fails('add_drawing_dimension', 'seen as lines in the top view', view=top['id'], **{'from': 'top', 'to': {'face': bevel}})
+    det = call('add_detail_view', view=top['id'], around=[90, 80], radius=5, scale=5, at=[225, 145])['view']
+    assert det['detail'] == {'letter': 'A', 'of': top['id'], 'scale': '5:1'} and det['size'] == [50, 50], det
+    rim = next(e['edge'] for e in call('list_edges', edges={'kind': 'circle'})[0]['edges'] if abs(e['center'][2] - 20) < 1e-6)
+    assert call('add_drawing_dimension', view=det['id'], **{'from': {'edge': rim}})['dimension']['shows'] == 'Ø4'
+    fails('add_detail_view', 'is not on the top view', view=top['id'], around=[250, 190], radius=5, at=[220, 150])
+    r = call('add_revision', description='First issue', by='TO')['revision']
+    assert r['rev'] == 'A' and r['date'] == time.strftime('%Y-%m-%d'), r
+    assert call('add_revision', description='Bevel 6 mm')['revision']['rev'] == 'B'
+    sym = call('add_surface_symbol', view=front['id'], face='bottom', value='Ra 3.2', process='removal')['symbol']
+    assert sym['value'] == 'Ra 3.2' and 'problem' not in sym, sym
+    fails('add_surface_symbol', 'not seen from its side in the top view', view=top['id'], face='top', value='Ra 1.6')
+    g = call('get_drawing')
+    assert [x['rev'] for x in g['revisions']] == ['A', 'B'] and len(g['symbols']) == 1, g
+    texts = p.js('[...document.querySelectorAll("#sheet svg text")].map(t => t.textContent)')
+    for w in ['135°', 'DETAIL A (5:1)', 'Ø4', 'First issue', 'Bevel 6 mm', 'Ra 3.2', 'REV']:
+        assert w in texts, (w, texts)
+    p.screenshot(ROOT / '.scratch' / 'e2e_api_detail.png')
+    # by hand: a surface symbol on the left side, a revision through the Sheet dialog, a detail of the front view
+    def paper(x, y):
+        return p.js(f'(() => {{ const svg = document.querySelector("#sheet .sheet-paper svg"), m = svg.getScreenCTM(), h = svg.viewBox.baseVal.height; const q = new DOMPoint({x}, h - {y}).matrixTransform(m); return [q.x, q.y]; }})()')
+    p.click('[data-action="sheet-surface"]')
+    p.click(*paper(60.2, 148))                                                          # the left side of the front view (x 60, y 140..160)
+    p.wait('!!document.getElementById("sheet-surface-value")')
+    p.click('#sheet-surface-value')
+    p.type('Ra 6.3')
+    p.key('Enter')
+    p.wait('!corecad.busy && (corecad.doc.drawings[0].symbols ?? []).length === 2', timeout=30)
+    p.key('Escape')
+    p.click('[data-action="sheet-setup"]')
+    p.wait('!!document.getElementById("sheet-rev-what")')
+    p.js('document.getElementById("sheet-rev-what").value = "Ra on the side"; document.querySelector(".sheet-rev-off").checked = true')
+    p.click('[data-modal="apply"]')
+    p.wait('!corecad.busy && corecad.doc.drawings[0].revisions.map(r => r.rev).join() === "B,C"', timeout=30)
+    p.js('{ const s = document.getElementById("sheet-view"); s.value = "detail"; s.dispatchEvent(new Event("change", { bubbles: true })); }')
+    p.click(*paper(117, 157))
+    p.click(*paper(123, 157))
+    p.click(*paper(170, 190))
+    p.wait('!corecad.busy && corecad.doc.drawings[0].views.length === 4', timeout=30)
+    d2 = call('get_drawing')['views'][3]
+    assert d2['detail']['letter'] == 'B' and d2['detail']['scale'] == '2:1', d2
+    call('load_document', document=was)
+    step('details, angles, revisions and surface symbols: by command and by hand; what cannot be drawn is refused')
+
+    # ---- a thread on a drawing, as ISO 6410 draws it: the crests as an outline, the roots thin
+    was = call('get_document')
+    call('new_document', name='Bolt drawing')
+    bolt = rod('Bolt', 25.2, 30)                                                        # radius 12.6, z 0..30
+    t = sketch([{'type': 'polyline', 'points': [[12.3, 1.0], [15, 2.3], [15, 2.7], [12.3, 4.0]], 'closed': True},
+                {'type': 'line', 'from': [0, 0], 'to': [0, 10], 'construction': True}], plane='XZ', part=bolt)
+    axis = next(e['id'] for e in t['sketch']['entities'] if e.get('construction'))
+    call('revolve', sketch=t['id'], axis=axis, rise=3.5, angle=360 * 7)                 # z 1 .. 28.5
+    call('add_drawing', part='Bolt')
+    started = time.time()
+    front = call('add_view', look='front', at=[100, 150])['view']
+    top = call('add_view', look='top', at=[100, 95])['view']
+    took = time.time() - started
+    assert all(abs(v - 30) < 0.05 for v in front['size'] + top['size']), (front, top)
+    # the front view: the outline of the crests and two thin lines at the root (x = ±12.3), not the helix
+    lines = p.js("""(() => {
+      const svg = document.querySelector('#sheet .sheet-paper svg'), h = svg.viewBox.baseVal.height;
+      return [...svg.querySelectorAll('path')].map(e => [e.getAttribute('stroke-width'), e.getAttribute('d')]);
+    })()""")
+    thin = [d for w, d in lines if w == '0.25' and d.count('L') == 1]
+    xs = sorted({round(float(d[1:].split(' ')[0]) - 100, 1) for d in thin if d.split('L')[0][1:].split(' ')[0] == d.split('L')[1].split(' ')[0]})
+    assert -12.3 in xs and 12.3 in xs, xs
+    assert len(lines) < 60, f'{len(lines)} lines: the helix would be hundreds'
+    p.screenshot(ROOT / '.scratch' / 'e2e_api_thread_drawing.png')
+    call('load_document', document=was)
+    step(f'a thread on a drawing: the crests as its outline, thin lines at the root, three quarters of a circle from its end ({took:.1f} s for two views)')
 
     # ---- one way to do each thing: these commands and no others; making takes neither a name, a place nor contents
     names = p.js('corecad.tools.map(t => t.name)')

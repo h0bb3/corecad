@@ -7,7 +7,7 @@
 // What is drawn:
 //   { t: 'path', pts: [x0, y0, x1, y1, ...], w: width, dash?: [on, off, ...], fill?: true, closed?: true }
 //   { t: 'text', x, y, text, size, anchor: 'start' | 'middle' | 'end', angle: degrees }
-import { SHEETS, viewAxes, viewName, planeOf, scaleText } from './model.js';
+import { SHEETS, viewAxes, viewName, planeOf, sourceOf, scaleText } from './model.js';
 import { textWidth } from './font.js';
 import { between } from '../api/measure3d.js';
 import { placedTopo } from '../api/select.js';
@@ -44,8 +44,7 @@ const E = 1e-6;
 export function measureOf(dim, picks, ax, look) {
   if (picks.length === 2) {
     const m = between(picks[0], picks[1]);
-    if (m.angle !== undefined)
-      throw Error(`Those two are at ${fmt(m.angle)}° to each other: a dimension is a distance between things that are parallel (two faces, two holes, a hole and a face). Angles are not drawn.`);
+    if (m.angle !== undefined) return angleOf(picks, ax, look);
     if (!(m.distance > E)) throw Error('Those two lie in one place: there is no distance between them to draw.');
     return linear(m.from, m.to, m.distance, '', dim.along, ax, look);
   }
@@ -124,44 +123,70 @@ export function boundsOf(lines) {
  */
 export function composeSheet({ drawing, names, lines, bodies, picks }) {
   const size = SHEETS[drawing.sheet],
-    hatch = (loops, w = WIDTH.smooth) => hatched(loops, 2.5).forEach((seg) => path(seg, w)),
     s = drawing.scale,
     items = [],
     path = (pts, w, more = {}) => items.push({ t: 'path', pts, w, ...more }),
     text = (x, y, t, size = TEXT, anchor = 'middle', angle = 0) => items.push({ t: 'text', x, y, text: t, size, anchor, angle });
   frame(size, drawing, names, path, text);
   const views = [],
-    dims = [];
+    dims = [],
+    symbols = [];
   for (const v of drawing.views) {
     const own = lines.get(v.id),
+      detail = v.look === 'detail' ? v.detail : null,
+      sv = detail ? detail.scale : s, // a detail has a scale of its own
       b = boundsOf(own),
-      c = b ? [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2] : [0, 0],
+      c = detail ? detail.centre : b ? [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2] : [0, 0],
       ax = viewAxes(drawing, v),
-      S = (p) => [v.at[0] + s * (dot(p, ax.x) - c[0]), v.at[1] + s * (dot(p, ax.y) - c[1])],
-      box = b ? [v.at[0] + s * (b[0] - c[0]), v.at[1] + s * (b[1] - c[1]), v.at[0] + s * (b[2] - c[0]), v.at[1] + s * (b[3] - c[1])] : null;
-    views.push({ id: v.id, look: v.look, box, centre: c, scale: s, ...(v.section ? { letter: v.section.letter } : {}) });
+      S = (p) => [v.at[0] + sv * (dot(p, ax.x) - c[0]), v.at[1] + sv * (dot(p, ax.y) - c[1])],
+      S2 = (q) => [v.at[0] + sv * (q[0] - c[0]), v.at[1] + sv * (q[1] - c[1])],
+      R = detail ? detail.radius * sv : 0,
+      box = detail
+        ? [v.at[0] - R, v.at[1] - R, v.at[0] + R, v.at[1] + R]
+        : b
+        ? [v.at[0] + sv * (b[0] - c[0]), v.at[1] + sv * (b[1] - c[1]), v.at[0] + sv * (b[2] - c[0]), v.at[1] + sv * (b[3] - c[1])]
+        : null;
+    views.push({ id: v.id, look: v.look, box, centre: c, scale: sv, ...((v.section ?? v.detail) ? { letter: (v.section ?? v.detail).letter } : {}) });
     if (!b) continue;
     const place = (pl) => {
-      const out = new Array(pl.length);
-      for (let i = 0; i < pl.length; i += 2) {
-        out[i] = v.at[0] + s * (pl[i] - c[0]);
-        out[i + 1] = v.at[1] + s * (pl[i + 1] - c[1]);
-      }
-      return out;
-    };
-    for (const pl of own.hidden ?? []) path(place(pl), WIDTH.hidden, { dash: DASH.hidden });
-    for (const pl of own.smooth ?? []) path(place(pl), WIDTH.smooth);
-    for (const pl of own.visible ?? []) path(place(pl), WIDTH.outline);
-    if (v.look === 'section') {
-      // what the plane cuts, hatched at 45°; the name of the section under it
-      hatch((own.cut ?? []).map(place));
-      text((box[0] + box[2]) / 2, box[1] - 9, `SECTION ${v.section.letter}-${v.section.letter}`, 5);
+        const out = new Array(pl.length);
+        for (let i = 0; i < pl.length; i += 2) {
+          out[i] = v.at[0] + sv * (pl[i] - c[0]);
+          out[i + 1] = v.at[1] + sv * (pl[i + 1] - c[1]);
+        }
+        return out;
+      },
+      // a detail shows only what lies in its circle
+      pieces = (pl) => (detail ? clipped(pl, c, detail.radius) : [pl]);
+    for (const pl of own.hidden ?? []) for (const q of pieces(pl)) path(place(q), WIDTH.hidden, { dash: DASH.hidden });
+    for (const pl of own.smooth ?? []) for (const q of pieces(pl)) path(place(q), WIDTH.smooth);
+    for (const pl of own.visible ?? []) for (const q of pieces(pl)) path(place(q), WIDTH.outline);
+    const source = sourceOf(drawing, v);
+    if (source.look === 'section') {
+      // what the plane cuts, hatched at 45°
+      let segs = hatched((own.cut ?? []).map(place), 2.5);
+      if (detail) segs = segs.flatMap((g) => clipped(g, v.at, R));
+      for (const g of segs) path(g, WIDTH.smooth);
     }
-    centreLines(bodies, ax, S, s, path, v.look === 'section' ? planeOf(drawing, v) : null);
+    if (v.look === 'section') text((box[0] + box[2]) / 2, box[1] - 9, `SECTION ${v.section.letter}-${v.section.letter}`, 5);
+    if (detail) {
+      path(circlePts(v.at, R), WIDTH.thin, { closed: true });
+      text(v.at[0], box[1] - 9, `DETAIL ${detail.letter} (${scaleText(sv)})`, 5);
+    } else {
+      centreLines(bodies, ax, S, sv, path, source.look === 'section' ? planeOf(drawing, source) : null);
+      for (const t of own.threads ?? []) threadLines(t, ax, S, sv, path);
+    }
     // where the sections cut from this view lie: a chain line with thick ends, arrows the way they look, and the letter
-    for (const sv of drawing.views.filter((x) => x.look === 'section' && x.section.of === v.id)) cuttingLine(planeOf(drawing, sv), sv.section, ax, c, v, s, box, path, text);
+    for (const x of drawing.views.filter((x) => x.look === 'section' && x.section.of === v.id)) cuttingLine(planeOf(drawing, x), x.section, ax, c, v, sv, box, path, text);
+    // what the details of this view enlarge: a thin circle with the letter
+    for (const x of drawing.views.filter((x) => x.look === 'detail' && x.detail.of === v.id)) {
+      const C = S2(x.detail.centre),
+        r = x.detail.radius * sv;
+      path(circlePts(C, r), WIDTH.thin, { closed: true });
+      text(C[0] + (r + 2) * Math.SQRT1_2 + 1.5, C[1] + (r + 2) * Math.SQRT1_2, x.detail.letter, 5);
+    }
     // the dimensions of this view, each further out than the one before it on its side
-    const levels = { top: 0, bottom: 0, left: 0, right: 0, aligned: 0 },
+    const levels = { top: 0, bottom: 0, left: 0, right: 0, aligned: 0, angle: 0 },
       mid = [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2];
     for (const m of drawing.dims.filter((m) => m.view === v.id)) {
       const ps = picks.get(m.id);
@@ -176,12 +201,200 @@ export function composeSheet({ drawing, names, lines, bodies, picks }) {
         dims.push({ id: m.id, view: v.id, problem: String(e.message) });
         continue;
       }
-      const label = withTolerance(g.prefix + fmt(g.value), m.tolerance),
-        at = g.kind === 'leader' ? leader(S(g.c), g.r * s, mid, label, path, text) : linearDim(S(g.a), S(g.b), g.dir, box, mid, levels, label, path, text);
+      const label = withTolerance(g.kind === 'angle' ? fmt(g.value) + '°' : g.prefix + fmt(g.value), m.tolerance),
+        at =
+          g.kind === 'leader'
+            ? leader(S(g.c), g.r * sv, mid, label, path, text)
+            : g.kind === 'angle'
+            ? angleDim(S2(g.vertex), g.u1, g.u2, g.reach * sv, levels.angle++, label, path, text)
+            : linearDim(S(g.a), S(g.b), g.dir, box, mid, levels, label, path, text);
       dims.push({ id: m.id, view: v.id, value: +g.value.toFixed(4), text: label, at: at.map((x) => +x.toFixed(3)), angle: at.angle, width: +textWidth(label, TEXT).toFixed(3) });
     }
+    // surface symbols on the faces of this view
+    for (const sym of (drawing.symbols ?? []).filter((x) => x.view === v.id)) {
+      const ps = picks.get(sym.id);
+      let seg;
+      try {
+        if (!ps) throw Error('The face it was on is no longer in the model.');
+        seg = faceLine(ps[0], ax, viewName(v));
+      } catch (e) {
+        symbols.push({ id: sym.id, view: v.id, problem: String(e.message) });
+        continue;
+      }
+      const A = S(seg.a),
+        B = S(seg.b),
+        n2 = [dot(seg.n, ax.x), dot(seg.n, ax.y)],
+        at = surfaceSymbol([(A[0] + B[0]) / 2, (A[1] + B[1]) / 2], n2, sym.value, sym.process, path, text);
+      symbols.push({ id: sym.id, view: v.id, text: sym.value, at: at.map((x) => +x.toFixed(3)) });
+    }
   }
-  return { size, items, views, dims };
+  return { size, items, views, dims, symbols };
+}
+
+/**
+ * A thread as ISO 6410 draws it: the crests as the solid shows them (thick), the roots thin. From the side,
+ * two thin lines along it at the root (on a bolt the minor diameter, in a nut the major); along its axis, three
+ * quarters of a thin circle at the root, open at the upper right.
+ */
+function threadLines(t, ax, S, s, path) {
+  const a = sub(t.p1, t.p0),
+    L = len(a);
+  if (!(L > E)) return;
+  const u = mul(a, 1 / L),
+    r = t.internal ? t.major : t.minor,
+    facing = Math.abs(dot(u, ax.n));
+  if (facing > 1 - E) {
+    const C = S(t.p0),
+      pts = [];
+    for (let i = 0; i <= 54; i++) {
+      const q = Math.PI / 2 + (i / 54) * 1.5 * Math.PI;
+      pts.push(C[0] + r * s * Math.cos(q), C[1] + r * s * Math.sin(q));
+    }
+    path(pts, WIDTH.thin);
+  } else if (facing < E) {
+    const e = mul(unit(cross(u, ax.n)), r);
+    for (const side of [e, mul(e, -1)]) path([...S(add(t.p0, side)), ...S(add(t.p1, side))], WIDTH.thin);
+  }
+}
+/** The pieces of a polyline [x0, y0, ...] that lie inside a circle. */
+export function clipped(pl, c, r) {
+  const out = [];
+  let cur = null;
+  const flush = () => {
+    if (cur && cur.length >= 4) out.push(cur);
+    cur = null;
+  };
+  for (let i = 2; i < pl.length; i += 2) {
+    const p = [pl[i - 2] - c[0], pl[i - 1] - c[1]],
+      d = [pl[i] - pl[i - 2], pl[i + 1] - pl[i - 1]],
+      A = d[0] * d[0] + d[1] * d[1],
+      Bq = 2 * (p[0] * d[0] + p[1] * d[1]),
+      C = p[0] * p[0] + p[1] * p[1] - r * r,
+      disc = Bq * Bq - 4 * A * C;
+    if (!A || disc <= 0) {
+      flush();
+      continue;
+    }
+    const t0 = Math.max(0, (-Bq - Math.sqrt(disc)) / (2 * A)),
+      t1 = Math.min(1, (-Bq + Math.sqrt(disc)) / (2 * A));
+    if (t0 >= t1) {
+      flush();
+      continue;
+    }
+    const at = (t) => [pl[i - 2] + d[0] * t, pl[i - 1] + d[1] * t];
+    if (t0 > 0) flush();
+    if (!cur) cur = [...at(t0)];
+    cur.push(...at(t1));
+    if (t1 < 1) flush();
+  }
+  flush();
+  return out;
+}
+function circlePts(c, r, n = 72) {
+  const pts = [];
+  for (let i = 0; i < n; i++) pts.push(c[0] + r * Math.cos((i / n) * 2 * Math.PI), c[1] + r * Math.sin((i / n) * 2 * Math.PI));
+  return pts;
+}
+
+/** A flat face seen from its side in a view, as the line it is there: its two ends in space and its outward normal. */
+function faceLine(pick, ax, look) {
+  const topo = placedTopo(pick.body);
+  if (pick.kind === 'edge') {
+    const e = topo.edges[pick.index];
+    if (e.kind === 'line' && Math.abs(dot(unit(sub(e.b, e.a)), ax.n)) < E) return { a: e.a, b: e.b, n: null };
+    throw Error(`That edge is not a straight line lying flat in the ${look} view.`);
+  }
+  const f = topo.faces[pick.index];
+  if (!f.plane || Math.abs(dot(f.plane.n, ax.n)) > E) throw Error(`That face is not seen from its side in the ${look} view, as a line: choose a flat face that is.`);
+  const e = unit(cross(ax.n, f.plane.n)),
+    pts = facePoints(pick.body, pick.index);
+  let lo = pts[0],
+    hi = pts[0];
+  for (const p of pts) {
+    if (dot(p, e) < dot(lo, e)) lo = p;
+    if (dot(p, e) > dot(hi, e)) hi = p;
+  }
+  return { a: lo, b: hi, n: f.plane.n };
+}
+/** The angle between two lines of a view (flat faces seen from their side, straight edges lying flat in it). */
+function angleOf(picks, ax, look) {
+  const segs = picks.map((p) => {
+      try {
+        return faceLine(p, ax, look);
+      } catch {
+        throw Error(`An angle is drawn between two things seen as lines in the ${look} view: flat faces seen from their side, or straight edges lying flat in it.`);
+      }
+    }),
+    P2 = (p) => [dot(p, ax.x), dot(p, ax.y)],
+    [a1, b1] = [P2(segs[0].a), P2(segs[0].b)],
+    [a2, b2] = [P2(segs[1].a), P2(segs[1].b)],
+    d1 = [b1[0] - a1[0], b1[1] - a1[1]],
+    d2 = [b2[0] - a2[0], b2[1] - a2[1]],
+    den = d1[0] * d2[1] - d1[1] * d2[0];
+  if (Math.abs(den) < 1e-9 * Math.hypot(...d1) * Math.hypot(...d2)) throw Error(`Those two are parallel in the ${look} view: there is no angle between them to draw.`);
+  const t = ((a2[0] - a1[0]) * d2[1] - (a2[1] - a1[1]) * d2[0]) / den,
+    vertex = [a1[0] + d1[0] * t, a1[1] + d1[1] * t],
+    toward = (a, b, d) => {
+      // from the corner towards the line's far side
+      const m = [(a[0] + b[0]) / 2 - vertex[0], (a[1] + b[1]) / 2 - vertex[1]],
+        l = Math.hypot(...m),
+        dir = l > 1e-6 ? m : d,
+        k = Math.hypot(...dir);
+      return { u: [dir[0] / k, dir[1] / k], far: Math.max(Math.hypot(a[0] - vertex[0], a[1] - vertex[1]), Math.hypot(b[0] - vertex[0], b[1] - vertex[1])) };
+    },
+    w1 = toward(a1, b1, d1),
+    w2 = toward(a2, b2, d2),
+    value = (Math.acos(Math.max(-1, Math.min(1, w1.u[0] * w2.u[0] + w1.u[1] * w2.u[1]))) * 180) / Math.PI;
+  return { kind: 'angle', vertex, u1: w1.u, u2: w2.u, reach: Math.min(w1.far, w2.far), value, prefix: '' };
+}
+/** An angle: an arc round the corner between the two lines, arrows at its ends, the degrees outside it. */
+function angleDim(V, u1, u2, reach, level, label, path, text) {
+  const r = Math.max(10, 0.6 * reach) + STEP * level,
+    a1 = Math.atan2(u1[1], u1[0]);
+  let da = Math.atan2(u2[1], u2[0]) - a1;
+  while (da > Math.PI) da -= 2 * Math.PI;
+  while (da < -Math.PI) da += 2 * Math.PI;
+  const pts = [];
+  for (let i = 0; i <= 32; i++) pts.push(V[0] + r * Math.cos(a1 + (da * i) / 32), V[1] + r * Math.sin(a1 + (da * i) / 32));
+  path(pts, WIDTH.thin);
+  // extension lines where the arc reaches past a line
+  for (const u of [u1, u2]) if (r > reach - 0.5) path([V[0] + u[0] * (reach + GAP), V[1] + u[1] * (reach + GAP), V[0] + u[0] * (r + OVER), V[1] + u[1] * (r + OVER)], WIDTH.thin);
+  const sg = Math.sign(da) || 1,
+    end = (a, s) => arrow([V[0] + r * Math.cos(a), V[1] + r * Math.sin(a)], [-Math.sin(a) * s, Math.cos(a) * s], path);
+  end(a1, -sg);
+  end(a1 + da, sg);
+  const am = a1 + da / 2,
+    at = [V[0] + (r + 3) * Math.cos(am), V[1] + (r + 3) * Math.sin(am) - 1.2];
+  text(at[0], at[1], label, TEXT, 'middle', 0);
+  return Object.assign(at, { angle: 0 });
+}
+/**
+ * A surface symbol (ISO 1302) on a face seen as a line: standing on it from outside where the face looks up,
+ * else at the end of a leader out from it. The text (Ra 1.6) under its long bar. Returns where the text is.
+ */
+function surfaceSymbol(M, n2, value, process, path, text) {
+  const h = 4,
+    l = Math.hypot(n2[0], n2[1]) || 1,
+    n = [n2[0] / l, n2[1] / l];
+  let T;
+  if (n[1] > 0.7) T = [M[0], M[1] + 0.3];
+  else {
+    // a leader out from the face, and a short line for the symbol to stand on
+    const Q = [M[0] + n[0] * 9, M[1] + n[1] * 9],
+      side = n[0] < -0.3 ? -1 : 1;
+    path([M[0], M[1], Q[0], Q[1], Q[0] + side * 10, Q[1]], WIDTH.thin);
+    arrow(M, [-n[0], -n[1]], path);
+    T = [Q[0] + side * 5, Q[1]];
+  }
+  const L = [T[0] - h / Math.sqrt(3), T[1] + h],
+    Rr = [T[0] + (2 * h) / Math.sqrt(3), T[1] + 2 * h],
+    w = textWidth(value, 3);
+  path([L[0], L[1], T[0], T[1], Rr[0], Rr[1], Rr[0] + w + 2, Rr[1]], WIDTH.thin);
+  if (process === 'removal') path([L[0], L[1], T[0] + h / Math.sqrt(3), T[1] + h], WIDTH.thin);
+  if (process === 'no_removal') path(circlePts([T[0] + 0.2, T[1] + h * 0.62], h * 0.36, 24), WIDTH.thin, { closed: true });
+  const at = [Rr[0] + 1 + w / 2, Rr[1] - 3.2];
+  if (value) text(Rr[0] + 1, Rr[1] - 3.2, value, 3, 'start');
+  return Object.assign(at, { angle: 0 });
 }
 
 /**
@@ -399,7 +612,8 @@ function frame([w, h], drawing, names, path, text) {
   cell(0.55, 0.68, 0, 'SHEET', '1/1');
   cell(0.68, 1, 0, 'MADE WITH', 'CoreCAD');
   cell(0, 0.4, 1, 'DRAWING NO.', f.number);
-  cell(0.4, 0.5, 1, 'REV', f.revision);
+  const revisions = drawing.revisions ?? [];
+  cell(0.4, 0.5, 1, 'REV', revisions.at(-1)?.rev ?? f.revision);
   cell(0.5, 0.68, 1, 'DATE OF ISSUE', f.date ?? names.date);
   cell(0.68, 1, 1, 'PROJECT', names.project);
   cell(0, 1, 2, 'TITLE', names.part, 5);
@@ -415,8 +629,24 @@ function frame([w, h], drawing, names, path, text) {
     .map((l) => l.trim())
     .filter(Boolean)
     .flatMap((l, i) => wrapped(`${i + 1}. ${l}`, W - 2, 3));
+  // the revision table on the title block: its heads at the bottom, the newest row at the top
+  let top = rows.at(-1);
+  if (revisions.length) {
+    const cols = [0, 0.08, 0.66, 0.84, 1],
+      row = (y, values, size) => {
+        path([bx, y + 5, x1, y + 5], WIDTH.thin);
+        values.forEach((v, i) => {
+          if (i) path([at(cols[i]), y, at(cols[i]), y + 5], WIDTH.thin);
+          if (v) text(at(cols[i]) + 1, y + 1.4, fitted(v, (cols[i + 1] - cols[i]) * W - 2, size), size, 'start');
+        });
+      };
+    path([bx, top, bx, top + 5 * (revisions.length + 1), x1, top + 5 * (revisions.length + 1), x1, top], WIDTH.thin);
+    row(top, ['REV', 'DESCRIPTION', 'DATE', 'BY'], 1.8);
+    revisions.forEach((r, i) => row(top + 5 * (i + 1), [r.rev, r.description, r.date, r.by ?? ''], 2.5));
+    top += 5 * (revisions.length + 1);
+  }
   if (notes.length) {
-    let y = rows.at(-1) + 3;
+    let y = top + 3;
     for (const line of [...notes].reverse()) {
       text(bx + 1, y, line, 3, 'start');
       y += 4.5;

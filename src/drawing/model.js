@@ -7,7 +7,11 @@
 //                     fields: { number: 'B-102', date: '2026-11-28', material: 'PETG', ... },   (FIELDS)
 //                     views: [{ id: 'v2', look: 'front', at: [x, y] },
 //                             { id: 'v4', look: 'section', at: [x, y],
-//                               section: { of: 'v2', cut: 'horizontal' | 'vertical', through: z, flip: false, letter: 'A' } }],
+//                               section: { of: 'v2', cut: 'horizontal' | 'vertical', through: z, flip: false, letter: 'A' } },
+//                             { id: 'v5', look: 'detail', at: [x, y],
+//                               detail: { of: 'v2', centre: [x, y], radius: r, scale: 5, letter: 'B' } }],   (centre, radius: the parent view's own mm)
+//                     revisions: [{ id: 'r6', rev: 'A', description: 'First issue', date: '2026-11-28', by: 'TO' }],
+//                     symbols: [{ id: 's7', view: 'v2', face: pick, value: 'Ra 1.6', process: 'any' | 'removal' | 'no_removal' }],
 //                     dims:  [{ id: 'm3', view: 'v2', from: pick, to: pick | null, along: null | 'horizontal' | 'vertical',
 //                               tolerance?: '±0.1' }] }]
 //   doc.dseq: the counter of their ids (d, v and m share it)
@@ -67,6 +71,10 @@ const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a
  * through the front view is seen from above (as the top view sees it), of a vertical cut from the right.
  */
 export function viewAxes(drawing, view) {
+  if (view.look === 'detail') {
+    const of = drawing.views.find((v) => v.id === view.detail.of);
+    return of && of.look !== 'detail' ? viewAxes(drawing, of) : axesOf('front');
+  }
   if (view.look !== 'section') return axesOf(view.look);
   const { parent, m } = planeOf(drawing, view),
     n = view.section.flip ? m.map((v) => -v) : m;
@@ -74,7 +82,10 @@ export function viewAxes(drawing, view) {
   return { x: cross(parent.y, n), y: parent.y, n };
 }
 /** What a view is called in a sentence: "front", "section A-A". */
-export const viewName = (view) => (view.look === 'section' ? `section ${view.section.letter}-${view.section.letter}` : view.look);
+export const viewName = (view) =>
+  view.look === 'section' ? `section ${view.section.letter}-${view.section.letter}` : view.look === 'detail' ? `detail ${view.detail.letter}` : view.look;
+/** The view whose lines a view shows: a detail shows those of the view it enlarges. */
+export const sourceOf = (drawing, view) => (view.look === 'detail' ? drawing.views.find((v) => v.id === view.detail.of) ?? view : view);
 /**
  * The plane of a section view: it runs square to `m` (an axis of space, either way: the parent view's up
  * for a horizontal cut, its across for a vertical one) through the coordinate `through` along that axis.
@@ -111,6 +122,10 @@ export function itemById(doc, id) {
     if (view) return { drawing: d, view };
     const dim = d.dims.find((m) => m.id === id);
     if (dim) return { drawing: d, dim };
+    const revision = (d.revisions ?? []).find((r) => r.id === id);
+    if (revision) return { drawing: d, revision };
+    const symbol = (d.symbols ?? []).find((s) => s.id === id);
+    if (symbol) return { drawing: d, symbol };
   }
   return null;
 }
@@ -162,14 +177,41 @@ export function addView(doc, drawingId, look, at) {
 }
 /** The letters of sections, as ISO 128-50 has them: I, O and Q are left out (they read as 1 and 0). */
 const LETTERS = 'ABCDEFGHJKLMNPRSTUVWXYZ';
+/** The next letter for a section or a detail of a drawing: they share the alphabet. */
+const nextLetter = (d) => {
+  const used = new Set(d.views.map((v) => v.section?.letter ?? v.detail?.letter).filter(Boolean));
+  return [...LETTERS].find((l) => !used.has(l)) ?? 'Z';
+};
 /** A section view: the part cut along a line of view `of` and seen square onto the cut. */
 export function addSectionView(doc, drawingId, { of, cut, through, flip = false, at }) {
   const d = drawingById(doc, drawingId),
-    used = new Set(d.views.filter((v) => v.look === 'section').map((v) => v.section.letter)),
-    letter = [...LETTERS].find((l) => !used.has(l)) ?? 'Z',
+    letter = nextLetter(d),
     { id, doc: next } = nextId(doc, 'v'),
     view = { id, look: 'section', at: [...at], section: { of, cut, through, flip: !!flip, letter } };
   return { doc: withDrawing(next, drawingId, (x) => ({ ...x, views: [...x.views, view] })), view };
+}
+/** A detail view: a round piece of view `of` (centre and radius in that view's own mm), at a scale of its own. */
+export function addDetailView(doc, drawingId, { of, centre, radius, scale, at }) {
+  const d = drawingById(doc, drawingId),
+    letter = nextLetter(d),
+    { id, doc: next } = nextId(doc, 'v'),
+    view = { id, look: 'detail', at: [...at], detail: { of, centre: [...centre], radius, scale, letter } };
+  return { doc: withDrawing(next, drawingId, (x) => ({ ...x, views: [...x.views, view] })), view };
+}
+/** A row of the revision table: the next letter after the last row's, today, what changed and by whom. */
+export function addRevision(doc, drawingId, { description, date, by = '' }) {
+  const d = drawingById(doc, drawingId),
+    last = (d.revisions ?? []).at(-1)?.rev,
+    rev = last ? LETTERS[Math.min(LETTERS.length - 1, LETTERS.indexOf(last) + 1)] : 'A',
+    { id, doc: next } = nextId(doc, 'r'),
+    row = { id, rev, description, date, ...(by ? { by } : {}) };
+  return { doc: withDrawing(next, drawingId, (x) => ({ ...x, revisions: [...(x.revisions ?? []), row] })), revision: row };
+}
+/** A surface symbol (ISO 1302) on a flat face, in a view where the face is seen from its side. */
+export function addSymbol(doc, drawingId, { view, face, value, process = 'any' }) {
+  const { id, doc: next } = nextId(doc, 's'),
+    symbol = { id, view, face, value, process };
+  return { doc: withDrawing(next, drawingId, (x) => ({ ...x, symbols: [...(x.symbols ?? []), symbol] })), symbol };
 }
 export const moveView = (doc, viewId, at) => ({
   ...doc,
@@ -186,12 +228,14 @@ export function removeItems(doc, drawingId, ids) {
     d0 = drawingById(doc, drawingId);
   for (let more = true; more; ) {
     more = false;
-    for (const v of d0?.views ?? []) if (v.look === 'section' && gone.has(v.section.of) && !gone.has(v.id)) more = !!gone.add(v.id);
+    for (const v of d0?.views ?? []) if (gone.has((v.section ?? v.detail)?.of) && !gone.has(v.id)) more = !!gone.add(v.id);
   }
   return withDrawing(doc, drawingId, (d) => ({
     ...d,
     views: d.views.filter((v) => !gone.has(v.id)),
     dims: d.dims.filter((m) => !gone.has(m.id) && !gone.has(m.view)),
+    ...(d.revisions ? { revisions: d.revisions.filter((r) => !gone.has(r.id)) } : {}),
+    ...(d.symbols ? { symbols: d.symbols.filter((s) => !gone.has(s.id) && !gone.has(s.view)) } : {}),
   }));
 }
 // ------------------------------------------------------------------ picks
@@ -270,12 +314,18 @@ export function validateDrawings(doc) {
     }
     for (const v of d.views) {
       if (!v || !fresh(v.id, 'v')) errors.push(`${name}: invalid or duplicate view id.`);
-      else if ((!LOOKS[v.look] && v.look !== 'section') || !Array.isArray(v.at) || v.at.length !== 2 || !v.at.every(Number.isFinite)) errors.push(`${name}, ${v.id}: a view looks from one of ${LOOK_NAMES.join(', ')}, or is a section, and stands at two numbers.`);
+      else if ((!LOOKS[v.look] && v.look !== 'section' && v.look !== 'detail') || !Array.isArray(v.at) || v.at.length !== 2 || !v.at.every(Number.isFinite)) errors.push(`${name}, ${v.id}: a view looks from one of ${LOOK_NAMES.join(', ')}, or is a section, and stands at two numbers.`);
       else if (v.look === 'section') {
         const s = v.section,
           of = d.views.find((x) => x.id === s?.of);
         if (!s || !of || !LOOKS[of.look] || of.look === 'iso' || !['horizontal', 'vertical'].includes(s.cut) || !Number.isFinite(s.through) || typeof s.flip !== 'boolean' || !/^[A-Z]$/.test(s.letter ?? ''))
           errors.push(`${name}, ${v.id}: a section is cut along a horizontal or vertical line of a view from a side, through a coordinate, with a letter.`);
+      } else if (v.look === 'detail') {
+        const t = v.detail,
+          of = d.views.find((x) => x.id === t?.of);
+        const pair = (p) => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite);
+        if (!t || !of || of.look === 'detail' || !pair(t.centre) || !(t.radius > 0) || !(t.scale > 0) || !/^[A-Z]$/.test(t.letter ?? ''))
+          errors.push(`${name}, ${v.id}: a detail is a round piece of another view (not a detail), with a centre, a radius, a scale and a letter.`);
       }
     }
     for (const m of d.dims) {
@@ -285,6 +335,12 @@ export function validateDrawings(doc) {
       else if (![null, 'horizontal', 'vertical'].includes(m.along)) errors.push(`${name}, ${m.id}: "along" is horizontal, vertical or null.`);
       else if (m.tolerance !== undefined && (typeof m.tolerance !== 'string' || !m.tolerance)) errors.push(`${name}, ${m.id}: a tolerance is a text.`);
     }
+    for (const r of d.revisions ?? [])
+      if (!r || !fresh(r.id, 'r') || !/^[A-Z]$/.test(r.rev ?? '') || typeof r.description !== 'string' || typeof r.date !== 'string' || !(r.by === undefined || typeof r.by === 'string'))
+        errors.push(`${name}: a revision has an id, a letter, what changed and a date.`);
+    for (const s of d.symbols ?? [])
+      if (!s || !fresh(s.id, 's') || !d.views.some((v) => v.id === s.view) || !pickOk(s.face) || typeof s.value !== 'string' || !['any', 'removal', 'no_removal'].includes(s.process))
+        errors.push(`${name}: a surface symbol is on a face in a view, with its text and how the surface is made (any, removal, no_removal).`);
   }
   return errors;
 }

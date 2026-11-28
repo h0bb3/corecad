@@ -7,7 +7,7 @@ For the next agent, on 2026-11-28. `main` is clean, pushed and published
 
 - [docs/STATUS.md](docs/STATUS.md): where it stands, what is decided, what
   is open for the owner, what is next, and the log of all work.
-- [docs/COMMANDS.md](docs/COMMANDS.md): the 50 commands, and the rule of one
+- [docs/COMMANDS.md](docs/COMMANDS.md): the 53 commands, and the rule of one
   way to do each thing.
 - [docs/KERNEL_NOTES.md](docs/KERNEL_NOTES.md) before touching the kernel:
   OpenCascade gets several things wrong without saying so (threads, see
@@ -25,7 +25,7 @@ For the next agent, on 2026-11-28. `main` is clean, pushed and published
 ## Routine
 
 - After any change to a page file: `python tools/stamp.py`.
-- Tests: `python tools/run_tests.py` (163 tests in 20 pages), then
+- Tests: `python tools/run_tests.py` (165 tests in 20 pages), then
   `tools/e2e.py`, `e2e_more.py`, `e2e_parts.py`, `e2e_export.py`,
   `e2e_api.py`, and with Node (`NODE=E:/projects/new_coding/tools/node/node.exe`)
   `e2e_bridge.py` and `e2e_view.py`. Set `PYTHONIOENCODING=utf-8`.
@@ -50,9 +50,10 @@ For the next agent, on 2026-11-28. `main` is clean, pushed and published
   model, the cut, see-through, fine placement (grip + trigger).
 - **Drawings** (2026-11-28, STATUS.md "Drawings for the workshop" and
   "Drawings by hand", "Section views"): made by the agent or by hand on the
-  sheet, ISO 7200 title block, notes, tolerances, sections, PDF. Not yet: a
-  printed PDF measured with a ruler; detail views, angles, a revision table
-  (the owner wants what professional drawings have; question 8).
+  sheet, ISO 7200 title block, notes, tolerances, sections, details, angles,
+  revisions, surface symbols, threads by ISO 6410, PDF. Not yet: a printed
+  PDF measured with a ruler; what else professional drawings have
+  (question 8).
 - **Open for the owner** (STATUS.md, "Open, for the owner"): eight
   questions, none answered yet.
 - **Next** (STATUS.md, not started): named numbers with arithmetic, mirror,
