@@ -329,6 +329,20 @@ await corecad.run('export', { format: 'pdf', download: true });       // to prin
   the right to its left, each lined up with the front view. The answer gives
   the view's box on the paper, so the next one can be placed beside it;
   `move_view` moves it with its dimensions.
+- **Sections.** `add_section_view` cuts the part along a straight line
+  across a view from a side (`cut: "horizontal"` or `"vertical"` on the
+  paper), `through` a coordinate of space along the axis the line runs
+  square to (a horizontal cut of the front view at a height z; through the
+  middle of the part when it is left out), and shows it square onto the cut:
+  what the plane goes through is hatched at 45°, nothing hidden is drawn, and
+  it is named SECTION A-A under it. The view it is cut from gets the cutting
+  line: a thin chain line, thick at its ends, with arrows the way the section
+  looks and the letter at each end. A horizontal cut is seen from above (put
+  it below its view, where the top view would be), a vertical one from the
+  right (to its left); `flip` looks from the other side. Letters go A, B, …
+  leaving out I, O and Q. Sizes are added to a section as to any view: the
+  depth of a blind hole, the thickness of a wall. A view taken off takes its
+  sections with it.
 - **Dimensions.** `add_drawing_dimension` draws a size in a view with
   extension lines, arrows and its number, measured from the model the way
   `measure` measures: between two parallel faces, two holes (centre to
@@ -359,15 +373,18 @@ await corecad.run('export', { format: 'pdf', download: true });       // to prin
 - **By hand.** A person makes a drawing in the page through the same
   commands: **Drawing** under a selected part makes one; on the sheet,
   **Add view** and a click on the paper places a view, and a view is dragged
-  to move it; **Size**, then a click on a line of a view (an edge, a face
+  to move it; **Add view**, *Section*, a click on a view where the cut is to
+  go (near a hole it goes through the hole's centre) and a click where the
+  section is to stand makes a section; **Size**, then a click on a line of a view (an edge, a face
   seen from its side, a hole) and on a second one, draws the distance between
   them, or Enter (or the same line again) the size of the one; a click on a
   size's number selects it and gives a field for its tolerance; Delete takes
   off the selected view or size; **Sheet…** sets the paper, the scale and the
   title block; **Delete** deletes the drawing.
-- Not drawn (yet): section views, angles, notes, tolerances, threads in the
-  standard way (a thread is drawn as the edges it has), more than one sheet
-  to a drawing.
+- Not drawn (yet): detail views, angles, a revision table, surface symbols
+  on single faces, threads in the standard way (a thread is drawn as the
+  edges it has), more than one sheet to a drawing, sections along a bent
+  line or of an iso view.
 
 ## Colours and export
 
@@ -440,6 +457,7 @@ Arguments in brackets are optional.
 | `edit_drawing_dimension` | dimension, tolerance | A tolerance written after a size's number (±0.1, H7), or none. |
 | `delete_drawing` | drawing | Deletes a drawing. |
 | `add_view` | [drawing], look, at | A view of the part from one side (or iso) with its middle at a place on the paper. |
+| `add_section_view` | view, cut, [through], [flip], at | The part cut along a line across a view, hatched, named SECTION A-A; the cutting line on that view. |
 | `move_view` | view, at | Moves a view with its dimensions. |
 | `add_drawing_dimension` | view, from, [to], [along] | A size in a view, measured from the model; refused where it would be seen shortened. |
 | `remove_from_drawing` | ids | Takes views and dimensions off. |

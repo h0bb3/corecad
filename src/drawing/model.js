@@ -5,7 +5,9 @@
 //
 //   doc.drawings = [{ id: 'd1', name: 'Drawing 1', part: 'o1', sheet: 'A4', scale: 1,
 //                     fields: { number: 'B-102', date: '2026-11-28', material: 'PETG', ... },   (FIELDS)
-//                     views: [{ id: 'v2', look: 'front', at: [x, y] }],
+//                     views: [{ id: 'v2', look: 'front', at: [x, y] },
+//                             { id: 'v4', look: 'section', at: [x, y],
+//                               section: { of: 'v2', cut: 'horizontal' | 'vertical', through: z, flip: false, letter: 'A' } }],
 //                     dims:  [{ id: 'm3', view: 'v2', from: pick, to: pick | null, along: null | 'horizontal' | 'vertical',
 //                               tolerance?: '±0.1' }] }]
 //   doc.dseq: the counter of their ids (d, v and m share it)
@@ -59,7 +61,36 @@ export const FIELDS = Object.freeze({
 });
 export const FIELD_NAMES = Object.keys(FIELDS);
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-/** The three directions of a view: x across, y up, n towards the eye. */
+/**
+ * The three directions of a view of a drawing, a section view too: x across, y up, n towards the eye.
+ * A section looks square onto its plane, from the side `flip` does not name: the plane of a horizontal cut
+ * through the front view is seen from above (as the top view sees it), of a vertical cut from the right.
+ */
+export function viewAxes(drawing, view) {
+  if (view.look !== 'section') return axesOf(view.look);
+  const { parent, m } = planeOf(drawing, view),
+    n = view.section.flip ? m.map((v) => -v) : m;
+  if (view.section.cut === 'horizontal') return { x: parent.x, y: cross(n, parent.x), n };
+  return { x: cross(parent.y, n), y: parent.y, n };
+}
+/** What a view is called in a sentence: "front", "section A-A". */
+export const viewName = (view) => (view.look === 'section' ? `section ${view.section.letter}-${view.section.letter}` : view.look);
+/**
+ * The plane of a section view: it runs square to `m` (an axis of space, either way: the parent view's up
+ * for a horizontal cut, its across for a vertical one) through the coordinate `through` along that axis.
+ * The part on the eye's side of it is taken away: where dot(p, n) > c.
+ */
+export function planeOf(drawing, view) {
+  const of = drawing.views.find((v) => v.id === view.section.of),
+    parent = axesOf(of?.look ?? 'front'),
+    m = view.section.cut === 'horizontal' ? parent.y : parent.x,
+    axis = m.findIndex((v) => Math.abs(v) > 0.5),
+    point = [0, 0, 0];
+  point[axis] = view.section.through;
+  const n = view.section.flip ? m.map((v) => -v) : m;
+  return { parent, parentView: of, m, axis, n, c: n[0] * point[0] + n[1] * point[1] + n[2] * point[2] };
+}
+/** The three directions of a view that looks from a side (not a section): x across, y up, n towards the eye. */
 export function axesOf(look) {
   const l = LOOKS[look];
   return { x: l.x, y: cross(l.dir, l.x), n: l.dir };
@@ -129,6 +160,17 @@ export function addView(doc, drawingId, look, at) {
     view = { id, look, at: [...at] };
   return { doc: withDrawing(next, drawingId, (d) => ({ ...d, views: [...d.views, view] })), view };
 }
+/** The letters of sections, as ISO 128-50 has them: I, O and Q are left out (they read as 1 and 0). */
+const LETTERS = 'ABCDEFGHJKLMNPRSTUVWXYZ';
+/** A section view: the part cut along a line of view `of` and seen square onto the cut. */
+export function addSectionView(doc, drawingId, { of, cut, through, flip = false, at }) {
+  const d = drawingById(doc, drawingId),
+    used = new Set(d.views.filter((v) => v.look === 'section').map((v) => v.section.letter)),
+    letter = [...LETTERS].find((l) => !used.has(l)) ?? 'Z',
+    { id, doc: next } = nextId(doc, 'v'),
+    view = { id, look: 'section', at: [...at], section: { of, cut, through, flip: !!flip, letter } };
+  return { doc: withDrawing(next, drawingId, (x) => ({ ...x, views: [...x.views, view] })), view };
+}
 export const moveView = (doc, viewId, at) => ({
   ...doc,
   drawings: drawingsOf(doc).map((d) => ({ ...d, views: d.views.map((v) => (v.id === viewId ? { ...v, at: [...at] } : v)) })),
@@ -138,9 +180,14 @@ export function addDim(doc, drawingId, data) {
     dim = { id, view: data.view, from: data.from, to: data.to ?? null, along: data.along ?? null };
   return { doc: withDrawing(next, drawingId, (d) => ({ ...d, dims: [...d.dims, dim] })), dim };
 }
-/** Takes views and dimensions off a drawing; a view goes with the dimensions in it. */
+/** Takes views and dimensions off a drawing; a view goes with the dimensions in it and the sections cut from it. */
 export function removeItems(doc, drawingId, ids) {
-  const gone = new Set(ids);
+  const gone = new Set(ids),
+    d0 = drawingById(doc, drawingId);
+  for (let more = true; more; ) {
+    more = false;
+    for (const v of d0?.views ?? []) if (v.look === 'section' && gone.has(v.section.of) && !gone.has(v.id)) more = !!gone.add(v.id);
+  }
   return withDrawing(doc, drawingId, (d) => ({
     ...d,
     views: d.views.filter((v) => !gone.has(v.id)),
@@ -223,7 +270,13 @@ export function validateDrawings(doc) {
     }
     for (const v of d.views) {
       if (!v || !fresh(v.id, 'v')) errors.push(`${name}: invalid or duplicate view id.`);
-      else if (!LOOKS[v.look] || !Array.isArray(v.at) || v.at.length !== 2 || !v.at.every(Number.isFinite)) errors.push(`${name}, ${v.id}: a view looks from one of ${LOOK_NAMES.join(', ')} and stands at two numbers.`);
+      else if ((!LOOKS[v.look] && v.look !== 'section') || !Array.isArray(v.at) || v.at.length !== 2 || !v.at.every(Number.isFinite)) errors.push(`${name}, ${v.id}: a view looks from one of ${LOOK_NAMES.join(', ')}, or is a section, and stands at two numbers.`);
+      else if (v.look === 'section') {
+        const s = v.section,
+          of = d.views.find((x) => x.id === s?.of);
+        if (!s || !of || !LOOKS[of.look] || of.look === 'iso' || !['horizontal', 'vertical'].includes(s.cut) || !Number.isFinite(s.through) || typeof s.flip !== 'boolean' || !/^[A-Z]$/.test(s.letter ?? ''))
+          errors.push(`${name}, ${v.id}: a section is cut along a horizontal or vertical line of a view from a side, through a coordinate, with a letter.`);
+      }
     }
     for (const m of d.dims) {
       if (!m || !fresh(m.id, 'm')) errors.push(`${name}: invalid or duplicate dimension id.`);

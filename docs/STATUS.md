@@ -33,11 +33,12 @@ What it does:
   and an autosave in the browser.
 - **Drawings** for the workshop: views of a part on a sheet at a scale,
   hidden edges and centre lines, sizes measured from the model that follow
-  it with their tolerances, a title block by ISO 7200 and notes; as PDF to
-  print at true size. Made by an agent or by hand on the sheet.
-- **For an agent**: 49 commands behind `window.corecad.run`
+  it with their tolerances, section views (hatched, with their cutting
+  lines), a title block by ISO 7200 and notes; as PDF to print at true size.
+  Made by an agent or by hand on the sheet.
+- **For an agent**: 50 commands behind `window.corecad.run`
   ([COMMANDS.md](COMMANDS.md)), and the same list over MCP through a relay
-  ([bridge/README.md](../bridge/README.md)): 50 tools with the relay's own.
+  ([bridge/README.md](../bridge/README.md)): 51 tools with the relay's own.
   "This", "selected" and "pointed" mean what the person has clicked or rests
   the mouse on, and `get_selection` says how they are looking at the model.
   While an agent is at work the page says so: a frame round the view, a line
@@ -51,7 +52,7 @@ What it does:
 
 Verified on this build, 2026-11-26:
 
-- `python tools/run_tests.py`: 161 tests in 20 pages (2026-11-28); the kernel pages run
+- `python tools/run_tests.py`: 163 tests in 20 pages (2026-11-28); the kernel pages run
   the real OpenCascade worker.
 - The end-to-end scripts in headless Chrome, all passing: `tools/e2e.py`,
   `e2e_more.py`, `e2e_parts.py` and `e2e_export.py` (real mouse and key
@@ -156,10 +157,9 @@ Not verified:
 7. **A client is not told when the list of tools changes**: it reconnects to
    read it again. Telling it needs a new version of the relay on its host.
    Worth doing?
-8. **Section views** (a part cut open on the drawing, hatched) are the
-   next thing a professional drawing has that these do not. Then: detail
-   views at a larger scale, angles, a revision table, surface symbols on
-   single faces, threads drawn the standard way. In that order?
+8. **What next on drawings**: detail views at a larger scale, angles, a
+   revision table, surface symbols on single faces, threads drawn the
+   standard way. In that order?
 
 ## Next
 
@@ -1119,6 +1119,42 @@ its part.
 Not verified: a printed PDF measured with a ruler; a large or complicated
 part (an imported one, a thread: a thread's helix is drawn as the many edges
 it has, and may be slow to project).
+
+## Section views (2026-11-28)
+
+The owner said go for section views, the first of what professional
+drawings have that these did not.
+
+- **`add_section_view`**: a section is a view of the drawing
+  (`look: "section"`, with the view it is cut from, `cut` horizontal or
+  vertical on the paper, `through` a coordinate of space, `flip`, and its
+  letter). Its directions follow from its parent's (`viewAxes` in
+  `src/drawing/model.js`): a horizontal cut of the front view is seen as the
+  top view sees, a vertical one as the right view sees; the plane is square
+  to an axis of space (`planeOf`).
+- **The kernel** cuts the part's solids with a half-space (a box of 100 m
+  on the eye's side of the plane) before the hidden-line removal, draws no
+  hidden lines for it, and gives the edges of the faces the plane made, in
+  the view's own mm (`engine.views`, a look with `cut`).
+- **The sheet**: the cut faces hatched at 45°, 2.5 mm apart, by crossings
+  (`hatched` in `layout.js`: the outlines need not be joined or in order);
+  SECTION A-A under it; on the parent view the cutting line, thin chain
+  line with thick ends, arrows the way it looks, the letter at each end;
+  centre lines only of what the cut kept. Letters by ISO 128-50 (no I, O, Q).
+- **By hand**: Add view, *Section, horizontal cut* or *vertical cut*, a
+  click on the view (near a hole the cut goes through its centre), a click
+  where the section stands.
+- What a click in a section can measure leaves out what the cut took away.
+  A view taken off takes its sections with it. 50 commands now.
+
+Verification: `test/drawing.test.html` (11 tests: also hatching inside
+outlines and not in their holes, at 45°; a section of the plate through its
+hole from above and through its centre from the right, their sizes, letters,
+the cutting line, no hatching in the hole, a size in a section, a section of
+a section refused). `tools/e2e_api.py`: a block with a blind hole, the
+section by command with the hole's diameter and depth sized in it, a cut
+that misses and a section of a section refused, a second section by hand
+with the mouse, and the view taken off with its sections.
 
 ## Drawings by hand, and what a professional drawing says (2026-11-28)
 

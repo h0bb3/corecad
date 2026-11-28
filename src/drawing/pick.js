@@ -3,7 +3,6 @@
 // seen along its axis is a circle; an edge is a line or a circle where it lies flat in the view. Faces are
 // preferred to the edges that lie along them (two parallel faces are what a size is usually between), and
 // of two things in the same place on the paper the one nearer the eye.
-import { axesOf } from './model.js';
 import { placedTopo } from '../api/select.js';
 import { facePoints } from '../api/measure3d.js';
 import { add, sub, mul, dot, cross, unit } from '../core/vec.js';
@@ -13,19 +12,20 @@ const E = 1e-6;
 /**
  * The things of the bodies that can be clicked in a view.
  * @param {object[]} bodies  shown bodies of the part, each with `matrix`
- * @param {string} look
+ * @param {{ x: number[], y: number[], n: number[] }} ax  the directions of the view (viewAxes)
  * @param {(p: number[]) => number[]} toPaper  a point in space to the paper
+ * @param {{ n: number[], c: number } | null} [cut]  of a section: what lies on the eye's side of its plane is not there
  * @returns {{ body: string, kind: 'face' | 'edge', index: number, rank: number, depth: number, pts?: number[][], circle?: { c: number[], r: number } }[]}
  */
-export function clickables(bodies, look, toPaper) {
-  const ax = axesOf(look),
-    N = ax.n,
-    out = [];
+export function clickables(bodies, ax, toPaper, cut = null) {
+  const N = ax.n,
+    all = [],
+    out = { push: (t) => (!cut || (t.low ?? t.depth) <= cut.c + 1e-6 ? all.push(t) : 0) };
   for (const body of bodies) {
     if (body.instance || String(body.id).includes('~')) continue; // a linked copy is measured on its original
     const topo = placedTopo(body);
     topo.faces.forEach((f, index) => {
-      const base = { body: body.id, kind: 'face', index, rank: 0, depth: dot(f.center, N) };
+      const base = { body: body.id, kind: 'face', index, rank: 0, depth: dot(f.center, N), low: Math.min(...facePoints(body, index).map((p) => dot(p, N))) };
       if (f.plane && Math.abs(dot(f.plane.n, N)) < E) {
         const e = unit(cross(N, f.plane.n)),
           pts = facePoints(body, index);
@@ -57,7 +57,7 @@ export function clickables(bodies, look, toPaper) {
     });
     topo.edges.forEach((e, index) => {
       if (e.seam || e.faces.length !== 2) return;
-      const base = { body: body.id, kind: 'edge', index, rank: 1, depth: dot(e.mid, N) };
+      const base = { body: body.id, kind: 'edge', index, rank: 1, depth: dot(e.mid, N), low: e.circle ? dot(e.circle.c, N) - e.circle.r : Math.min(dot(e.a, N), dot(e.b, N)) };
       if (e.circle) {
         const n = unit(e.circle.n);
         if (Math.abs(dot(n, N)) > 1 - E) {
@@ -71,7 +71,7 @@ export function clickables(bodies, look, toPaper) {
       } else if (e.kind === 'line' && Math.abs(dot(unit(sub(e.b, e.a)), N)) < E) out.push({ ...base, pts: [toPaper(e.a), toPaper(e.b)] });
     });
   }
-  return out;
+  return all;
 }
 
 /** How far a point of the paper is from a clickable thing. */

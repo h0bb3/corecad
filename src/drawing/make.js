@@ -1,6 +1,6 @@
 // Drawings made from the model as it is built: the lines of each view from the kernel (kept until the
 // model or the part changes), the dimensions found again on the built bodies, all laid out on the sheet.
-import { drawingById, axesOf, LOOKS, resolvePick } from './model.js';
+import { drawingById, viewAxes, planeOf, resolvePick } from './model.js';
 import { composeSheet } from './layout.js';
 import { partById, descendantsOf, sceneOf } from '../doc/parts.js';
 
@@ -21,17 +21,28 @@ export function createDrawings(kernel) {
     return sceneOf(doc, build?.bodies ?? [], new Map(Object.entries(build?.used ?? {}))).filter((b) => inside.has(b.part));
   }
 
+  /** What the kernel is asked for a view: where it looks from, and for a section the plane that cuts the part. */
+  function specOf(d, v) {
+    const ax = viewAxes(d, v);
+    if (v.look !== 'section') return { dir: ax.n, x: ax.x, hidden: v.look !== 'iso' };
+    const { n, c } = planeOf(d, v);
+    return { dir: ax.n, x: ax.x, hidden: false, cut: { n, c } };
+  }
   /** The lines of the views of a drawing, by view id. */
   async function linesOf(doc, d) {
     const key = modelKey(doc),
-      want = [...new Set(d.views.map((v) => v.look))].filter((look) => !cache.has(`${key}|${d.part}|${look}`));
-    if (want.length) {
-      const looks = Object.fromEntries(want.map((l) => [l, { dir: LOOKS[l].dir, x: LOOKS[l].x }])),
-        got = await kernel.views(doc, { parts: [d.part], looks, hidden: want.filter((l) => l !== 'iso') });
-      for (const look of want) cache.set(`${key}|${d.part}|${look}`, got[look]);
+      specs = new Map(d.views.map((v) => [v.id, specOf(d, v)])),
+      keyOf = (spec) => `${key}|${d.part}|${JSON.stringify(spec)}`,
+      want = new Map();
+    for (const spec of specs.values()) if (!cache.has(keyOf(spec))) want.set(keyOf(spec), spec);
+    if (want.size) {
+      const list = [...want.values()],
+        looks = Object.fromEntries(list.map((spec, i) => ['l' + i, spec])),
+        got = await kernel.views(doc, { parts: [d.part], looks, hidden: list.flatMap((spec, i) => (spec.hidden ? ['l' + i] : [])) });
+      list.forEach((spec, i) => cache.set(keyOf(spec), got['l' + i]));
       while (cache.size > 64) cache.delete(cache.keys().next().value);
     }
-    return new Map(d.views.map((v) => [v.id, cache.get(`${key}|${d.part}|${v.look}`)]));
+    return new Map(d.views.map((v) => [v.id, cache.get(keyOf(specs.get(v.id)))]));
   }
 
   return {
@@ -56,6 +67,6 @@ export function createDrawings(kernel) {
         );
       return composeSheet({ drawing: d, names: { part: part?.name ?? '?', project: doc.meta.name, date: today() }, lines, bodies, picks });
     },
-    axesOf,
+    viewAxes,
   };
 }

@@ -8,7 +8,7 @@ import {faceRefFrom} from '../src/doc/refs.js';
 import {findRegions,profileRefFrom} from '../src/sketch/profiles.js';
 import {sk,circle} from './fixtures/sketches.js';
 import * as D from '../src/drawing/model.js';
-import {composeSheet,measureOf,boundsOf,withTolerance} from '../src/drawing/layout.js';
+import {composeSheet,measureOf,boundsOf,withTolerance,hatched} from '../src/drawing/layout.js';
 import {clickables,thingAt} from '../src/drawing/pick.js';
 import {createDrawings} from '../src/drawing/make.js';
 import {sheetToPDF} from '../src/drawing/pdf.js';
@@ -61,20 +61,20 @@ test('the views of a plate with a hole, from the kernel',async()=>{
 });
 test('what a dimension measures in a view, and what it refuses',async()=>{
  const {body}=await plate(),L=faceBy(body,[-1,0,0]),R=faceBy(body,[1,0,0]),T=faceBy(body,[0,0,1]),B=faceBy(body,[0,0,-1]);
- let g=measureOf({along:null},[pk(body,'face',L),pk(body,'face',R)],'front');eq([g.kind,g.dir,+g.value.toFixed(6)],['linear','horizontal',60]);
- g=measureOf({along:null},[pk(body,'face',T),pk(body,'face',B)],'front');eq([g.dir,+g.value.toFixed(6)],['vertical',10]);
- g=measureOf({along:null},[pk(body,'edge',rim(body,10))],'top');eq([g.kind,g.prefix,+g.value.toFixed(6)],['leader','Ø',8]);
- g=measureOf({along:null},[pk(body,'face',holeFace(body))],'front');eq([g.kind,g.prefix,g.dir,+g.value.toFixed(6)],['linear','Ø','horizontal',8],'a hole seen from its side: its diameter across');
- g=measureOf({along:null},[pk(body,'face',L),pk(body,'face',holeFace(body))],'top');eq([g.dir,+g.value.toFixed(6)],['horizontal',40],'from the left side to the centre of the hole');
- await throws(()=>measureOf({along:null},[pk(body,'face',L),pk(body,'face',R)],'right'),/does not lie flat in the right view/);
- await throws(()=>measureOf({along:null},[pk(body,'face',L),pk(body,'face',T)],'front'),/at 90° to each other/);
- await throws(()=>measureOf({along:null},[pk(body,'face',T)],'top'),/a size each way/);
- await throws(()=>measureOf({along:null},[pk(body,'edge',rim(body,10))],'iso'),/at a slant/);
+ let g=measureOf({along:null},[pk(body,'face',L),pk(body,'face',R)],D.axesOf('front'),'front');eq([g.kind,g.dir,+g.value.toFixed(6)],['linear','horizontal',60]);
+ g=measureOf({along:null},[pk(body,'face',T),pk(body,'face',B)],D.axesOf('front'),'front');eq([g.dir,+g.value.toFixed(6)],['vertical',10]);
+ g=measureOf({along:null},[pk(body,'edge',rim(body,10))],D.axesOf('top'),'top');eq([g.kind,g.prefix,+g.value.toFixed(6)],['leader','Ø',8]);
+ g=measureOf({along:null},[pk(body,'face',holeFace(body))],D.axesOf('front'),'front');eq([g.kind,g.prefix,g.dir,+g.value.toFixed(6)],['linear','Ø','horizontal',8],'a hole seen from its side: its diameter across');
+ g=measureOf({along:null},[pk(body,'face',L),pk(body,'face',holeFace(body))],D.axesOf('top'),'top');eq([g.dir,+g.value.toFixed(6)],['horizontal',40],'from the left side to the centre of the hole');
+ await throws(()=>measureOf({along:null},[pk(body,'face',L),pk(body,'face',R)],D.axesOf('right'),'right'),/does not lie flat in the right view/);
+ await throws(()=>measureOf({along:null},[pk(body,'face',L),pk(body,'face',T)],D.axesOf('front'),'front'),/at 90° to each other/);
+ await throws(()=>measureOf({along:null},[pk(body,'face',T)],D.axesOf('top'),'top'),/a size each way/);
+ await throws(()=>measureOf({along:null},[pk(body,'edge',rim(body,10))],D.axesOf('iso'),'iso'),/at a slant/);
  // two corners of the top face, diagonal: along gives the parts of it
  const corner=(x,y)=>body.mesh.edges.findIndex(e=>e.kind==='line'&&Math.abs(e.a[0]-x)<1e-6&&Math.abs(e.a[1]-y)<1e-6&&Math.abs(e.b[0]-x)<1e-6&&Math.abs(e.b[1]-y)<1e-6);
  const a=corner(-30,-20),c=corner(30,20);ok(a>=0&&c>=0);
- g=measureOf({along:null},[pk(body,'edge',a),pk(body,'edge',c)],'top');eq([g.dir,+g.value.toFixed(4)],['aligned',+Math.hypot(60,40).toFixed(4)]);
- g=measureOf({along:'vertical'},[pk(body,'edge',a),pk(body,'edge',c)],'top');eq([g.dir,+g.value.toFixed(6)],['vertical',40]);
+ g=measureOf({along:null},[pk(body,'edge',a),pk(body,'edge',c)],D.axesOf('top'),'top');eq([g.dir,+g.value.toFixed(4)],['aligned',+Math.hypot(60,40).toFixed(4)]);
+ g=measureOf({along:'vertical'},[pk(body,'edge',a),pk(body,'edge',c)],D.axesOf('top'),'top');eq([g.dir,+g.value.toFixed(6)],['vertical',40]);
 });
 test('the sheet: views at the scale, dimensions with their numbers, frame and title block',async()=>{
  const {d:d0,p,build,body}=await plate();let {doc}=D.addDrawing(d0,p);
@@ -116,13 +116,39 @@ test('what a professional drawing says: the title block, the notes, tolerances',
 });
 test('a click in a view: the face seen from its side, a hole, what is nearer the eye',async()=>{
  const {body}=await plate(),ax=D.axesOf('front'),toPaper=p=>[100+2*(p[0]*ax.x[0]+p[1]*ax.x[1]+p[2]*ax.x[2]),100+2*(p[0]*ax.y[0]+p[1]*ax.y[1]+p[2]*ax.y[2])];
- const things=clickables([body],'front',toPaper);
+ const things=clickables([body],D.axesOf('front'),toPaper);
  let t=thingAt(things,[100-60+0.3,110],1);eq([t.kind,t.index],['face',faceBy(body,[-1,0,0])],'the left side, not its edges');
  t=thingAt(things,[110,120-0.2],1);eq([t.kind,t.index],['face',faceBy(body,[0,0,1])],'the top');
  t=thingAt(things,[100+2*14,110],1);eq([t.kind,t.index],['face',holeFace(body)],'the outline of the hole from its side');
  eq(thingAt(things,[30,30],1),null);
  const top=D.axesOf('top'),tp=p=>[p[0]*top.x[0]+p[1]*top.x[1]+p[2]*top.x[2],p[0]*top.y[0]+p[1]*top.y[1]+p[2]*top.y[2]];
- t=thingAt(clickables([body],'top',tp),[14,5],0.5);ok(t&&(t.kind==='face'?t.index===holeFace(body):body.mesh.edges[t.index].circle),'the hole seen round');
+ t=thingAt(clickables([body],D.axesOf('top'),tp),[14,5],0.5);ok(t&&(t.kind==='face'?t.index===holeFace(body):body.mesh.edges[t.index].circle),'the hole seen round');
+});
+test('hatching: lines at 45° inside outlines, not in their holes',()=>{
+ const square=[0,0,20,0,20,20,0,20,0,0],hole=[];for(let i=0;i<=32;i++)hole.push(10+4*Math.cos(i/32*2*Math.PI),10+4*Math.sin(i/32*2*Math.PI));
+ const lines=hatched([square,hole],2.5);ok(lines.length>8);
+ for(const [a,b,c,d] of lines){near([(d-b)/(c-a)],[1],1e-9,'at 45°');for(const t of [0.25,0.5,0.75]){const x=a+(c-a)*t,y=b+(d-b)*t;ok(x>=-1e-9&&x<=20+1e-9&&y>=-1e-9&&y<=20+1e-9,'inside the square');ok(Math.hypot(x-10,y-10)>=4-0.05,'not in the hole');}}
+});
+test('a section: the plate cut through its hole, seen square onto the cut, hatched; the cutting line on its view',async()=>{
+ const {d:d0,p,build,body}=await plate();let {doc}=D.addDrawing(d0,p);let f,h,u;
+ ({doc,view:f}=D.addView(doc,'d1','front',[110,150]));
+ ({doc,view:h}=D.addSectionView(doc,'d1',{of:f.id,cut:'horizontal',through:5,at:[110,80]}));
+ ({doc,view:u}=D.addSectionView(doc,'d1',{of:f.id,cut:'vertical',through:10,at:[220,150]}));
+ eq([h.section.letter,u.section.letter],['A','B']);eq(validateDocument(doc),[]);
+ near(D.viewAxes(D.drawingById(doc,'d1'),h).n,[0,0,1]);near(D.viewAxes(D.drawingById(doc,'d1'),u).x,[0,1,0]);
+ eq(validateDocument({...doc,drawings:doc.drawings.map(x=>({...x,views:x.views.map(v=>v.id===u.id?{...v,section:{...v.section,of:h.id}}:v)}))}).length,1,'not a section of a section');
+ const sheet=await drawings.sheet(doc,build,'d1'),texts=sheet.items.filter(i=>i.t==='text').map(i=>i.text);
+ ok(texts.includes('SECTION A-A')&&texts.includes('SECTION B-B'));eq(texts.filter(t=>t==='A').length,2,'the letter at both ends of the cutting line');
+ near(sheet.views[1].box,[80,60,140,100],1e-3,'A-A: the plate from above, 60 by 40');near(sheet.views[2].box,[200,145,240,155],1e-3,'B-B: from the right, 40 by 10');
+ // the hatching of A-A lies in the plate and not in the hole (at 1:1 round (110 + 10, 80 + 5))
+ const hatch=sheet.items.filter(i=>i.t==='path'&&i.w===0.18&&!i.dash&&i.pts.length===4&&Math.abs(Math.abs((i.pts[3]-i.pts[1])/(i.pts[2]-i.pts[0]))-1)<1e-6);
+ ok(hatch.length>10,'hatched');
+ for(const [a,b,c,dd] of hatch.map(i=>i.pts)){const x=(a+c)/2,y=(b+dd)/2;if(x>=80&&x<=140&&y>=60&&y<=100)ok(Math.hypot(x-120,y-85)>=4-0.1,'no hatching in the hole');}
+ // a size in a section: the hole across, seen from its side in B-B
+ doc=D.addDim(doc,'d1',{view:u.id,from:D.pickRefFrom(body,'face',holeFace(body))}).doc;
+ eq((await drawings.sheet(doc,build,'d1')).dims[0].text,'Ø8');
+ // the front view goes, and its sections with it
+ eq(D.removeItems(doc,'d1',[f.id]).drawings[0].views,[]);
 });
 test('the sheet as a PDF at its true size, and as SVG',async()=>{
  const sheet=window.__sheet,pdf=sheetToPDF(sheet,{title:'Plate – Ø8',date:new Date(Date.UTC(2026,10,28,12,0,0))}),text=new TextDecoder('latin1').decode(pdf);

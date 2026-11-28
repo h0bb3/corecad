@@ -7,7 +7,7 @@
 // What is drawn:
 //   { t: 'path', pts: [x0, y0, x1, y1, ...], w: width, dash?: [on, off, ...], fill?: true, closed?: true }
 //   { t: 'text', x, y, text, size, anchor: 'start' | 'middle' | 'end', angle: degrees }
-import { SHEETS, axesOf, scaleText } from './model.js';
+import { SHEETS, viewAxes, viewName, planeOf, scaleText } from './model.js';
 import { textWidth } from './font.js';
 import { between } from '../api/measure3d.js';
 import { placedTopo } from '../api/select.js';
@@ -36,12 +36,12 @@ const E = 1e-6;
  * that view: it is seen shortened, or it is not a length.
  * @param {{ along: null | 'horizontal' | 'vertical' }} dim
  * @param {{ body: object, kind: 'face' | 'edge', index: number }[]} picks  one or two, on bodies with `matrix`
- * @param {string} look
+ * @param {{ x: number[], y: number[], n: number[] }} ax  the directions of the view (viewAxes)
+ * @param {string} look  what the view is called, for the sentences
  * @returns {{ kind: 'linear', a: number[], b: number[], dir: 'horizontal' | 'vertical' | 'aligned', value: number, prefix: string }
  *         | { kind: 'leader', c: number[], r: number, value: number, prefix: string }}
  */
-export function measureOf(dim, picks, look) {
-  const ax = axesOf(look);
+export function measureOf(dim, picks, ax, look) {
   if (picks.length === 2) {
     const m = between(picks[0], picks[1]);
     if (m.angle !== undefined)
@@ -124,6 +124,7 @@ export function boundsOf(lines) {
  */
 export function composeSheet({ drawing, names, lines, bodies, picks }) {
   const size = SHEETS[drawing.sheet],
+    hatch = (loops, w = WIDTH.smooth) => hatched(loops, 2.5).forEach((seg) => path(seg, w)),
     s = drawing.scale,
     items = [],
     path = (pts, w, more = {}) => items.push({ t: 'path', pts, w, ...more }),
@@ -135,10 +136,10 @@ export function composeSheet({ drawing, names, lines, bodies, picks }) {
     const own = lines.get(v.id),
       b = boundsOf(own),
       c = b ? [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2] : [0, 0],
-      ax = axesOf(v.look),
+      ax = viewAxes(drawing, v),
       S = (p) => [v.at[0] + s * (dot(p, ax.x) - c[0]), v.at[1] + s * (dot(p, ax.y) - c[1])],
       box = b ? [v.at[0] + s * (b[0] - c[0]), v.at[1] + s * (b[1] - c[1]), v.at[0] + s * (b[2] - c[0]), v.at[1] + s * (b[3] - c[1])] : null;
-    views.push({ id: v.id, look: v.look, box, centre: c, scale: s });
+    views.push({ id: v.id, look: v.look, box, centre: c, scale: s, ...(v.section ? { letter: v.section.letter } : {}) });
     if (!b) continue;
     const place = (pl) => {
       const out = new Array(pl.length);
@@ -151,7 +152,14 @@ export function composeSheet({ drawing, names, lines, bodies, picks }) {
     for (const pl of own.hidden ?? []) path(place(pl), WIDTH.hidden, { dash: DASH.hidden });
     for (const pl of own.smooth ?? []) path(place(pl), WIDTH.smooth);
     for (const pl of own.visible ?? []) path(place(pl), WIDTH.outline);
-    centreLines(bodies, ax, S, s, path);
+    if (v.look === 'section') {
+      // what the plane cuts, hatched at 45°; the name of the section under it
+      hatch((own.cut ?? []).map(place));
+      text((box[0] + box[2]) / 2, box[1] - 9, `SECTION ${v.section.letter}-${v.section.letter}`, 5);
+    }
+    centreLines(bodies, ax, S, s, path, v.look === 'section' ? planeOf(drawing, v) : null);
+    // where the sections cut from this view lie: a chain line with thick ends, arrows the way they look, and the letter
+    for (const sv of drawing.views.filter((x) => x.look === 'section' && x.section.of === v.id)) cuttingLine(planeOf(drawing, sv), sv.section, ax, c, v, s, box, path, text);
     // the dimensions of this view, each further out than the one before it on its side
     const levels = { top: 0, bottom: 0, left: 0, right: 0, aligned: 0 },
       mid = [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2];
@@ -163,7 +171,7 @@ export function composeSheet({ drawing, names, lines, bodies, picks }) {
       }
       let g;
       try {
-        g = measureOf(m, ps, v.look);
+        g = measureOf(m, ps, ax, viewName(v));
       } catch (e) {
         dims.push({ id: m.id, view: v.id, problem: String(e.message) });
         continue;
@@ -176,6 +184,54 @@ export function composeSheet({ drawing, names, lines, bodies, picks }) {
   return { size, items, views, dims };
 }
 
+/**
+ * Lines at 45° inside closed outlines (each a polyline on the paper), `gap` mm apart: the hatching of a cut.
+ * Inside is decided by crossings (even-odd), so the outlines need not be in order or joined.
+ */
+export function hatched(loops, gap) {
+  const segs = [];
+  for (const pl of loops) for (let i = 2; i < pl.length; i += 2) segs.push([pl[i - 2], pl[i - 1], pl[i], pl[i + 1]]);
+  if (!segs.length) return [];
+  // turned by -45°: the hatch lines are then the lines of constant v
+  const k = Math.SQRT1_2,
+    T = (x, y) => [k * (x + y), k * (y - x)],
+    back = (u, v) => [k * (u - v), k * (u + v)],
+    turned = segs.map(([a, b, c, d]) => [...T(a, b), ...T(c, d)]),
+    vs = turned.flatMap((t) => [t[1], t[3]]),
+    out = [];
+  for (let v = Math.ceil(Math.min(...vs) / gap) * gap + gap / 2; v < Math.max(...vs); v += gap) {
+    const us = [];
+    for (const [u0, v0, u1, v1] of turned) if (v0 <= v !== v1 <= v) us.push(u0 + ((v - v0) / (v1 - v0)) * (u1 - u0));
+    us.sort((a, b) => a - b);
+    for (let i = 0; i + 1 < us.length; i += 2) if (us[i + 1] - us[i] > 1e-6) out.push([...back(us[i], v), ...back(us[i + 1], v)]);
+  }
+  return out;
+}
+/** On a view, where a section of it is cut: a thin chain line across, thick at its ends, arrows the way the section looks, its letter. */
+function cuttingLine(plane, section, ax, c, v, s, box, path, text) {
+  // where the plane crosses this view: a line across it (a horizontal cut) or up it
+  const point = [0, 0, 0];
+  point[plane.axis] = section.through;
+  const along = section.cut === 'horizontal' ? 0 : 1,
+    at = [v.at[0] + s * (dot(point, ax.x) - c[0]), v.at[1] + s * (dot(point, ax.y) - c[1])],
+    lo = along === 0 ? [box[0] - 6, at[1]] : [at[0], box[1] - 6],
+    hi = along === 0 ? [box[2] + 6, at[1]] : [at[0], box[3] + 6],
+    e = along === 0 ? [1, 0] : [0, 1],
+    // the way the section looks, on this view: from the eye, towards the part that is kept
+    look = [-dot(plane.n, ax.x), -dot(plane.n, ax.y)];
+  path([...lo, ...hi], WIDTH.smooth, { dash: DASH.centre });
+  for (const [end, out] of [
+    [lo, -1],
+    [hi, 1],
+  ]) {
+    const inner = [end[0] - e[0] * out * 6, end[1] - e[1] * out * 6];
+    path([...inner, ...end], 0.7);
+    const tip = [end[0] + look[0] * 8, end[1] + look[1] * 8];
+    path([...end, ...tip], WIDTH.thin);
+    arrow(tip, look, path);
+    text(tip[0] + e[0] * out * 3 + look[0] * 2, tip[1] + e[1] * out * 3 + look[1] * 2 - 2, section.letter, 5);
+  }
+}
 /** A number with its tolerance: a fit (H7) right after it, a deviation (±0.1, +0.2/-0) after a space. */
 export const withTolerance = (label, tolerance) => (!tolerance ? label : /^[A-Za-z]/.test(tolerance) ? label + tolerance : `${label} ${tolerance}`);
 
@@ -274,13 +330,14 @@ function leader(C, r, mid, label, path, text) {
 }
 
 /** Chain lines through the middle of what is round: a cross on a circle seen round, the axis of a hole or a pin seen from its side. */
-function centreLines(bodies, ax, S, s, path) {
+function centreLines(bodies, ax, S, s, path, cut = null) {
+  const kept = (depth) => !cut || depth <= cut.c + 1e-6; // in a section: not what the cut took away
   const seen = new Set(),
     key = (...v) => v.map((x) => Math.round(x * 100)).join(',');
   for (const body of bodies) {
     const topo = placedTopo(body);
     for (const e of topo.edges) {
-      if (!e.circle || !e.closed || Math.abs(dot(unit(e.circle.n), ax.n)) < 1 - E) continue;
+      if (!e.circle || !e.closed || Math.abs(dot(unit(e.circle.n), ax.n)) < 1 - E || !kept(dot(e.circle.c, ax.n))) continue;
       const C = S(e.circle.c),
         r = e.circle.r * s,
         k = key(C[0], C[1]);

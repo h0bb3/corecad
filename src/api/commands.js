@@ -307,6 +307,18 @@ export const TOOLS = [
     },
     ['look', 'at']
   ),
+  tool(
+    'add_section_view',
+    'Puts a section on the drawing: the part cut along a straight line across a view (horizontal or vertical on the paper), seen square onto the cut, with what the cut goes through hatched at 45° and no hidden edges. The view it is cut from gets the cutting line, thick at its ends, with arrows the way the section looks and its letter (A, B, …); the section is named SECTION A-A under it. It looks from the side of the line the arrows start from: a horizontal cut of the front view from above (lined up as the top view is, below the front view), a vertical cut from the right (to the left of it, as the view from the right is); flip looks from the other side. Its sizes are added as in any view.',
+    {
+      view: str('The view it is cut from, such as "v2": a view from a side (not iso, not a section).'),
+      cut: str('Which way the cutting line runs on that view.', { enum: ['horizontal', 'vertical'] }),
+      through: numb('Where the plane lies, as a coordinate of space along the axis the line runs square to: for a horizontal cut of the front view, a height z; for a vertical one, an x. Through the centre of a hole is the usual place (list_faces gives it). Left out: through the middle of the part.'),
+      flip: bool('true: seen from the other side of the line (the arrows turn).'),
+      at: VEC('Where the middle of the section stands on the paper: [x, y] in mm from its lower left corner.'),
+    },
+    ['view', 'cut', 'at']
+  ),
   tool('move_view', 'Moves a view on its sheet, with its dimensions.', { view: str('The view\'s id, such as "v2" (get_drawing).'), at: VEC('Where its middle stands on the paper: [x, y] in mm from the lower left corner.') }, ['view', 'at']),
   tool(
     'add_drawing_dimension',
@@ -319,7 +331,7 @@ export const TOOLS = [
     },
     ['view', 'from']
   ),
-  tool('remove_from_drawing', 'Takes views or dimensions off their drawing, by id. A view takes its dimensions with it.', { ids: { type: 'array', items: { type: 'string' }, description: 'Ids of views ("v2") and dimensions ("m5").' } }, ['ids']),
+  tool('remove_from_drawing', 'Takes views or dimensions off their drawing, by id. A view takes its dimensions with it, and the sections cut from it.', { ids: { type: 'array', items: { type: 'string' }, description: 'Ids of views ("v2") and dimensions ("m5").' } }, ['ids']),
   tool(
     'get_drawing',
     'A drawing as it stands: its paper and scale, where the frame and the title block are, each view with where it stands and the box it fills on the paper (mm from the lower left corner), and each dimension with the number it shows, or why it cannot be drawn now. screenshot with "drawing" shows it.',
@@ -964,7 +976,7 @@ export function createCommands(app) {
       title_block: [round(Math.max(MARGIN.left, w - MARGIN.right - TITLE_BLOCK.width), 2), MARGIN.bottom, w - MARGIN.right, MARGIN.bottom + TITLE_BLOCK.height],
       views: d.views.map((v) => {
         const box = sheet.views.find((x) => x.id === v.id)?.box;
-        return { id: v.id, look: v.look, at: v.at, ...(box ? { box: round(box, 2), size: round([box[2] - box[0], box[3] - box[1]], 2) } : { empty: 'the part shows nothing from here' }) };
+        return { id: v.id, look: v.look, ...(v.section ? { section: { letter: v.section.letter, of: v.section.of, cut: v.section.cut, through: v.section.through, ...(v.section.flip ? { flip: true } : {}) } } : {}), at: v.at, ...(box ? { box: round(box, 2), size: round([box[2] - box[0], box[3] - box[1]], 2) } : { empty: 'the part shows nothing from here' }) };
       }),
       dimensions: d.dims.map((m) => {
         const x = sheet.dims.find((y) => y.id === m.id);
@@ -1092,6 +1104,27 @@ export function createCommands(app) {
         info = await drawingChange(next, `Add a ${a.look} view to ${d.name}`, d);
       return { view: info.views.find((x) => x.id === v.id), drawing: info };
     },
+    async add_section_view(a) {
+      free();
+      await settled();
+      const { drawing: d, view: of } = viewOf(a.view);
+      if (!['horizontal', 'vertical'].includes(a.cut)) throw Error('"cut" is "horizontal" or "vertical": the way the cutting line runs on the view.');
+      if (of.look === 'iso' || of.look === 'section') throw Error(`A section is cut from a view from a side (front, top, …), not from ${of.look === 'iso' ? 'the iso view' : 'another section'}.`);
+      if (!Array.isArray(a.at) || a.at.length !== 2 || !a.at.every(Number.isFinite)) throw Error('"at" is [x, y] on the paper, in mm from its lower left corner.');
+      if (a.through !== undefined && !Number.isFinite(a.through)) throw Error('"through" is a number of millimetres.');
+      const probe = { look: 'section', section: { of: of.id, cut: a.cut, through: 0, flip: !!a.flip, letter: 'A' } },
+        { axis } = Drawing.planeOf(d, probe),
+        boxes = drawingBodies(d).map((b) => Mat.box(b.matrix, b.bbox)),
+        name = 'xyz'[axis];
+      if (!boxes.length) throw Error(`${partById(doc(), d.part)?.name} shows no solid to cut.`);
+      const lo = Math.min(...boxes.map((b) => b[0][axis])),
+        hi = Math.max(...boxes.map((b) => b[1][axis])),
+        through = a.through ?? (lo + hi) / 2;
+      if (through <= lo + 1e-6 || through >= hi - 1e-6) throw Error(`A plane at ${name} = ${round(through, 3)} misses the part: it reaches from ${name} = ${round(lo, 3)} to ${round(hi, 3)}.`);
+      const { doc: next, view: v } = Drawing.addSectionView(doc(), d.id, { of: of.id, cut: a.cut, through, flip: !!a.flip, at: a.at }),
+        info = await drawingChange(next, `Add section ${v.section.letter}-${v.section.letter} to ${d.name}`, d);
+      return { view: info.views.find((x) => x.id === v.id), plane: `${name} = ${round(through, 3)}`, drawing: info };
+    },
     async move_view(a) {
       free();
       await settled();
@@ -1108,7 +1141,7 @@ export function createCommands(app) {
       const picks = [...drawingPicks(d, a.from), ...(a.to !== undefined ? drawingPicks(d, a.to) : [])];
       if (picks.length > 2) throw Error(`That is ${picks.length} things: a dimension is of one thing, or between two.`);
       // the same test the sheet makes, now, so that what cannot be drawn is refused with its reason
-      const g = measureOf({ along: a.along ?? null }, picks, v.look),
+      const g = measureOf({ along: a.along ?? null }, picks, Drawing.viewAxes(d, v), Drawing.viewName(v)),
         refs = picks.map((p) => Drawing.pickRefFrom(p.body, p.kind, p.index)),
         { doc: next, dim } = Drawing.addDim(doc(), d.id, { view: v.id, from: refs[0], to: refs[1] ?? null, along: a.along ?? null }),
         info = await drawingChange(next, `Add a dimension to ${d.name}`, d);

@@ -59,7 +59,7 @@ import { createBridge, activity } from './api/bridge.js';
 import { createMirror, checkInput } from './api/mirror.js';
 import { BUILD, published, freshReload } from './update.js';
 import { createDrawings } from './drawing/make.js';
-import { drawingsOf, drawingById, scaleText, SHEETS, FIELDS, FIELD_NAMES } from './drawing/model.js';
+import { drawingsOf, drawingById, scaleText, SHEETS, FIELDS, FIELD_NAMES, viewAxes, planeOf } from './drawing/model.js';
 import { clickables, thingAt } from './drawing/pick.js';
 import { sheetToSVG } from './drawing/svg.js';
 import { sheetToPDF } from './drawing/pdf.js';
@@ -3391,6 +3391,10 @@ async function sheetCommand(name, args) {
 }
 function sheetHint() {
   if (sheetMode?.kind === 'place') return `Click where the middle of the ${sheetMode.look} view is to stand. Esc stops.`;
+  if (sheetMode?.kind === 'section')
+    return sheetMode.line
+      ? 'Click where the section is to stand (a horizontal cut is seen from above: below the view; a vertical one from the right: to its left). Esc stops.'
+      : `Click on a view where the ${sheetMode.cut === 'horizontal' ? 'horizontal' : 'vertical'} cut is to go: it is drawn through the centre of a hole when the click is near one. Esc stops.`;
   if (sheetMode?.kind === 'size')
     return sheetMode.first
       ? 'Click a second line of the same view for the distance between them, or Enter (or the same line again) for the size of this one. Esc stops.'
@@ -3435,6 +3439,8 @@ async function renderSheet() {
     ['back', 'Back'],
     ['bottom', 'Bottom'],
     ['iso', 'Isometric'],
+    ['section:horizontal', 'Section, horizontal cut'],
+    ['section:vertical', 'Section, vertical cut'],
   ]
     .map(([v, t]) => `<option value="${v}">${t}</option>`)
     .join('')}</select><button data-action="sheet-size" class="${sheetMode?.kind === 'size' ? 'active' : ''}" title="Draw a size: click one or two lines of a view">Size</button><button data-action="sheet-setup" title="Paper, scale, and what the title block and the notes say">Sheet…</button><button data-action="sheet-delete" title="Delete this drawing (Undo brings it back)">Delete</button><span class="bar-gap"></span><button data-action="sheet-pdf" title="The drawing as a PDF, to print at 100 %: it is then at its scale">PDF</button><button data-action="sheet-close" title="Back to the model · Esc">Close</button></div><div class="sheet-help" id="sheet-help"${
@@ -3457,6 +3463,7 @@ function renderSheetMarks() {
   }
   const P = (p) => `${p[0].toFixed(2)} ${(h - p[1]).toFixed(2)}`,
     out = [];
+  if (sheetMode?.kind === 'section' && sheetMode.line) out.push(`<path d="M${P(sheetMode.line[0])}L${P(sheetMode.line[1])}" class="mark"/>`);
   const first = sheetMode?.kind === 'size' ? sheetMode.first : null;
   if (first) {
     const t = first.thing;
@@ -3506,9 +3513,10 @@ function sheetThings() {
   sheetNow.things = drawing.views.flatMap((v) => {
     const sv = sheet.views.find((x) => x.id === v.id);
     if (!sv?.box) return [];
-    const ax = drawingsMaker.axesOf(v.look),
+    const ax = viewAxes(drawing, v),
+      cut = v.look === 'section' ? planeOf(drawing, v) : null,
       toPaper = (p) => [v.at[0] + sv.scale * (p[0] * ax.x[0] + p[1] * ax.x[1] + p[2] * ax.x[2] - sv.centre[0]), v.at[1] + sv.scale * (p[0] * ax.y[0] + p[1] * ax.y[1] + p[2] * ax.y[2] - sv.centre[1])];
-    return clickables(bodies, v.look, toPaper).map((t) => ({ ...t, view: v.id }));
+    return clickables(bodies, ax, toPaper, cut).map((t) => ({ ...t, view: v.id }));
   });
   return sheetNow.things;
 }
@@ -3528,6 +3536,36 @@ id('sheet').addEventListener('pointerdown', async (e) => {
     sheetMode = null;
     const r = await sheetCommand('add_view', { drawing: d.id, look, at: q.at.map((x) => Math.round(x)) });
     if (r) sheetPick = { kind: 'view', id: r.view.id };
+    renderSheetMarks();
+    return;
+  }
+  if (sheetMode?.kind === 'section') {
+    if (sheetMode.line) {
+      const { of, through } = sheetMode;
+      const r = await sheetCommand('add_section_view', { view: of, cut: sheetMode.cut, through, at: q.at.map((x) => Math.round(x)) });
+      sheetMode = null;
+      if (r) sheetPick = { kind: 'view', id: r.view.id };
+      renderSheetMarks();
+      return;
+    }
+    // the cut: on which view, and where along it; near a hole, through its centre
+    const sv = sheetNow.sheet.views.find((v) => v.box && v.look !== 'iso' && v.look !== 'section' && q.at[0] >= v.box[0] - 2 && q.at[0] <= v.box[2] + 2 && q.at[1] >= v.box[1] - 2 && q.at[1] <= v.box[3] + 2);
+    if (!sv) return toast('Click on a view from a side (front, top, …): a section is cut from one of those.');
+    const k = sheetMode.cut === 'horizontal' ? 1 : 0,
+      v = d.views.find((x) => x.id === sv.id),
+      centres = sheetThings().filter((t) => t.view === sv.id && t.circle).map((t) => t.circle.c[k]),
+      near = centres.reduce((b, c) => (Math.abs(c - q.at[k]) < Math.abs(b - q.at[k]) ? c : b), Infinity),
+      on = Math.abs(near - q.at[k]) <= 2.5 ? near : q.at[k],
+      ax = viewAxes(d, v),
+      m = k === 1 ? ax.y : ax.x,
+      axis = m.findIndex((x) => Math.abs(x) > 0.5),
+      through = +((sv.centre[k] + (on - v.at[k]) / sv.scale) / m[axis]).toFixed(3);
+    sheetMode = {
+      ...sheetMode,
+      of: sv.id,
+      through,
+      line: k === 1 ? [[sv.box[0] - 6, on], [sv.box[2] + 6, on]] : [[on, sv.box[1] - 6], [on, sv.box[3] + 6]],
+    };
     renderSheetMarks();
     return;
   }
@@ -3584,7 +3622,8 @@ id('sheet').addEventListener('pointerup', async () => {
 });
 id('sheet').addEventListener('change', (e) => {
   if (e.target.id !== 'sheet-view' || !e.target.value) return;
-  sheetMode = { kind: 'place', look: e.target.value };
+  const [look, cut] = e.target.value.split(':');
+  sheetMode = look === 'section' ? { kind: 'section', cut } : { kind: 'place', look };
   sheetPick = null;
   e.target.value = '';
   renderSheetMarks();

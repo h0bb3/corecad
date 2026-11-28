@@ -22,7 +22,7 @@ COMMANDS = ('get_state get_selection measure get_document load_document new_docu
             'extrude revolve import fillet chamfer edit_feature '
             'add_part add_group combine move_part copy_part set_color edit_part unlink_part delete_part delete_feature '
             'undo redo reload_app cancel_edit export screenshot set_view set_section set_xray '
-            'add_drawing edit_drawing edit_drawing_dimension delete_drawing add_view move_view add_drawing_dimension remove_from_drawing get_drawing').split()
+            'add_drawing edit_drawing edit_drawing_dimension delete_drawing add_view add_section_view move_view add_drawing_dimension remove_from_drawing get_drawing').split()
 GONE = ['add_box', 'add_cylinder', 'add_sphere', 'hole', 'ungroup', 'list_dimensions']
 
 
@@ -1173,6 +1173,42 @@ def run(p, url='index.html?test=1'):
     assert call('get_state')['drawings'][0]['dimensions'] == 1
     call('load_document', document=was)
     step('drawings by hand: a drawing of the selected part, views placed with a click and dragged, sizes from one or two clicks on lines of a view, a tolerance, Delete, the Sheet dialog')
+
+    # ---- sections: the part cut open on the drawing, by command and by hand
+    was = call('get_document')
+    call('new_document', name='Cut')
+    block('Bush', [60, 40, 20])                                                         # x -30..30, y -20..20, z 0..20
+    sketch([{'type': 'circle', 'center': [0, 0], 'diameter': 16}], plane='top')
+    call('extrude', operation='cut', distance=12)                                       # a blind hole, 12 deep
+    call('add_drawing')
+    front = call('add_view', look='front', at=[100, 150])['view']
+    a = call('add_section_view', view=front['id'], cut='vertical', at=[210, 150])
+    assert a['view']['section'] == {'letter': 'A', 'of': front['id'], 'cut': 'vertical', 'through': 0} and a['plane'] == 'x = 0', a
+    assert a['view']['size'] == [40, 20], a['view']
+    fails('add_section_view', 'misses the part', view=front['id'], cut='horizontal', through=25, at=[100, 60])
+    fails('add_section_view', 'not from another section', view=a['view']['id'], cut='horizontal', at=[100, 60])
+    hole = next(f['face'] for f in call('list_faces')[0]['faces'] if f['kind'] == 'cylinder')
+    floor = next(f['face'] for f in call('list_faces')[0]['faces'] if f['kind'] == 'plane' and abs(f['center'][2] - 8) < 1e-6)
+    assert call('add_drawing_dimension', view=a['view']['id'], **{'from': {'face': hole}})['dimension']['shows'] == 'Ø16'
+    assert call('add_drawing_dimension', view=a['view']['id'], **{'from': 'top', 'to': {'face': floor}})['dimension']['shows'] == '12', 'the depth of the hole, seen in the section'
+    texts = p.js('[...document.querySelectorAll("#sheet svg text")].map(t => t.textContent)')
+    assert 'SECTION A-A' in texts and texts.count('A') == 2, texts
+    # by hand: Section, horizontal cut; a click on the front view near the middle of its height; a click below it
+    def paper(x, y):
+        return p.js(f'(() => {{ const svg = document.querySelector("#sheet .sheet-paper svg"), m = svg.getScreenCTM(), h = svg.viewBox.baseVal.height; const q = new DOMPoint({x}, h - {y}).matrixTransform(m); return [q.x, q.y]; }})()')
+    p.js('{ const s = document.getElementById("sheet-view"); s.value = "section:horizontal"; s.dispatchEvent(new Event("change", { bubbles: true })); }')
+    p.click(*paper(100, 146))                                                           # z = 6 (the front view stands 140..160)
+    p.wait('!!document.querySelector("#sheet-marks .mark")')
+    p.click(*paper(100, 85))
+    p.wait('!corecad.busy && corecad.doc.drawings[0].views.length === 3', timeout=30)
+    b = call('get_drawing')['views'][2]
+    assert b['section']['letter'] == 'B' and abs(b['section']['through'] - 6) < 0.6 and b['size'] == [60, 40], b
+    p.wait('[...document.querySelectorAll("#sheet svg text")].some(t => t.textContent === "SECTION B-B")', timeout=30)
+    p.screenshot(ROOT / '.scratch' / 'e2e_api_section.png')
+    left = call('remove_from_drawing', ids=[front['id']])
+    assert left['views'] == [] and left['dimensions'] == [], 'the sections go with the view they are cut from'
+    call('load_document', document=was)
+    step('sections: cut through a view by command and by hand, hatched and named, with their sizes; refused where the plane misses or the view is a section')
 
     # ---- one way to do each thing: these commands and no others; making takes neither a name, a place nor contents
     names = p.js('corecad.tools.map(t => t.name)')

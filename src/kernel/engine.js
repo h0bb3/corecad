@@ -438,9 +438,39 @@ export function createEngine(post) {
       };
       try {
         for (const [look, cam] of Object.entries(job.looks)) {
+          // a section: what lies on the eye's side of its plane is taken away first, and the faces the
+          // plane makes are given as outlines (for hatching), in the view's own mm
+          let shape = compound,
+            cut = [];
+          if (cam.cut) {
+            const B = 1e5,
+              lo = [-B, -B, -B],
+              hi = [B, B, B],
+              i = cam.cut.n.findIndex((x) => Math.abs(x) > 0.5);
+            if (cam.cut.n[i] > 0) lo[i] = cam.cut.c;
+            else hi[i] = -cam.cut.c;
+            shape = s(s(compound.clone()).cut(s(r.makeBox(lo, hi))));
+            const X = cam.x,
+              Y = [cam.dir[1] * X[2] - cam.dir[2] * X[1], cam.dir[2] * X[0] - cam.dir[0] * X[2], cam.dir[0] * X[1] - cam.dir[1] * X[0]],
+              dot3 = (p, q) => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+            for (const f of shape.faces) {
+              s(f);
+              if (f.geomType !== 'PLANE') continue;
+              const nv = s(f.normalAt()),
+                n = [nv.x, nv.y, nv.z];
+              if (Math.abs(dot3(n, cam.cut.n)) < 1 - 1e-6) continue;
+              const m = f.meshEdges({ tolerance: 0.01, angularTolerance: 0.1 }).lines;
+              if (!m.length || Math.abs(dot3([m[0], m[1], m[2]], cam.cut.n) - cam.cut.c) > 1e-4) continue;
+              for (let k = 0; k + 5 < m.length; k += 6) {
+                const a = [m[k], m[k + 1], m[k + 2]],
+                  b = [m[k + 3], m[k + 4], m[k + 5]];
+                cut.push(Float32Array.of(dot3(a, X), dot3(a, Y), dot3(b, X), dot3(b, Y)));
+              }
+            }
+          }
           const v = s(new r.ProjectionCamera([0, 0, 0], cam.dir, cam.x)),
             algo = s(new OC.HLRBRep_Algo());
-          algo.Add(compound.wrapped, 0);
+          algo.Add(shape.wrapped, 0);
           algo.Projector(s(new OC.HLRAlgo_Projector(v.wrapped)));
           algo.Update();
           algo.Hide();
@@ -450,6 +480,7 @@ export function createEngine(post) {
             visible: [...lines(hlr.VCompound()), ...lines(hlr.OutLineVCompound())],
             smooth: lines(hlr.Rg1LineVCompound()),
             hidden: want ? [...lines(hlr.HCompound()), ...lines(hlr.OutLineHCompound())] : [],
+            ...(cam.cut ? { cut } : {}),
           };
         }
       } finally {
