@@ -1,6 +1,7 @@
 import { DocError } from '../core/errors.js';
 import { validateFeature } from './features.js';
 import { PART_ID, COLOR } from './parts.js';
+import { validateDrawings } from '../drawing/model.js';
 
 const vec3 = (v) => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
 
@@ -110,6 +111,7 @@ export function validateDocument(doc) {
       errors.push(`${f.name}: the sketch must come before its extrusion.`);
     if (sketch && sketch.part !== f.part) errors.push(`${f.name}: the sketch must be in the same part as its extrusion.`);
   }
+  errors.push(...validateDrawings(doc));
   return errors;
 }
 

@@ -89,6 +89,8 @@ export function createKernel() {
     },
     rebuild: (doc, opts = {}) => request('rebuild', { doc, ...opts }),
     export: (doc, opts) => request('export', { doc, ...opts }),
+    /** The lines of views of parts (engine.views): resolves with { [look]: { visible, smooth, hidden } }. */
+    views: (doc, opts) => request('views', { doc, ...opts }).then((m) => m.views),
     on(topic, fn) {
       if (!listeners.has(topic)) listeners.set(topic, new Set());
       listeners.get(topic).add(fn);

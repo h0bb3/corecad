@@ -7,6 +7,7 @@ export const PROTOCOL = 1;
 export const REQ = Object.freeze({
   rebuild: 'rebuild',
   export: 'export',
+  views: 'views',
   clear: 'clear',
   debug: 'debug',
 });
@@ -17,6 +18,7 @@ export const RES = Object.freeze({
   progress: 'progress',
   result: 'result',
   exported: 'exported',
+  viewed: 'viewed',
   fatal: 'fatal',
 });
 

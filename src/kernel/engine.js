@@ -7,7 +7,7 @@ import { packBody, topoOf } from './topo.js';
 import { weld, package3mf } from './threemf.js';
 import { zip } from '../core/zip.js';
 import { dispose, movedShape } from './shapes.js';
-import { kernel, heapBytes, errorText, isFatal } from './occ.js';
+import { kernel, heapBytes, errorText, isFatal, scope } from './occ.js';
 import { gunzipText } from '../core/pack.js';
 
 /** A colour as the kernel must be given it for a STEP file to hold the colour that was meant: the kernel
@@ -384,6 +384,78 @@ export function createEngine(post) {
           }
         }
       }
+    },
+    /**
+     * The lines of views of parts, for a drawing: what OpenCascade's hidden-line removal (HLRBRep_Algo) sees
+     * of the solids of job.parts (and what stands under them), where they stand, looking from each of
+     * job.looks: { [name]: { dir, x } }, `dir` towards the eye and `x` across. Each view is
+     * { visible, smooth, hidden }, lists of polylines [x0, y0, x1, y1, ...] in mm along x and up (dir × x),
+     * from the origin of space: `visible` the sharp edges and outlines that are seen, `smooth` where faces
+     * meet without a corner (the edge of a fillet), `hidden` the edges and outlines behind the solid.
+     * job.hidden: the looks whose hidden lines are wanted.
+     */
+    async views(job) {
+      const { doc, features, bodies, used } = await rebuild({ ...job, count: undefined, roll: null }, true),
+        { OC, r } = kernel();
+      if (features.some((f) => f.status === 'error')) throw Error('Resolve failed features before drawing the part.');
+      const only = new Set(job.parts.flatMap((id) => [id, ...descendantsOf(doc, id)])),
+        items = sceneOf(doc, bodies.map(({ body, part }) => ({ id: body.id, part, body })), used).filter((it) => only.has(it.part)),
+        out = {},
+        none = () => ({ visible: [], smooth: [], hidden: [] });
+      if (!items.length) {
+        for (const look of Object.keys(job.looks)) out[look] = none();
+        return out;
+      }
+      const s = scope(),
+        made = items.map((it) => s(Mat.isIdentity(it.matrix) ? it.body.shape.clone() : movedShape(it.body.shape, it.matrix))),
+        compound = s(r.makeCompound(made));
+      /** The edges of a result as polylines; a curve is cut into short straight pieces. */
+      const lines = (shape) => {
+        const list = [];
+        if (!shape || shape.IsNull()) return list;
+        const c = s(r.cast(shape));
+        for (const e of c.edges) {
+          s(e);
+          OC.BRepLib.BuildCurves3d(e.wrapped);
+          const m = e.meshEdges({ tolerance: 0.01, angularTolerance: 0.1 }),
+            L = m.lines;
+          // pieces end to end; a gap starts another polyline
+          let cur = null;
+          for (let i = 0; i + 5 < L.length; i += 6) {
+            const x0 = L[i],
+              y0 = L[i + 1],
+              x1 = L[i + 3],
+              y1 = L[i + 4];
+            if (cur && Math.abs(cur.at(-2) - x0) < 1e-9 && Math.abs(cur.at(-1) - y0) < 1e-9) cur.push(x1, y1);
+            else {
+              if (cur) list.push(Float32Array.from(cur));
+              cur = [x0, y0, x1, y1];
+            }
+          }
+          if (cur) list.push(Float32Array.from(cur));
+        }
+        return list;
+      };
+      try {
+        for (const [look, cam] of Object.entries(job.looks)) {
+          const v = s(new r.ProjectionCamera([0, 0, 0], cam.dir, cam.x)),
+            algo = s(new OC.HLRBRep_Algo());
+          algo.Add(compound.wrapped, 0);
+          algo.Projector(s(new OC.HLRAlgo_Projector(v.wrapped)));
+          algo.Update();
+          algo.Hide();
+          const hlr = s(new OC.HLRBRep_HLRToShape(algo)),
+            want = job.hidden?.includes(look);
+          out[look] = {
+            visible: [...lines(hlr.VCompound()), ...lines(hlr.OutLineVCompound())],
+            smooth: lines(hlr.Rg1LineVCompound()),
+            hidden: want ? [...lines(hlr.HCompound()), ...lines(hlr.OutLineHCompound())] : [],
+          };
+        }
+      } finally {
+        s.end();
+      }
+      return out;
     },
     clear() {
       cache.clear();

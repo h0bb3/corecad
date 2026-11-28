@@ -21,7 +21,8 @@ COMMANDS = ('get_state get_selection measure get_document load_document new_docu
             'add_sketch add_to_sketch set_dimension add_dimension add_constraint remove_from_sketch '
             'extrude revolve import fillet chamfer edit_feature '
             'add_part add_group combine move_part copy_part set_color edit_part unlink_part delete_part delete_feature '
-            'undo redo reload_app cancel_edit export screenshot set_view set_section set_xray').split()
+            'undo redo reload_app cancel_edit export screenshot set_view set_section set_xray '
+            'add_drawing edit_drawing delete_drawing add_view move_view add_drawing_dimension remove_from_drawing get_drawing').split()
 GONE = ['add_box', 'add_cylinder', 'add_sphere', 'hole', 'ungroup', 'list_dimensions']
 
 
@@ -1020,13 +1021,87 @@ def run(p, url='index.html?test=1'):
     assert content(call('get_document')) == content(before), 'looking inside changes nothing in the model'
     step('set_section and set_xray: the cut and the see-through for an agent; the model is untouched')
 
+    # ---- drawings: a sheet with views of a part, dimensions measured from the model, a PDF
+    was = call('get_document')
+    call('new_document', name='Shelf')
+    block('Bracket', [60, 40, 10])                                                      # o1: x -30..30, y -20..20, z 0..10
+    sketch([{'type': 'circle', 'center': [10, 5], 'diameter': 8}], plane='top')
+    call('extrude', operation='cut', through_all=True)
+    d = call('add_drawing', part='Bracket')
+    assert d['id'] == 'd1' and d['paper'] == [297, 210] and d['scale'] == '1:1' and d['part_name'] == 'Bracket' and d['views'] == [], d
+    assert d['frame'] == [20, 10, 287, 200] and d['title_block'] == [107, 10, 287, 34], d
+    fails('add_drawing_dimension', 'There is no view', view='v9', **{'from': 'left'})
+    assert call('edit_drawing', scale=2)['scale'] == '2:1'
+    front = call('add_view', look='front', at=[110, 150])['view']
+    assert front['size'] == [120, 20] and front['box'] == [50, 140, 170, 160], front
+    top = call('add_view', look='top', at=[110, 80])['view']
+    assert top['size'] == [120, 80], top
+    right = call('add_view', drawing='Drawing 1', look='right', at=[225, 150])['view']
+    assert right['size'] == [80, 20], right
+    m = call('add_drawing_dimension', view=front['id'], **{'from': 'left', 'to': 'right'})['dimension']
+    assert m['shows'] == '60' and m['value'] == 60, m
+    rim = next(e['edge'] for e in call('list_edges', edges={'kind': 'circle'})[0]['edges'] if abs(e['center'][2] - 10) < 1e-6)
+    assert call('add_drawing_dimension', view=top['id'], **{'from': {'edge': rim}})['dimension']['shows'] == 'Ø8'
+    hole = next(f['face'] for f in call('list_faces')[0]['faces'] if f['kind'] == 'cylinder')
+    assert call('add_drawing_dimension', view=top['id'], **{'from': 'left', 'to': {'face': hole}})['dimension']['shows'] == '40'
+    assert call('add_drawing_dimension', view=right['id'], **{'from': 'top', 'to': 'bottom'})['dimension']['shows'] == '10'
+    fails('add_drawing_dimension', 'does not lie flat in the right view', view=right['id'], **{'from': 'left', 'to': 'right'})
+    fails('add_drawing_dimension', 'a size each way', view=top['id'], **{'from': 'top'})
+    assert call('add_drawing_dimension', view=front['id'], **{'from': {'edge': rim}})['dimension']['shows'] == 'Ø8', 'a hole seen from its side: across it'
+    # the drawing follows the model: a thicker plate is a taller front view and a new number
+    call('edit_feature', id='f2', distance=12)
+    g = call('get_drawing')
+    assert [v['size'] for v in g['views']] == [[120, 24], [120, 80], [80, 24]], g['views']
+    assert [x.get('shows') for x in g['dimensions']] == ['60', 'Ø8', '40', '12', 'Ø8'], g['dimensions']
+    assert call('get_state')['drawings'] == [{'id': 'd1', 'name': 'Drawing 1', 'part': 'o1', 'sheet': 'A4', 'scale': '2:1', 'views': 3, 'dimensions': 5}]
+    # the person sees it: a command that changes a drawing shows its sheet over the model, as it follows the model
+    p.wait('!document.getElementById("sheet").hidden && [...document.querySelectorAll("#sheet svg text")].some(t => t.textContent === "12")', timeout=30)
+    assert p.js('document.querySelector("#sheet .sheet-bar strong").textContent') == 'Drawing 1'
+    p.screenshot(ROOT / '.scratch' / 'e2e_api_drawing_page.png')
+    p.key('Escape')
+    p.wait('document.getElementById("sheet").hidden', timeout=5)
+    p.click('[data-drawing="d1"]')
+    p.wait('!document.getElementById("sheet").hidden && document.querySelector("[data-drawing=d1]").classList.contains("selected")', timeout=10)
+    p.click('[data-action="sheet-close"]')
+    p.wait('document.getElementById("sheet").hidden', timeout=5)
+    shot = call('screenshot', drawing='d1')
+    assert shot['png'].startswith('data:image/png;base64,') and shot['width'] == 1600 and shot['height'] == round(210 * 1600 / 297), shot['width']
+    with open(ROOT / '.scratch' / 'e2e_api_drawing.png', 'wb') as f:
+        f.write(base64.b64decode(shot['png'].split(',', 1)[1]))
+    pdf = call('export', format='pdf')
+    raw = base64.b64decode(pdf['base64'])
+    assert raw.startswith(b'%PDF-1.4') and raw.rstrip().endswith(b'%%EOF') and pdf['filename'] == 'Shelf - Drawing 1.pdf' and 'not_drawn' not in pdf, pdf['filename']
+    assert b'/MediaBox [0 0 841.89 595.276]' in raw
+    with open(ROOT / '.scratch' / 'e2e_api_drawing.pdf', 'wb') as f:
+        f.write(raw)
+    fails('export', 'give "drawing", not "part"', format='pdf', part='Bracket')
+    fails('export', '"drawing" is for format "pdf"', format='step', drawing='d1')
+    # moved, taken off, undone; a sheet of another size
+    assert call('move_view', view=right['id'], at=[230, 150])['view']['at'] == [230, 150]
+    left = call('remove_from_drawing', ids=[front['id']])
+    assert [v['id'] for v in left['views']] == [top['id'], right['id']] and len(left['dimensions']) == 3, 'a view goes with its dimensions'
+    call('undo')
+    assert len(call('get_drawing')['views']) == 3
+    assert call('edit_drawing', sheet='A3', name='Bracket, workshop')['paper'] == [420, 297]
+    fails('edit_drawing', 'Say what to change', drawing='d1')
+    fails('get_drawing', 'There is no drawing "d7"', drawing='d7')
+    # a drawing goes with its part
+    second = call('add_drawing')['id']
+    call('delete_drawing', drawing=second)
+    call('delete_part', part='Bracket')
+    assert call('get_state')['drawings'] == []
+    fails('get_drawing', 'There is no drawing yet')
+    call('load_document', document=was)
+    step('drawings: views of a part at a scale, dimensions measured from the model that follow it, refused where they would be seen shortened; a picture and a PDF')
+
     # ---- one way to do each thing: these commands and no others; making takes neither a name, a place nor contents
     names = p.js('corecad.tools.map(t => t.name)')
     assert names == COMMANDS, sorted(set(names) ^ set(COMMANDS))
     takes = p.js('Object.fromEntries(corecad.tools.map(t => [t.name, Object.keys(t.input.properties)]))')
     assert takes['add_part'] == [] and takes['add_group'] == [] and takes['copy_part'] == ['part', 'linked'] and takes['add_sketch'] == ['plane', 'part'], takes
-    assert takes['move_part'] == ['part', 'position', 'rotation', 'parent'] and takes['screenshot'] == ['max', 'dimensions'] and takes['export'] == ['format', 'part', 'per_part', 'download'], takes
-    assert [t for t in names if 'name' in takes[t]] == ['new_document', 'edit_feature', 'edit_part'], 'a name is given in one place'
+    assert takes['move_part'] == ['part', 'position', 'rotation', 'parent'] and takes['screenshot'] == ['max', 'dimensions', 'drawing'] and takes['export'] == ['format', 'drawing', 'part', 'per_part', 'download'], takes
+    assert [t for t in names if 'name' in takes[t]] == ['new_document', 'edit_feature', 'edit_part', 'edit_drawing'], 'a name is given in one place'
+    assert takes['add_drawing'] == ['part'] and takes['add_view'] == ['drawing', 'look', 'at'], 'a drawing is made of a part; a view takes where it looks from and where it stands'
     assert [t for t in names if 'position' in takes[t]] == ['move_part'] and [t for t in names if 'shapes' in takes[t]] == ['add_to_sketch']
     for gone in GONE:
         fails(gone, 'Unknown command "%s"' % gone)

@@ -59,6 +59,7 @@ The command set is a toolbox of primitives. It has no shortcuts:
 | taking a group away | `move_part` with `parent` for each part in it, then `delete_part` |
 | moving by an offset | `get_state` for where it is, `move_part` with the new `position` |
 | the project as a file | `get_document` |
+| a drawing for the workshop | `add_drawing`, `add_view` for each view, `add_drawing_dimension` for each size, `export` with `format: "pdf"` |
 
 The page has buttons for a person that do several of these in one go (Box,
 Cylinder, Sphere, Hole, Ungroup). What they make is in the model like
@@ -285,6 +286,71 @@ the page (Section and X-ray in the view bar) and for an agent:
   (else null); `towards` is the way it looks, in space. When the person says
   "here" with the model cut open, what they point at is likely inside.
 
+## Drawings for the workshop
+
+A drawing is a sheet of paper with views of one part, its sizes on them, and
+a title block: what is printed and taken to the bench. It is kept in the
+project and follows the model: change the part and the drawing shows it as it
+is now, numbers and all.
+
+```js
+// a plate on A4 at 2:1: the front view with the top view below it (first angle), two sizes and a hole
+await corecad.run('add_drawing', { part: 'Plate' });                   // d1: A4, 1:1, empty
+await corecad.run('edit_drawing', { scale: 2 });
+await corecad.run('add_view', { look: 'front', at: [110, 150] });     // v2; answers its box on the paper
+await corecad.run('add_view', { look: 'top', at: [110, 80] });        // v3, below it
+await corecad.run('add_drawing_dimension', { view: 'v2', from: 'left', to: 'right' });   // 60
+await corecad.run('add_drawing_dimension', { view: 'v3', from: { edge: 13 } });          // Ø8 (a rim)
+await corecad.run('add_drawing_dimension', { view: 'v3', from: 'left', to: { face: 6 } });  // 40, to the hole's centre
+await corecad.run('screenshot', { drawing: 'd1' });                   // a picture of the sheet, to check it
+await corecad.run('export', { format: 'pdf', download: true });       // to print at 100 %
+```
+
+- **The paper.** `add_drawing` makes an empty A4 sheet (landscape) at 1:1
+  with a frame and a title block: part, project, drawing, scale, sheet,
+  units, date and the symbol of first angle projection. `edit_drawing`
+  changes its name, the part, the paper (A4 to A0, or A4 upright) and the
+  one scale of all its views. Places on the paper are millimetres from its
+  lower left corner; `get_drawing` says where the frame and the title block
+  are.
+- **Views.** `add_view` puts the part as seen from one side where its middle
+  is to stand: `front` (from -y, z up), `back`, `left`, `right`, `top` (from
+  +z), `bottom`, or `iso` (a picture from the front, the right and above).
+  The edges and outlines are those OpenCascade's hidden-line removal finds;
+  edges behind the solid are dashed (not in `iso`), where faces meet without
+  a corner a thin line, and what is round has its centre lines. Views are
+  placed by **first angle projection** (ISO, as in Europe): the top view
+  below the front view, the view from the left to its right, the view from
+  the right to its left, each lined up with the front view. The answer gives
+  the view's box on the paper, so the next one can be placed beside it;
+  `move_view` moves it with its dimensions.
+- **Dimensions.** `add_drawing_dimension` draws a size in a view with
+  extension lines, arrows and its number, measured from the model the way
+  `measure` measures: between two parallel faces, two holes (centre to
+  centre), a hole and a face (to its centre), two edges; or of one thing: a
+  hole or a round edge (its diameter), an arc (its radius), a straight edge
+  (its length). The page places it outside the view, each new one on that
+  side further out than the last: give the small ones first. It must lie
+  flat in its view, as a length that is not seen shortened: the width of a
+  plate in the front or the top view, the diameter of a hole in the view that
+  looks into it (a leader with Ø) or from its side (across it). Anything else
+  is refused with the reason. `along: "horizontal"` or `"vertical"` draws
+  only that part of a distance that runs at a slant. What it measures is kept
+  as a fillet keeps its edges, so it is found again after a rebuild; when it
+  is gone, `get_drawing` says so and the sheet leaves it out.
+- `remove_from_drawing` takes views and dimensions off by id (a view takes its
+  dimensions); `delete_drawing` deletes one; deleting the part deletes its
+  drawings.
+- **Seeing it.** `screenshot { drawing }` is a picture of the sheet;
+  `export { format: "pdf" }` the drawing as one page at its true size (lines
+  and text, not a picture): printed at 100 % it measures what its scale
+  says. In the page the list has **Drawings** under the parts; a click shows
+  the sheet over the model with **PDF** and **Close** (Esc), and a command
+  that changes a drawing shows it.
+- Not drawn (yet): section views, angles, notes, tolerances, threads in the
+  standard way (a thread is drawn as the edges it has), more than one sheet
+  to a drawing.
+
 ## Colours and export
 
 - `set_color { part, color }` colours a part; `set_color { faces, color }`
@@ -301,6 +367,7 @@ the page (Section and X-ray in the view bar) and for an agent:
   cannot tell objects apart; `per_part: true` gives a zip with one STL for
   each part instead.
 - `export { format: "step" }` has exact solids, named and coloured.
+- `export { format: "pdf", drawing }` is a drawing ([Drawings](#drawings-for-the-workshop)).
 - `export { part: "Plate" }` (with any of these formats) exports only that
   part and what stands under it; `part: "this"` the part the person has
   selected.
@@ -345,11 +412,19 @@ Arguments in brackets are optional.
 | `delete_part` | [part], [with_dependents] | Deletes a part with its history and what is under it. |
 | `undo`, `redo` | - | As the buttons. |
 | `cancel_edit` | - | Closes a sketch or dialog that is open in the page, discarding. |
-| `export` | [format], [part], [per_part], [download] | 3MF (an object for each part, named and coloured), STL or STEP. |
-| `screenshot` | [max], [dimensions] | The 3D view as it stands, as a PNG data URL, with the driving numbers on it if asked. |
+| `export` | [format], [drawing], [part], [per_part], [download] | 3MF (an object for each part, named and coloured), STL or STEP; a drawing as PDF. |
+| `screenshot` | [max], [dimensions], [drawing] | The 3D view as it stands, as a PNG data URL, with the driving numbers on it if asked; or the sheet of a drawing. |
 | `set_view` | [view], [fit] | Turns the camera to a standard view and fits the model. |
 | `set_section` | plane, [at], [flip] | Cuts the model open along a plane to look inside, or (plane null) shows it whole again. |
 | `set_xray` | on | Draws the solids see-through, or solid again. |
+| `add_drawing` | [part] | An empty sheet (A4, 1:1, frame and title block) for views of a part. |
+| `edit_drawing` | [drawing], [name], [part], [sheet], [scale] | Its name, part, paper or scale. |
+| `delete_drawing` | drawing | Deletes a drawing. |
+| `add_view` | [drawing], look, at | A view of the part from one side (or iso) with its middle at a place on the paper. |
+| `move_view` | view, at | Moves a view with its dimensions. |
+| `add_drawing_dimension` | view, from, [to], [along] | A size in a view, measured from the model; refused where it would be seen shortened. |
+| `remove_from_drawing` | ids | Takes views and dimensions off. |
+| `get_drawing` | [drawing] | The sheet: paper, scale, frame, title block, views with their boxes, dimensions with their numbers. |
 | `reload_app` | - | Reloads the tab so that it runs the newest CoreCAD; the project is kept. |
 
 `edit_feature` takes, for an extrusion: `distance`, `through_all`,
@@ -371,7 +446,13 @@ page stays half to each side until it is given a `distance2`.
 - `src/api/measure3d.js`: sizes of faces and edges, and what lies between two (pure).
 - `src/api/dimensions.js`: the driving numbers of a feature and where they
   are on the model, for the page's Dimensions view (pure).
-- `test/api-shapes.test.html`: tests of the pure modules.
+- `src/drawing/`: drawings. `model.js` what a drawing is in the project and
+  its changes, `layout.js` the sheet (views at the scale, dimensions, centre
+  lines, frame, title block), `pdf.js` and `svg.js` the sheet written out,
+  `font.js` the widths of Helvetica, all pure; `make.js` the lines of the
+  views from the kernel (`views` in `src/kernel/engine.js`: HLRBRep_Algo).
+- `test/api-shapes.test.html`: tests of the pure modules;
+  `test/drawing.test.html` of drawings, with the kernel.
 - `tools/e2e_api.py`: every command against the real kernel, with expected
   volumes and boxes, and the list of commands itself; run it with
   `python tools/e2e_api.py`.

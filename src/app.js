@@ -58,6 +58,10 @@ import { createCommands, READS } from './api/commands.js';
 import { createBridge, activity } from './api/bridge.js';
 import { createMirror, checkInput } from './api/mirror.js';
 import { BUILD, published, freshReload } from './update.js';
+import { createDrawings } from './drawing/make.js';
+import { drawingsOf, drawingById, scaleText } from './drawing/model.js';
+import { sheetToSVG } from './drawing/svg.js';
+import { sheetToPDF } from './drawing/pdf.js';
 
 const $ = (s) => document.querySelector(s),
   id = (s) => document.getElementById(s),
@@ -1097,6 +1101,10 @@ function renderTools() {
   id('redo').disabled = editor ? !editor.canRedo : !store.history.canRedo;
 }
 let browserSignature = '';
+/** The drawing shown over the model (the sheet), what it was last drawn from, and the newest drawing of it. */
+let openSheet = null,
+  sheetSeen = null,
+  sheetTurn = 0;
 function renderFeatureActions() {
   const f = featureById(store.state.doc, selectedFeature),
     p = f ? null : partById(store.state.doc, selectedPart);
@@ -1140,6 +1148,7 @@ function renderBrowser() {
           rolled,
           selectedPart,
           [...collapsed],
+          openSheet,
         ]
   );
   if (signature === browserSignature) {
@@ -1313,6 +1322,19 @@ function renderBrowser() {
     partRows ||
     '<div class="empty-tree">Each part keeps its own<br>editable history.<br>Start with a sketch or a box.</div>'
   }</div>${
+    drawingsOf(doc).length
+      ? `<div class="group-title">DRAWINGS <b>${drawingsOf(doc).length}</b></div><div class="tree-section">${drawingsOf(doc)
+          .map(
+            (d) =>
+              `<button class="tree-row drawing-row ${openSheet === d.id ? 'selected' : ''}" data-drawing="${d.id}" title="${esc(d.name)}: ${d.sheet}, ${scaleText(
+                d.scale
+              )} · Click to see the sheet, click again to go back to the model"><span class="feature-symbol">▭</span><span class="tree-name">${esc(
+                d.name
+              )}</span><span class="part-note">${esc(partById(doc, d.part)?.name ?? '')}</span></button>`
+          )
+          .join('')}</div>`
+      : ''
+  }${
     rolled
       ? '<div class="browser-note">History is rolled back.<br><button data-action="end-history" title="Rebuild through the last feature">Return to end</button></div>'
       : ''
@@ -2969,7 +2991,7 @@ const actions = {
 let showPlanes = true;
 document.addEventListener('click', (e) => {
   const target = e.target.closest(
-    '[data-action],[data-plane],[data-view],[data-feature],[data-cid],[data-constraint],[data-modal],[data-region],[data-remove-edge],[data-visible],[data-body],[data-part-eye],[data-part-colour],[data-colour],[data-twist],[data-turn],[data-part]'
+    '[data-action],[data-plane],[data-view],[data-feature],[data-cid],[data-constraint],[data-modal],[data-region],[data-remove-edge],[data-visible],[data-body],[data-part-eye],[data-part-colour],[data-colour],[data-twist],[data-turn],[data-part],[data-drawing]'
   );
   if (!target || target.disabled) return;
   const d = target.dataset;
@@ -3009,6 +3031,10 @@ document.addEventListener('click', (e) => {
         }),
         'Part visibility'
       );
+    return;
+  }
+  if (d.drawing) {
+    showSheet(openSheet === d.drawing ? null : d.drawing);
     return;
   }
   if (d.twist) {
@@ -3235,6 +3261,11 @@ document.addEventListener('keydown', (e) => {
     }
     return;
   }
+  if (openSheet && key === 'escape' && !input) {
+    e.preventDefault();
+    showSheet(null);
+    return;
+  }
   if (ctrl && ['s', 'o', 'z', 'y'].includes(key)) {
     if (input && ['z', 'y'].includes(key)) return;
     e.preventDefault();
@@ -3326,6 +3357,60 @@ document.addEventListener('keydown', (e) => {
     }
   }
 });
+// ------------------------------------------------------------------ drawings
+// A drawing (src/drawing) is shown over the model, as it will print: the list of drawings opens one, a
+// command that changes one shows it, Close or Esc goes back to the model. It follows the model as it is built.
+const drawingsMaker = createDrawings(store.kernel);
+function showSheet(drawingId) {
+  openSheet = drawingId && drawingById(store.state.doc, drawingId) ? drawingId : null;
+  sheetSeen = null;
+  renderSheet();
+  renderBrowser();
+}
+async function renderSheet() {
+  const box = id('sheet'),
+    st = store.state;
+  if (openSheet && !drawingById(st.doc, openSheet)) openSheet = null;
+  box.hidden = !openSheet;
+  if (!openSheet) {
+    box.innerHTML = '';
+    return;
+  }
+  if (st.busy || !st.build) return; // shown when the model is built
+  const seen = [st.doc, st.build, openSheet];
+  if (sheetSeen && seen.every((x, i) => x === sheetSeen[i])) return;
+  sheetSeen = seen;
+  const turn = ++sheetTurn,
+    d = drawingById(st.doc, openSheet);
+  let sheet, problem = '';
+  try {
+    sheet = await drawingsMaker.sheet(st.doc, st.build, d.id);
+  } catch (e) {
+    problem = String(e?.message ?? e);
+  }
+  if (turn !== sheetTurn || !openSheet) return;
+  const missing = sheet ? sheet.dims.filter((x) => x.problem) : [];
+  box.innerHTML = `<div class="sheet-bar"><strong>${esc(d.name)}</strong><span>${esc(partById(st.doc, d.part)?.name ?? '')} · ${esc(d.sheet)} · ${scaleText(d.scale)}</span>${
+    missing.length
+      ? `<span class="sheet-note" title="${esc(missing.map((x) => `${x.id}: ${x.problem}`).join('\n'))}">${missing.length} ${missing.length === 1 ? 'dimension' : 'dimensions'} not drawn</span>`
+      : ''
+  }<span class="grow"></span><button data-action="sheet-pdf" title="The drawing as a PDF, to print at 100 %: it is then at its scale">PDF</button><button data-action="sheet-close" title="Back to the model · Esc">Close</button></div><div class="sheet-paper">${
+    sheet ? sheetToSVG(sheet).replace(/ width="[\d.]+mm" height="[\d.]+mm"/, '') : `<p class="sheet-problem">${esc(problem)}</p>`
+  }</div>`;
+}
+store.subscribe(() => openSheet && renderSheet());
+actions['sheet-close'] = () => showSheet(null);
+actions['sheet-pdf'] = async () => {
+  const d = drawingById(store.state.doc, openSheet);
+  if (!d) return;
+  try {
+    const sheet = await drawingsMaker.sheet(store.state.doc, store.state.build, d.id);
+    download(new Blob([sheetToPDF(sheet, { title: `${partById(store.state.doc, d.part)?.name ?? ''} - ${d.name}` })], { type: 'application/pdf' }), filename({ meta: { name: `${store.state.doc.meta.name} - ${d.name}` } }) + '.pdf');
+    toast('The drawing is downloaded as a PDF: print it at 100 % (actual size) for its scale to hold.');
+  } catch (e) {
+    toast(String(e?.message ?? e));
+  }
+};
 renderTools();
 renderBrowser();
 renderToggles();
@@ -3385,6 +3470,8 @@ const api = createCommands({
   },
   download,
   filename,
+  drawings: drawingsMaker,
+  drawingShown: (drawingId) => showSheet(drawingId),
 });
 // The bridge to an MCP client (src/api/bridge.js). It connects only when the person chooses to.
 // BRIDGE_LIVE: the relay at vibedit.app is deployed (since 2026-11-25). Set it to false if the relay

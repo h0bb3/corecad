@@ -31,9 +31,12 @@ What it does:
 - **Colours** for parts and for single faces. **Export** as 3MF (an object
   for each part), STL and STEP, of everything or of one part. Project files,
   and an autosave in the browser.
-- **For an agent**: 40 commands behind `window.corecad.run`
+- **Drawings** for the workshop: views of a part on a sheet at a scale,
+  hidden edges and centre lines, sizes measured from the model that follow
+  it, a title block; as PDF to print at true size.
+- **For an agent**: 48 commands behind `window.corecad.run`
   ([COMMANDS.md](COMMANDS.md)), and the same list over MCP through a relay
-  ([bridge/README.md](../bridge/README.md)): 41 tools with the relay's own.
+  ([bridge/README.md](../bridge/README.md)): 49 tools with the relay's own.
   "This", "selected" and "pointed" mean what the person has clicked or rests
   the mouse on, and `get_selection` says how they are looking at the model.
   While an agent is at work the page says so: a frame round the view, a line
@@ -47,7 +50,7 @@ What it does:
 
 Verified on this build, 2026-11-26:
 
-- `python tools/run_tests.py`: 152 tests in 19 pages; the kernel pages run
+- `python tools/run_tests.py`: 159 tests in 20 pages (2026-11-28); the kernel pages run
   the real OpenCascade worker.
 - The end-to-end scripts in headless Chrome, all passing: `tools/e2e.py`,
   `e2e_more.py`, `e2e_parts.py` and `e2e_export.py` (real mouse and key
@@ -152,6 +155,13 @@ Not verified:
 7. **A client is not told when the list of tools changes**: it reconnects to
    read it again. Telling it needs a new version of the relay on its host.
    Worth doing?
+8. **Drawings in the page.** A person sees a drawing and prints it; making
+   one, adding views and sizes, is done by the agent. Should the page have
+   its own way to add a drawing, a view, a size (by clicking two faces)?
+9. **The sheet**: first angle projection (ISO E), A4 to A0, one scale, a
+   title block with part, project, drawing, scale, sheet, units and date.
+   Anything missing that a workshop here needs (material, a number for the
+   drawing, who drew it, general tolerances)?
 
 ## Next
 
@@ -1054,6 +1064,63 @@ Limits:
   the browser's storage, which holds a few megabytes: a project with a big
   import may not be autosaved (the page says so), and is kept by Save.
 - STL is not imported.
+
+## Drawings for the workshop (2026-11-28)
+
+Asked for: drawing views ("ritningsvyer"). The owner chose, when asked: a
+workshop drawing to print, as PDF, with the sizes placed by the agent.
+
+- **What a drawing is**: `doc.drawings`, each a part, a paper, one scale,
+  views (where each looks from and where it stands on the paper) and
+  dimensions (a view, and the faces or edges they measure, kept by their
+  labels as a fillet keeps its edges). The lines are not kept: they are made
+  from the model when the sheet is drawn, so a drawing follows the part.
+  `doc.dseq` counts their ids (`d1`, `v2`, `m3`). A drawing goes with its
+  part (`removePart`).
+- **The views** come from OpenCascade's hidden-line removal
+  (`HLRBRep_Algo`, already in the kernel build; tried first in a spike, from
+  1 to 15 ms for a plate, about 250 ms for a plate with 40 holes and
+  rounded corners): sharp edges and outlines that are seen, smooth edges
+  (thin), and what is behind (dashed). The worker answers a `views` request
+  (`engine.views`); the page keeps the lines until the model changes
+  (`src/drawing/make.js`).
+- **The sheet** (`src/drawing/layout.js`): views at the scale round where
+  they stand; centre lines through circles seen round and along holes and
+  pins seen from the side; dimensions with extension lines, arrows and the
+  number, outside the view, each further out than the last on its side; a
+  leader with Ø or R for what is seen round; a frame with a 20 mm margin for
+  filing, and a title block with part, project, drawing, scale, sheet,
+  units, date and the first angle symbol. Helvetica throughout, with its
+  widths in `font.js`, so that the PDF and the page place text the same way.
+- **PDF** written by CoreCAD itself (`src/drawing/pdf.js`, no library): one
+  page at its true size in points, lines and text (WinAnsi, so Ø and ° are
+  there), not a picture. **SVG** for the page and for `screenshot`.
+- **Eight commands**: `add_drawing`, `edit_drawing`, `delete_drawing`,
+  `add_view`, `move_view`, `add_drawing_dimension`, `remove_from_drawing`,
+  `get_drawing`; `export` takes `format: "pdf"` with `drawing`, and
+  `screenshot` takes `drawing`. 48 commands now. One way: a drawing is made
+  of a part and nothing else, named with `edit_drawing`; a view takes where
+  it looks from and where it stands; a dimension what it measures.
+- **In the page**: **Drawings** in the list under the parts; a click shows
+  the sheet over the model, with **PDF** and **Close** (Esc). A command that
+  changes a drawing shows it. A person cannot yet make or change a drawing
+  in the page: that is for the agent, as asked (see the question below).
+
+Verification: `test/drawing.test.html` (7 tests, with the kernel: the
+directions of the views; a drawing in the project, checked, and gone with
+its part; the views of a plate with a hole from the kernel, the hole's rim
+as one closed line of the right length in the right place; what a dimension
+measures in each view and what it refuses; the sheet at 2:1 with its numbers,
+frame, title block, arrows, centre and hidden lines, and a dimension whose
+faces are gone; the PDF's objects where its table says, its size in points,
+Ø in WinAnsi, and the SVG drawn as a picture). `tools/e2e_api.py`: every
+command, the numbers following a thicker plate, the sheet shown in the page,
+Esc and the list, the picture and the PDF, undo, and the drawing going with
+its part.
+
+Not verified: a printed PDF measured with a ruler; a large or complicated
+part (an imported one, a thread: a thread's helix is drawn as the many edges
+it has, and may be slow to project).
 
 ## The scanner on the Quest: no camera, first try (2026-11-27)
 

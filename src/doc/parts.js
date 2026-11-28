@@ -99,7 +99,9 @@ export function removePart(doc, id) {
     features = doc.features.filter((f) => !gone.has(f.part)),
     bodies = { ...doc.bodies };
   for (const f of doc.features) if (gone.has(f.part)) delete bodies[f.id];
-  return { ...doc, parts: doc.parts.filter((p) => !gone.has(p.id)), features, bodies };
+  // a drawing shows one part: it goes with it
+  const drawings = doc.drawings?.filter((d) => !gone.has(d.part));
+  return { ...doc, parts: doc.parts.filter((p) => !gone.has(p.id)), features, bodies, ...(drawings ? { drawings } : {}) };
 }
 
 /** What would be left hanging if a part were removed: linked copies of it (or of anything under

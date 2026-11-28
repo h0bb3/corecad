@@ -1,13 +1,13 @@
 # Handover
 
-For the next agent, on 2026-11-27. `main` is clean, pushed and published
+For the next agent, on 2026-11-28. `main` is clean, pushed and published
 (https://h0bb3.github.io/corecad/; `src/version.js` names the build).
 
 ## Read first
 
 - [docs/STATUS.md](docs/STATUS.md): where it stands, what is decided, what
   is open for the owner, what is next, and the log of all work.
-- [docs/COMMANDS.md](docs/COMMANDS.md): the 40 commands, and the rule of one
+- [docs/COMMANDS.md](docs/COMMANDS.md): the 48 commands, and the rule of one
   way to do each thing.
 - [docs/KERNEL_NOTES.md](docs/KERNEL_NOTES.md) before touching the kernel:
   OpenCascade gets several things wrong without saying so (threads, see
@@ -25,7 +25,7 @@ For the next agent, on 2026-11-27. `main` is clean, pushed and published
 ## Routine
 
 - After any change to a page file: `python tools/stamp.py`.
-- Tests: `python tools/run_tests.py` (152 tests in 19 pages), then
+- Tests: `python tools/run_tests.py` (159 tests in 20 pages), then
   `tools/e2e.py`, `e2e_more.py`, `e2e_parts.py`, `e2e_export.py`,
   `e2e_api.py`, and with Node (`NODE=E:/projects/new_coding/tools/node/node.exe`)
   `e2e_bridge.py` and `e2e_view.py`. Set `PYTHONIOENCODING=utf-8`.
@@ -48,7 +48,10 @@ For the next agent, on 2026-11-27. `main` is clean, pushed and published
 - **Not tried by hand**: import of a STEP file from another CAD program;
   revolve with a rise (threads) printed; in the headset: numbers on the
   model, the cut, see-through, fine placement (grip + trigger).
-- **Open for the owner** (STATUS.md, "Open, for the owner"): seven
+- **Drawings** (2026-11-28, STATUS.md "Drawings for the workshop"): made by
+  the agent, seen and printed in the page. Not yet: a printed PDF measured,
+  section views, angles, notes.
+- **Open for the owner** (STATUS.md, "Open, for the owner"): nine
   questions, none answered yet.
 - **Next** (STATUS.md, not started): named numbers with arithmetic, mirror,
   shell, sweep, loft; STL import.

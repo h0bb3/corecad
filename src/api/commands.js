@@ -30,6 +30,11 @@ import { faceRefFrom, edgeRefFrom, topoOfBody } from '../doc/refs.js';
 import { canonicalFrame, toLocal } from '../core/plane.js';
 import { STANDARD } from '../view/camera-math.js';
 import { sectionText } from '../view/section.js';
+import * as Drawing from '../drawing/model.js';
+import { measureOf, MARGIN, TITLE_BLOCK } from '../drawing/layout.js';
+import { createDrawings } from '../drawing/make.js';
+import { sheetToPDF } from '../drawing/pdf.js';
+import { sheetToSVG } from '../drawing/svg.js';
 
 const round = (v, digits = 4) => (Array.isArray(v) ? v.map((x) => round(x, digits)) : +Number(v).toFixed(digits));
 const positive = (v, what) => {
@@ -76,7 +81,7 @@ const tool = (name, description, properties = {}, required = []) => ({
 /** The commands that look at the model, or change how it is shown, and never change the model itself. */
 /** The longest STEP file that is taken, in characters. */
 export const MAX_IMPORT = 20e6;
-export const READS = new Set(['get_state', 'get_selection', 'measure', 'get_document', 'get_sketch', 'list_faces', 'list_edges', 'export', 'screenshot', 'set_view', 'set_section', 'set_xray']);
+export const READS = new Set(['get_state', 'get_selection', 'measure', 'get_document', 'get_sketch', 'list_faces', 'list_edges', 'get_drawing', 'export', 'screenshot', 'set_view', 'set_section', 'set_xray']);
 
 export const TOOLS = [
   tool('get_state', 'The model at a glance: the parts (each with its place, its parent, and its own history of features), the features with their status and main numbers, the bodies with volume (mm³) and bounding box in space, which part is current, and whether the page is in the middle of an edit. Start here.'),
@@ -238,9 +243,10 @@ export const TOOLS = [
   tool('cancel_edit', 'Closes a sketch or a feature dialog that is open in the page without keeping its changes. The commands that change the model need this to be closed.'),
   tool(
     'export',
-    'The model as a file. "3mf": for slicers (Bambu Studio, OrcaSlicer, PrusaSlicer, Cura): every part an object of its own, with its name, its colour and its painted faces, where it stands. "stl": a plain mesh; an STL file cannot tell objects apart, so everything is one mesh unless per_part is asked for. "step": exact geometry for other CAD, parts named and coloured. Hidden parts are left out. Returned as text (step) or base64 (3mf, stl), or sent to the browser\'s downloads. (The project itself is get_document.)',
+    'The model as a file. "3mf": for slicers (Bambu Studio, OrcaSlicer, PrusaSlicer, Cura): every part an object of its own, with its name, its colour and its painted faces, where it stands. "stl": a plain mesh; an STL file cannot tell objects apart, so everything is one mesh unless per_part is asked for. "step": exact geometry for other CAD, parts named and coloured. "pdf": a drawing (add_drawing), one page at its true size, to print at 100 %. Hidden parts are left out. Returned as text (step) or base64 (3mf, stl, pdf), or sent to the browser\'s downloads. (The project itself is get_document.)',
     {
-      format: str('Default "step".', { enum: ['3mf', 'step', 'stl'] }),
+      format: str('Default "step".', { enum: ['3mf', 'step', 'stl', 'pdf'] }),
+      drawing: str('For "pdf": the drawing, by id such as "d1" or by name. Left out: the newest drawing.'),
       part: str('Only this part and what stands under it: an id, a name, or "this" (the part the person has selected). Left out: everything that is to be seen.'),
       per_part: bool('For "stl" with several parts: a .zip with one STL file for each part, named after it.'),
       download: bool('true: save it through the browser instead of returning its content.'),
@@ -248,8 +254,12 @@ export const TOOLS = [
   ),
   tool(
     'screenshot',
-    'A picture of the 3D view as it stands, as a PNG data URL, to see what the model looks like. (set_view turns the camera and fits the model.)',
-    { max: numb('The longer side in pixels at most (default 1200).'), dimensions: bool('true: with the numbers that drive the model drawn on it, as the Dimensions view shows them.') }
+    'A picture of the 3D view as it stands, as a PNG data URL, to see what the model looks like (set_view turns the camera and fits the model); or, with "drawing", a picture of that drawing\'s sheet.',
+    {
+      max: numb('The longer side in pixels at most (default 1200).'),
+      dimensions: bool('true: with the numbers that drive the model drawn on it, as the Dimensions view shows them.'),
+      drawing: str('A drawing (by id or name): the picture is of its sheet, not of the 3D view.'),
+    }
   ),
   tool('set_view', 'Turns the camera to a standard view and fits the model in the picture.', { view: str('The view. Left out: the camera stays turned as it is.', { enum: VIEWS }), fit: bool('Fit the model (default true).') }),
   tool(
@@ -263,6 +273,51 @@ export const TOOLS = [
     ['plane']
   ),
   tool('set_xray', 'Draws the solids see-through, with every edge showing, or solid again. Like set_section it changes how the model is shown, not the model.', { on: bool('true: see-through. false: solid.') }, ['on']),
+  tool(
+    'add_drawing',
+    'Starts a drawing of a part for the workshop: an empty sheet of A4 (landscape) at 1:1, with a frame and a title block that names the part and the project. add_view puts views of the part on it, add_drawing_dimension the sizes; edit_drawing changes the paper and the scale; export with format "pdf" gives it to print. A drawing is kept in the project and follows the model: change the part and the drawing shows it as it is. Returns the drawing as get_drawing does.',
+    { part: PART_ARG }
+  ),
+  tool(
+    'edit_drawing',
+    'Changes a drawing: its name, the part it shows, the paper, the scale. Views keep their places on the paper; check them with get_drawing after a change of paper or scale.',
+    {
+      drawing: str('The drawing: its id such as "d1", or its name. Left out: the newest drawing.'),
+      name: str('Its name, in the title block.'),
+      part: PART_ARG,
+      sheet: str('The paper: A4 (297 × 210 mm), A3, A2, A1, A0, landscape; or "A4 portrait".', { enum: Object.keys(Drawing.SHEETS) }),
+      scale: numb('How big the part is drawn: 1 is its true size, 0.5 is 1:2, 2 is 2:1. One scale for every view; it is written in the title block.'),
+    }
+  ),
+  tool('delete_drawing', 'Deletes a drawing with its views and dimensions. The model is not touched.', { drawing: str('The drawing: id or name.') }, ['drawing']),
+  tool(
+    'add_view',
+    'Puts a view of the drawing\'s part on its sheet: the part as seen from one side, at the scale of the drawing, with the edges behind it dashed and centre lines through what is round; "iso" is a picture from the front, the right and above, without hidden edges. Views are placed by first angle projection (ISO, as in Europe): the top view below the front view, the view from the left to the right of it, the view from the right to its left, the view from below above it; each lined up with the front view. Answers where it stands on the paper and how big it is, so that the next one can be placed (get_drawing tells the same).',
+    {
+      drawing: str('The drawing: id or name. Left out: the newest drawing.'),
+      look: str('Where the part is seen from: front (from -y, z up), back, left, right (from +x), top (from +z, y up), bottom, iso.', { enum: Drawing.LOOK_NAMES }),
+      at: VEC('Where the middle of the view stands on the paper: [x, y] in mm from its lower left corner. The frame leaves 20 mm on the left and 10 mm on the other sides; the title block fills the lower right corner (get_drawing says where).'),
+    },
+    ['look', 'at']
+  ),
+  tool('move_view', 'Moves a view on its sheet, with its dimensions.', { view: str('The view\'s id, such as "v2" (get_drawing).'), at: VEC('Where its middle stands on the paper: [x, y] in mm from the lower left corner.') }, ['view', 'at']),
+  tool(
+    'add_drawing_dimension',
+    'Draws a size in a view of a drawing, with its number, measured from the model: between two things (two parallel faces, two holes, a hole and a face, two edges), or of one thing (a hole or a round edge: its diameter, an arc: its radius, a straight edge: its length). It is placed outside the view by itself, each new one further out. It must lie flat in that view, as a length does that is not seen shortened: the width of a plate in the front or the top view, the diameter of a hole in the view that looks into it. What it measures is kept, and the number follows the model when it changes. Refused, with the reason, when it cannot be drawn in that view.',
+    {
+      view: str('The view\'s id, such as "v2" (add_view, get_drawing).'),
+      from: { description: 'A face or an edge of the drawing\'s part: "this", "selected" or "pointed" (the person\'s; two selected things are a distance between them); a side name such as "left"; or { "face": index } or { "edge": index } from list_faces and list_edges.' },
+      to: { description: 'The other one, given the same way, for a distance between two things.' },
+      along: str('For a distance that runs at a slant in the view: "horizontal" or "vertical" draws only that part of it. Left out: the distance as it is.', { enum: ['horizontal', 'vertical'] }),
+    },
+    ['view', 'from']
+  ),
+  tool('remove_from_drawing', 'Takes views or dimensions off their drawing, by id. A view takes its dimensions with it.', { ids: { type: 'array', items: { type: 'string' }, description: 'Ids of views ("v2") and dimensions ("m5").' } }, ['ids']),
+  tool(
+    'get_drawing',
+    'A drawing as it stands: its paper and scale, where the frame and the title block are, each view with where it stands and the box it fills on the paper (mm from the lower left corner), and each dimension with the number it shows, or why it cannot be drawn now. screenshot with "drawing" shows it.',
+    { drawing: str('The drawing: id or name. Left out: the newest drawing.') }
+  ),
 ];
 
 // ------------------------------------------------------------------ the commands
@@ -291,9 +346,12 @@ export const TOOLS = [
  * @param {(on: boolean) => boolean} app.setXray   draws the solids see-through
  * @param {(blob: Blob, name: string) => void} app.download
  * @param {(doc: object) => string} app.filename
+ * @param {ReturnType<typeof createDrawings>} [app.drawings]  the page's drawings (drawing/make.js), with what it has made of them
+ * @param {(id: string) => void} [app.drawingShown]  a command made or changed this drawing
  */
 export function createCommands(app) {
   const { store, view } = app;
+  const drawings = app.drawings ?? createDrawings(store.kernel);
   const doc = () => store.state.doc;
   const usedUp = () => new Map(Object.entries(store.state.build?.used ?? {}));
   /** Every body the kernel built, with where its part stands; `away` when it is not in the picture (hidden, or used up as a tool). */
@@ -714,6 +772,7 @@ export function createCommands(app) {
         return { id: f.id, part: f.part, type: f.type, name: f.name, status: r?.status ?? 'unknown', ...(r?.message ? { message: r.message } : {}), ...summary(f) };
       }),
       bodies: bodyRows(),
+      drawings: Drawing.drawingsOf(st.doc).map((d) => ({ id: d.id, name: d.name, part: d.part, sheet: d.sheet, scale: Drawing.scaleText(d.scale), views: d.views.length, dimensions: d.dims.length })),
       editing: app.editing(),
       can_undo: store.history.canUndo,
       can_redo: store.history.canRedo,
@@ -858,6 +917,82 @@ export function createCommands(app) {
     return apply(addFeature(made.doc, made.feature), made.feature, 'Apply ' + made.feature.name);
   }
 
+
+  // ---- drawings
+  /** A drawing by id or by name; nothing given: the newest. */
+  function drawingOf(ref) {
+    const list = Drawing.drawingsOf(doc());
+    if (ref === undefined || ref === null) {
+      if (!list.length) throw Error('There is no drawing yet: make one with add_drawing.');
+      return list.at(-1);
+    }
+    const text = String(ref),
+      found = Drawing.drawingById(doc(), text) ?? list.filter((d) => d.name.toLowerCase() === text.toLowerCase());
+    if (!Array.isArray(found)) return found;
+    if (found.length === 1) return found[0];
+    throw Error(found.length ? `${found.length} drawings are named "${text}": use the id.` : `There is no drawing "${text}". Drawings: ${list.map((d) => `${d.id} "${d.name}"`).join(', ') || 'none'}.`);
+  }
+  function viewOf(id) {
+    const hit = Drawing.itemById(doc(), String(id));
+    if (!hit?.view) throw Error(`There is no view "${id}". Views: ${Drawing.drawingsOf(doc()).flatMap((d) => d.views.map((v) => `${v.id} (${v.look}, ${d.name})`)).join(', ') || 'none'}.`);
+    return hit;
+  }
+  const sheetOf = async (d) => drawings.sheet(doc(), store.state.build, d.id);
+  /** A drawing as get_drawing tells it. */
+  async function drawingInfo(d) {
+    const sheet = await sheetOf(d),
+      [w, h] = sheet.size,
+      part = partById(doc(), d.part);
+    return {
+      id: d.id,
+      name: d.name,
+      part: d.part,
+      part_name: part?.name,
+      sheet: d.sheet,
+      paper: [w, h],
+      scale: Drawing.scaleText(d.scale),
+      scale_factor: d.scale,
+      frame: [MARGIN.left, MARGIN.bottom, w - MARGIN.right, h - MARGIN.top],
+      title_block: [round(Math.max(MARGIN.left, w - MARGIN.right - TITLE_BLOCK.width), 2), MARGIN.bottom, w - MARGIN.right, MARGIN.bottom + TITLE_BLOCK.height],
+      views: d.views.map((v) => {
+        const box = sheet.views.find((x) => x.id === v.id)?.box;
+        return { id: v.id, look: v.look, at: v.at, ...(box ? { box: round(box, 2), size: round([box[2] - box[0], box[3] - box[1]], 2) } : { empty: 'the part shows nothing from here' }) };
+      }),
+      dimensions: d.dims.map((m) => {
+        const x = sheet.dims.find((y) => y.id === m.id);
+        return { id: m.id, view: m.view, ...(m.along ? { along: m.along } : {}), ...(x?.problem ? { problem: x.problem } : { shows: x?.text, value: x?.value }) };
+      }),
+      how: 'Paper coordinates are mm from the lower left corner. A dimension stands outside its view: leave about 25 mm round a view for them. screenshot with "drawing" shows the sheet; export with format "pdf" gives it to print.',
+    };
+  }
+  async function drawingChange(next, label, d) {
+    await commit(next, label, null, null);
+    app.drawingShown?.(d.id);
+    return drawingInfo(Drawing.drawingById(doc(), d.id));
+  }
+  /** The bodies of a drawing's part, as the picks of a dimension are looked for among them. */
+  function drawingBodies(d) {
+    const inside = new Set([d.part, ...descendantsOf(doc(), d.part)]);
+    return bodies().filter((b) => inside.has(b.part) && !b.away);
+  }
+  /** What a dimension measures, as the agent named it: of the drawing's part. */
+  function drawingPicks(d, ref) {
+    const scoped =
+      typeof ref === 'string' && !theirWord(ref) && SIDE_NAMES.includes(ref)
+        ? { side: ref, part: d.part }
+        : ref && typeof ref === 'object' && !Array.isArray(ref) && ref.part === undefined && ref.body === undefined
+        ? { ...ref, part: d.part }
+        : ref;
+    const picks = picksFrom(scoped),
+      inside = new Set([d.part, ...descendantsOf(doc(), d.part)]),
+      name = partById(doc(), d.part)?.name;
+    for (const p of picks) {
+      if (p.body.instance || String(p.body.id).includes('~')) throw Error(`That is on a linked copy: a dimension measures the part ${name} itself.`);
+      if (!inside.has(p.body.part)) throw Error(`That is on ${partById(doc(), p.body.part)?.name ?? 'another part'}, and ${d.name} shows ${name}.`);
+    }
+    return picks;
+  }
+
   const toBase64 = (bytes) => {
     let s = '';
     for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
@@ -889,6 +1024,99 @@ export function createCommands(app) {
         of: picks.map(row),
         ...(picks.length === 2 ? { between: betweenRow(between(picks[0], picks[1])) } : picks.length > 2 ? { together: total(picks).text } : {}),
       };
+    },
+    async add_drawing(a) {
+      free();
+      await settled();
+      const p = partOf(a.part);
+      if (p.link) throw Error(`${p.name} is a linked copy: draw ${partById(doc(), p.link)?.name ?? 'the original'} instead.`);
+      const { doc: next, drawing } = Drawing.addDrawing(doc(), p.id);
+      return drawingChange(next, 'Add ' + drawing.name, drawing);
+    },
+    async edit_drawing(a) {
+      free();
+      await settled();
+      const d = drawingOf(a.drawing),
+        patch = {};
+      if (a.name !== undefined) {
+        if (typeof a.name !== 'string' || !a.name.trim()) throw Error('A drawing needs a name.');
+        patch.name = a.name.trim();
+      }
+      if (a.part !== undefined) {
+        const p = partOf(a.part);
+        if (p.link) throw Error(`${p.name} is a linked copy: draw ${partById(doc(), p.link)?.name ?? 'the original'} instead.`);
+        patch.part = p.id;
+      }
+      if (a.sheet !== undefined) {
+        if (!Drawing.SHEETS[a.sheet]) throw Error(`"sheet" is one of ${Object.keys(Drawing.SHEETS).join(', ')}.`);
+        patch.sheet = a.sheet;
+      }
+      if (a.scale !== undefined) {
+        if (!(Number.isFinite(a.scale) && a.scale >= 0.001 && a.scale <= 1000)) throw Error('"scale" is a positive number: 1 for true size, 0.5 for 1:2, 2 for 2:1.');
+        patch.scale = a.scale;
+      }
+      if (!Object.keys(patch).length) throw Error('Say what to change: name, part, sheet or scale.');
+      let next = Drawing.editDrawing(doc(), d.id, patch);
+      // a dimension of another part means nothing on this one
+      if (patch.part && patch.part !== d.part) next = Drawing.removeItems(next, d.id, d.dims.map((m) => m.id));
+      return drawingChange(next, 'Change ' + d.name, d);
+    },
+    async delete_drawing(a) {
+      free();
+      await settled();
+      const d = drawingOf(a.drawing);
+      await commit(Drawing.deleteDrawing(doc(), d.id), 'Delete ' + d.name, null, null);
+      app.drawingShown?.(null);
+      return { deleted: d.id, drawings: Drawing.drawingsOf(doc()).map((x) => ({ id: x.id, name: x.name })) };
+    },
+    async add_view(a) {
+      free();
+      await settled();
+      const d = drawingOf(a.drawing);
+      if (!Drawing.LOOKS[a.look]) throw Error(`"look" is one of ${Drawing.LOOK_NAMES.join(', ')}.`);
+      if (!Array.isArray(a.at) || a.at.length !== 2 || !a.at.every(Number.isFinite)) throw Error('"at" is [x, y] on the paper, in mm from its lower left corner.');
+      const { doc: next, view: v } = Drawing.addView(doc(), d.id, a.look, a.at),
+        info = await drawingChange(next, `Add a ${a.look} view to ${d.name}`, d);
+      return { view: info.views.find((x) => x.id === v.id), drawing: info };
+    },
+    async move_view(a) {
+      free();
+      await settled();
+      const { drawing: d, view: v } = viewOf(a.view);
+      if (!Array.isArray(a.at) || a.at.length !== 2 || !a.at.every(Number.isFinite)) throw Error('"at" is [x, y] on the paper, in mm from its lower left corner.');
+      const info = await drawingChange(Drawing.moveView(doc(), v.id, a.at), `Move the ${v.look} view of ${d.name}`, d);
+      return { view: info.views.find((x) => x.id === v.id), drawing: info };
+    },
+    async add_drawing_dimension(a) {
+      free();
+      await settled();
+      const { drawing: d, view: v } = viewOf(a.view);
+      if (a.along !== undefined && !['horizontal', 'vertical'].includes(a.along)) throw Error('"along" is "horizontal" or "vertical".');
+      const picks = [...drawingPicks(d, a.from), ...(a.to !== undefined ? drawingPicks(d, a.to) : [])];
+      if (picks.length > 2) throw Error(`That is ${picks.length} things: a dimension is of one thing, or between two.`);
+      // the same test the sheet makes, now, so that what cannot be drawn is refused with its reason
+      const g = measureOf({ along: a.along ?? null }, picks, v.look),
+        refs = picks.map((p) => Drawing.pickRefFrom(p.body, p.kind, p.index)),
+        { doc: next, dim } = Drawing.addDim(doc(), d.id, { view: v.id, from: refs[0], to: refs[1] ?? null, along: a.along ?? null }),
+        info = await drawingChange(next, `Add a dimension to ${d.name}`, d);
+      return { dimension: info.dimensions.find((x) => x.id === dim.id) ?? { id: dim.id, value: round(g.value) }, drawing: info };
+    },
+    async remove_from_drawing(a) {
+      free();
+      await settled();
+      if (!Array.isArray(a.ids) || !a.ids.length) throw Error('"ids" lists views and dimensions, such as ["m5"].');
+      const hits = a.ids.map((id) => {
+        const hit = Drawing.itemById(doc(), String(id));
+        if (!hit) throw Error(`There is no view or dimension "${id}" on any drawing.`);
+        return hit;
+      });
+      if (new Set(hits.map((h) => h.drawing.id)).size > 1) throw Error('Those are on several drawings: take them off one drawing at a time.');
+      const d = hits[0].drawing;
+      return drawingChange(Drawing.removeItems(doc(), d.id, a.ids.map(String)), `Remove from ${d.name}`, d);
+    },
+    async get_drawing(a) {
+      await settled();
+      return drawingInfo(drawingOf(a.drawing));
     },
     async reload_app() {
       app.ready();
@@ -1307,7 +1535,21 @@ export function createCommands(app) {
     async export(a) {
       await settled();
       const format = a.format ?? 'step';
-      if (!['3mf', 'step', 'stl'].includes(format)) throw Error('"format" is "3mf", "step" or "stl". (The project itself is get_document.)');
+      if (!['3mf', 'step', 'stl', 'pdf'].includes(format)) throw Error('"format" is "3mf", "step", "stl" or "pdf". (The project itself is get_document.)');
+      if (a.drawing !== undefined && format !== 'pdf') throw Error('"drawing" is for format "pdf".');
+      if (format === 'pdf') {
+        if (a.part !== undefined || a.per_part !== undefined) throw Error('A PDF is of a drawing: give "drawing", not "part" or "per_part".');
+        const d = drawingOf(a.drawing),
+          sheet = await sheetOf(d),
+          bytes = sheetToPDF(sheet, { title: `${partById(doc(), d.part)?.name ?? ''} - ${d.name}` }),
+          name = app.filename({ meta: { name: `${doc().meta.name} - ${d.name}` } }) + '.pdf',
+          missing = sheet.dims.filter((x) => x.problem).map((x) => ({ id: x.id, problem: x.problem }));
+        if (a.download) {
+          app.download(new Blob([bytes], { type: 'application/pdf' }), name);
+          return { format, filename: name, bytes: bytes.length, downloaded: true, ...(missing.length ? { not_drawn: missing } : {}) };
+        }
+        return { format, filename: name, bytes: bytes.length, base64: toBase64(bytes), ...(missing.length ? { not_drawn: missing } : {}) };
+      }
       if (!bodies().length) throw Error('There is no body to export yet.');
       const only = a.part !== undefined ? partOf(a.part) : null,
         blob = await store.kernel.export(doc(), { format, split: !!a.per_part, ...(only ? { parts: [only.id] } : {}) }),
@@ -1325,6 +1567,20 @@ export function createCommands(app) {
     },
     async screenshot(a) {
       await settled();
+      if (a.drawing !== undefined) {
+        if (a.dimensions !== undefined) throw Error('"dimensions" is for the 3D view; a drawing shows its own.');
+        const d = drawingOf(a.drawing),
+          sheet = await sheetOf(d),
+          img = new Image();
+        img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(sheetToSVG(sheet));
+        await img.decode();
+        const k = Math.min(a.max ?? 1600, 4000) / Math.max(...sheet.size),
+          out = document.createElement('canvas');
+        out.width = Math.round(sheet.size[0] * k);
+        out.height = Math.round(sheet.size[1] * k);
+        out.getContext('2d').drawImage(img, 0, 0, out.width, out.height);
+        return { png: out.toDataURL('image/png'), width: out.width, height: out.height, drawing: d.id };
+      }
       const numbers = a.dimensions === undefined ? null : app.showDimensions(a.dimensions),
         shot = view.snapshot();
       if (numbers !== null) app.showDimensions(numbers);

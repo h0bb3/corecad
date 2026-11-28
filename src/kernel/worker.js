@@ -23,6 +23,9 @@ async function drain() {
         } else if (job.type === 'export') {
           const buffer = await engine.export(job);
           postMessage({ type: 'exported', seq: job.seq, buffer }, [buffer]);
+        } else if (job.type === 'views') {
+          const views = await engine.views(job);
+          postMessage({ type: 'viewed', seq: job.seq, views }, transfers(views));
         }
       } catch (e) {
         if (e.during) {
